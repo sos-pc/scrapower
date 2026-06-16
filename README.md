@@ -1,5 +1,7 @@
 # Scrapower
 
+[![CI](https://github.com/sos-pc/scrapower/actions/workflows/ci.yml/badge.svg)](https://github.com/sos-pc/scrapower/actions)
+
 > Aggregateur de puissance de calcul distribuée exploitant des ressources gratuites :
 > navigateurs (WebAssembly + WebGPU), cloud free tiers, et postes personnels.
 
