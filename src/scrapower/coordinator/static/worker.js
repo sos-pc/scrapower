@@ -396,7 +396,7 @@ var BrowserWorker = class {
       if (task.runtime === "python") {
         return await this.executePythonTask(task, input);
       }
-      const gpuRequired = task.resources_required?.gpu_required;
+      const gpuRequired = task.gpu_required || task.resources_required?.gpu_required;
       if (gpuRequired && hasWebGPU()) {
         return await this.executeGpuTask(task, input);
       }

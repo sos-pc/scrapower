@@ -13,12 +13,13 @@ router = APIRouter()
 # Singleton — set by coordinator lifespan
 session_manager: SessionManager | None = None
 task_manager = None  # set by coordinator lifespan
+task_service = None  # type: ignore[assignment]
 
 
 @router.websocket("/worker/ws")
 async def worker_ws(ws: WebSocket):
     """Mode A: Persistent WebSocket connection."""
-    await handle_ws(ws, session_manager, task_manager)  # type: ignore[arg-type]
+    await handle_ws(ws, session_manager, task_service)  # type: ignore[arg-type]
 
 
 @router.post("/worker/pull")

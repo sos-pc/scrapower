@@ -222,7 +222,8 @@ class BrowserWorker {
       }
 
       // Route to GPU or CPU
-      const gpuRequired = task.resources_required?.gpu_required;
+      const gpuRequired =
+        task.gpu_required || task.resources_required?.gpu_required;
       if (gpuRequired && hasWebGPU()) {
         return await this.executeGpuTask(task, input);
       }

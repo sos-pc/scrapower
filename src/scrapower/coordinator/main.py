@@ -78,6 +78,8 @@ async def lifespan(app: FastAPI):
     app.state.task_manager = task_manager
     router_mod.task_manager = task_manager  # type: ignore[assignment]
     task_service = TaskService(task_manager)
+    app.state.task_service = task_service
+    router_mod.task_service = task_service  # type: ignore[assignment]
 
     # Purge orphaned assignments at startup (workers disconnected during restart)
     await _purge_orphaned_assignments(db, log)

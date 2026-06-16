@@ -25,8 +25,8 @@ def create_client_router(require_auth: Callable | None = None) -> APIRouter:
         body = await request.json()
         task_id = body.get("task_id", uuid.uuid4().hex)
 
-        task_manager = request.app.state.task_manager
-        await task_manager.create(
+        task_service = request.app.state.task_service
+        await task_service.submit(
             task_id=task_id,
             client_id=body.get("client_id", "anonymous"),
             runtime=body.get("runtime", "wasm"),
@@ -42,8 +42,8 @@ def create_client_router(require_auth: Callable | None = None) -> APIRouter:
         """Get task status. Requires API key."""
         if require_auth and not verify_api_key(request):
             return JSONResponse({"error": "UNAUTHORIZED"}, status_code=401)
-        task_manager = request.app.state.task_manager
-        task = await task_manager.get(task_id)
+        task_service = request.app.state.task_service
+        task = await task_service.get(task_id)
         if task is None:
             return JSONResponse({"error": "NOT_FOUND"}, status_code=404)
         return JSONResponse(
@@ -60,8 +60,8 @@ def create_client_router(require_auth: Callable | None = None) -> APIRouter:
         """Cancel a task. Requires API key."""
         if require_auth and not verify_api_key(request):
             return JSONResponse({"error": "UNAUTHORIZED"}, status_code=401)
-        task_manager = request.app.state.task_manager
-        ok = await task_manager.transition(task_id, TaskState.CANCELLED)
+        task_service = request.app.state.task_service
+        ok = await task_service.cancel(task_id)
         if not ok:
             return JSONResponse({"error": "NOT_FOUND_OR_TERMINAL"}, status_code=400)
         return JSONResponse({"task_id": task_id, "status": "cancelled"})
@@ -73,8 +73,8 @@ def create_client_router(require_auth: Callable | None = None) -> APIRouter:
             return JSONResponse({"error": "UNAUTHORIZED"}, status_code=401)
         from fastapi.responses import Response
 
-        task_manager = request.app.state.task_manager
-        task = await task_manager.get(task_id)
+        task_service = request.app.state.task_service
+        task = await task_service.get(task_id)
         if task is None or task.state != TaskState.VALIDATED:
             return JSONResponse({"error": "NOT_FOUND_OR_NOT_READY"}, status_code=404)
 

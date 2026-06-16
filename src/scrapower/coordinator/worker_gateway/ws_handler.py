@@ -26,7 +26,7 @@ log = logging.getLogger(__name__)
 async def handle_ws(
     ws: WebSocket,
     sessions: SessionManager,
-    task_manager=None,
+    task_service=None,
 ):
     """Handle a single WebSocket connection from a worker."""
     await ws.accept()
@@ -93,9 +93,9 @@ async def handle_ws(
             elif msg_type == "task_result":
                 if session:
                     session.tasks_in_progress = max(0, session.tasks_in_progress - 1)
-                    if task_manager:
+                    if task_service:
                         output_hash = msg.get("result", {}).get("output_hash", "")
-                        await task_manager.complete(msg["task_id"], output_hash)
+                        await task_service.complete(msg["task_id"], output_hash)
 
             elif msg_type == "heartbeat":
                 if not session or not sessions.heartbeat(session_id):
