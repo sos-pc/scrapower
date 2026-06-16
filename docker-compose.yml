@@ -1,0 +1,20 @@
+# docker-compose.yml — Scrapower coordinator + optional workers
+
+services:
+  coordinator:
+    build: .
+    ports:
+      - "8777:8777"
+    volumes:
+      - scrapower_data:/app/data
+    restart: unless-stopped
+
+  # Optional: additional local workers (uncomment to add more)
+  # worker-1:
+  #   build: .
+  #   command: python -m scrapower.cli.worker_standalone --coordinator ws://coordinator:8777/worker/ws
+  #   depends_on:
+  #     - coordinator
+
+volumes:
+  scrapower_data:

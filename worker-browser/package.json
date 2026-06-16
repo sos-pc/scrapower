@@ -1,0 +1,13 @@
+{
+  "name": "scrapower-browser-worker",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --outfile=../src/scrapower/coordinator/static/worker.js --format=esm --minify",
+    "dev": "esbuild src/index.ts --bundle --outfile=../src/scrapower/coordinator/static/worker.js --format=esm --watch"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.0"
+  }
+}
