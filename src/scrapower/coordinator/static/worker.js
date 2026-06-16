@@ -639,6 +639,99 @@ var DHT = class {
   }
 };
 
+// src/gossip.ts
+var MESH_SIZE = 6;
+var MAX_TTL = 6;
+var GOSSIP_INTERVAL = 5e3;
+var MAX_SEEN = 1e3;
+var GossipSub = class {
+  workerId;
+  dht;
+  sendFn;
+  handlers = /* @__PURE__ */ new Map();
+  seen = /* @__PURE__ */ new Set();
+  ticker = null;
+  mesh = [];
+  constructor(workerId, dht, sendFn) {
+    this.workerId = workerId;
+    this.dht = dht;
+    this.sendFn = sendFn;
+  }
+  async start() {
+    await this.refreshMesh();
+    this.ticker = setInterval(() => this.heartbeat(), GOSSIP_INTERVAL);
+    console.log("[scrapower:gossip] started, mesh:", this.mesh.length, "peers");
+  }
+  stop() {
+    if (this.ticker) clearInterval(this.ticker);
+    this.mesh = [];
+  }
+  // Subscribe to a message type
+  on(msgType, handler) {
+    this.handlers.set(msgType, handler);
+  }
+  // Broadcast a message to the mesh
+  async broadcast(type, data) {
+    const msg = {
+      type,
+      from: this.workerId,
+      ttl: MAX_TTL,
+      msgId: `${this.workerId}:${Date.now()}:${Math.random().toString(36).slice(2, 6)}`,
+      data,
+      timestamp: Date.now()
+    };
+    this.seen.add(msg.msgId);
+    await this.sendToMesh(msg);
+  }
+  // Handle incoming gossip message
+  handleMessage(msg) {
+    if (this.seen.has(msg.msgId)) return;
+    this.seen.add(msg.msgId);
+    this.pruneSeen();
+    const handler = this.handlers.get(msg.type);
+    if (handler) handler(msg);
+    if (msg.ttl > 1) {
+      msg.ttl--;
+      this.sendToMesh(msg).catch(() => {
+      });
+    }
+  }
+  // Refresh mesh from DHT routing table
+  async refreshMesh() {
+    const nodes = await this.dht.findNode(this.workerId);
+    this.mesh = nodes.slice(0, MESH_SIZE).map((n) => n.workerId);
+  }
+  get meshSize() {
+    return this.mesh.length;
+  }
+  async sendToMesh(msg) {
+    for (const peerId of this.mesh) {
+      if (peerId === this.workerId) continue;
+      try {
+        await this.sendFn(peerId, msg);
+      } catch {
+      }
+    }
+  }
+  async heartbeat() {
+    await this.broadcast("gossip_heartbeat", {
+      workerId: this.workerId,
+      meshSize: this.mesh.length
+    });
+  }
+  pruneSeen() {
+    if (this.seen.size > MAX_SEEN) {
+      const toDelete = this.seen.size - MAX_SEEN / 2;
+      let count = 0;
+      for (const id of this.seen) {
+        if (count >= toDelete) break;
+        this.seen.delete(id);
+        count++;
+      }
+    }
+  }
+};
+
 // src/index.ts
 var sandboxCode = await fetch(
   new URL("./sandbox_worker.js", import.meta.url)
@@ -659,6 +752,7 @@ var BrowserWorker = class {
   reconnectTimer = null;
   p2p = null;
   dht = null;
+  gossip = null;
   workerId = "";
   constructor(wsUrl2) {
     this.coordinatorUrl = wsUrl2;
@@ -800,6 +894,29 @@ var BrowserWorker = class {
         });
         this.dht = new DHT(this.ws, this.workerId, this.p2p);
         this.dht.init().catch((e) => console.warn("[scrapower:dht] init failed:", e));
+        this.gossip = new GossipSub(
+          this.workerId,
+          this.dht,
+          async (peerId, gMsg) => {
+            if (this.p2p) {
+              const channel = await this.p2p.connectTo(peerId);
+              if (channel) channel.send(JSON.stringify(gMsg));
+            }
+          }
+        );
+        this.gossip.on("blob_available", (gMsg) => {
+          console.log(
+            "[scrapower:gossip] blob",
+            gMsg.data.blobHash?.slice(0, 8),
+            "from",
+            gMsg.from
+          );
+        });
+        this.gossip.start().catch((e) => console.warn("[scrapower:gossip] start failed:", e));
+      }
+      if (msg.type === "p2p_blob_response" && msg.data?.gossipMsg) {
+        this.gossip?.handleMessage(msg.data.gossipMsg);
+        return;
       }
       this.p2p.handleMessage(msg);
       return;
@@ -911,7 +1028,10 @@ var BrowserWorker = class {
       }
     }
     const resp = await fetch(`${httpUrl}/blobs/${hash}`);
-    return resp.arrayBuffer();
+    const data = await resp.arrayBuffer();
+    this.gossip?.broadcast("blob_available", { blobHash: hash }).catch(() => {
+    });
+    return data;
   }
   async handleP2PBlobRequest(msg) {
     const { blobHash, requestId, channel } = msg.data || {};

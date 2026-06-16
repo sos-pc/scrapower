@@ -5,6 +5,7 @@ import { createUI } from "./ui";
 import { hasWebGPU, executeGPU } from "./gpu";
 import { P2PTransport } from "./p2p";
 import { DHT } from "./dht";
+import { GossipSub } from "./gossip";
 
 // ── Sandbox worker (CPU WASM) ──────────────────────────────
 // The sandbox runs in a separate Web Worker so WASM execution
@@ -49,6 +50,7 @@ class BrowserWorker {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private p2p: P2PTransport | null = null;
   private dht: DHT | null = null;
+  private gossip: GossipSub | null = null;
   private workerId = "";
 
   constructor(wsUrl: string) {
@@ -215,6 +217,32 @@ class BrowserWorker {
         this.dht
           .init()
           .catch((e) => console.warn("[scrapower:dht] init failed:", e));
+        this.gossip = new GossipSub(
+          this.workerId,
+          this.dht,
+          async (peerId, gMsg) => {
+            if (this.p2p) {
+              const channel = await this.p2p.connectTo(peerId);
+              if (channel) channel.send(JSON.stringify(gMsg));
+            }
+          },
+        );
+        this.gossip.on("blob_available", (gMsg) => {
+          console.log(
+            "[scrapower:gossip] blob",
+            gMsg.data.blobHash?.slice(0, 8),
+            "from",
+            gMsg.from,
+          );
+        });
+        this.gossip
+          .start()
+          .catch((e) => console.warn("[scrapower:gossip] start failed:", e));
+      }
+      // Route gossip messages
+      if (msg.type === "p2p_blob_response" && msg.data?.gossipMsg) {
+        this.gossip?.handleMessage(msg.data.gossipMsg);
+        return;
       }
       this.p2p.handleMessage(msg);
       return;
@@ -360,7 +388,14 @@ class BrowserWorker {
 
     // Fallback to coordinator HTTP
     const resp = await fetch(`${httpUrl}/blobs/${hash}`);
-    return resp.arrayBuffer();
+    const data = await resp.arrayBuffer();
+
+    // Announce to mesh that we have this blob
+    this.gossip
+      ?.broadcast("blob_available", { blobHash: hash })
+      .catch(() => {});
+
+    return data;
   }
 
   private async handleP2PBlobRequest(msg: any) {
