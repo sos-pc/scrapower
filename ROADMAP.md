@@ -21,6 +21,9 @@
 
 - [ ] **SDK Python `scrapower`** — `pip install scrapower` → `scrapower.submit(wasm, input)`
 - [ ] **CLI** — `scrapower serve/submit/status/worker`
+- [ ] **Python runtime (Pyodide)** — navigateurs exécutent du Python natif
+  - CPython 3.12 compilé en WASM, numpy/pandas/scipy inclus
+  - `runtime: "python"` → exécuté dans Pyodide, pas besoin de compiler
 - [ ] **Dashboard** — workers, tâches, santé en temps réel
 - [ ] **Worker keepalive** — reconnexion automatique + backoff
 - [ ] **Cache WASM (IndexedDB)** — un module jamais re-téléchargé
@@ -75,7 +78,6 @@
 ## 🌐 Phase 6 — Scale (v1.0)
 
 - [ ] **Harvester** — Colab, GitHub Actions, Oracle (workers cloud gratuits)
-- [ ] **Python runtime** — fonctions Python sandboxées
 - [ ] **Réputation workers** — score, blacklist, priorité
 - [ ] **Multi-tenant** — isolation client_id, quotas, priorités
 
