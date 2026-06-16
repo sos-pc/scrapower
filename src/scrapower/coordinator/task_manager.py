@@ -10,12 +10,12 @@ from __future__ import annotations
 import time
 import uuid
 from dataclasses import dataclass
-from enum import StrEnum
+from enum import Enum
 
 import aiosqlite
 
 
-class TaskState(StrEnum):
+class TaskState(str, Enum):
     PENDING = "pending"
     QUEUED = "queued"
     ASSIGNED = "assigned"
