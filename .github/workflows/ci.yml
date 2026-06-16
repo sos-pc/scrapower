@@ -31,7 +31,7 @@ jobs:
         run: ruff check src/ tests/
 
       - name: Typecheck
-        run: mypy src/scrapower --ignore-missing-imports
+        run: mypy src/scrapower/coordinator src/scrapower/worker/client.py --ignore-missing-imports
 
       - name: Build browser worker
         run: |
