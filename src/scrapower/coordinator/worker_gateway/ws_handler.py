@@ -51,6 +51,19 @@ async def handle_ws(
             msg_type = msg.get("type", "")
             session_id = msg.get("session_id", "")
 
+            # P2P signalling relay: forward to target worker
+            if msg_type.startswith("p2p_"):
+                target_id = msg.get("to", "")
+                if target_id:
+                    for s in sessions.active_sessions:
+                        if s.worker_id == target_id and s.ws:
+                            try:
+                                await s.ws.send_json(msg)
+                            except Exception:
+                                pass
+                            break
+                continue
+
             if msg_type == "hello":
                 session = sessions.create(
                     msg.get("worker_id", "unknown"),

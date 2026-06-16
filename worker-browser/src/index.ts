@@ -3,6 +3,7 @@
 
 import { createUI } from "./ui";
 import { hasWebGPU, executeGPU } from "./gpu";
+import { P2PTransport } from "./p2p";
 
 // ── Sandbox worker (CPU WASM) ──────────────────────────────
 // The sandbox runs in a separate Web Worker so WASM execution
@@ -45,6 +46,8 @@ class BrowserWorker {
   private pyodide: any = null;
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private p2p: P2PTransport | null = null;
+  private workerId = "";
 
   constructor(wsUrl: string) {
     this.coordinatorUrl = wsUrl;
@@ -96,6 +99,7 @@ class BrowserWorker {
     });
 
     const workerId = `browser-${Math.random().toString(36).slice(2, 10)}`;
+    this.workerId = workerId;
     console.log("[scrapower] connecting to", this.coordinatorUrl);
 
     // Handshake
@@ -136,6 +140,8 @@ class BrowserWorker {
 
     this.ws.onmessage = (e) => this.handleMessage(JSON.parse(e.data));
     this.ws.onclose = () => {
+      this.p2p?.disconnect();
+      this.p2p = null;
       this.reconnectAttempts = 0;
       if (this.active) {
         this.ui.update({ connected: false });
@@ -194,6 +200,21 @@ class BrowserWorker {
 
   private async handleMessage(msg: any) {
     if (!this.active) return;
+
+    // Relay P2P signalling messages
+    if (msg.type?.startsWith("p2p_")) {
+      if (!this.p2p) {
+        this.p2p = new P2PTransport(this.ws!, this.workerId, (p2pMsg) => {
+          // Handle incoming blob requests
+          if (p2pMsg.type === "p2p_blob_request") {
+            this.handleP2PBlobRequest(p2pMsg);
+          }
+        });
+      }
+      this.p2p.handleMessage(msg);
+      return;
+    }
+
     if (msg.type === "task_assign" || msg.type === "keepalive") {
       if (msg.type === "task_assign") {
         this.ws!.send(
@@ -318,8 +339,36 @@ class BrowserWorker {
     hash: string,
   ): Promise<ArrayBuffer> {
     console.log("[scrapower] downloading blob:", hash.slice(0, 8));
+
+    // Try P2P first
+    if (this.p2p) {
+      try {
+        const peers = await this.p2p.findBlobPeers(hash);
+        if (peers.length > 0) {
+          console.log("[scrapower] P2P blob from", peers[0]);
+          return await this.p2p.requestBlob(peers[0], hash);
+        }
+      } catch (err) {
+        console.warn("[scrapower] P2P failed, falling back to HTTP:", err);
+      }
+    }
+
+    // Fallback to coordinator HTTP
     const resp = await fetch(`${httpUrl}/blobs/${hash}`);
     return resp.arrayBuffer();
+  }
+
+  private async handleP2PBlobRequest(msg: any) {
+    const { blobHash, requestId, channel } = msg.data || {};
+    console.log("[scrapower] P2P blob request for", blobHash?.slice(0, 8));
+    try {
+      const httpUrl = this.httpUrl();
+      const resp = await fetch(`${httpUrl}/blobs/${blobHash}`);
+      const data = await resp.arrayBuffer();
+      this.p2p!.sendBlobResponse(channel, requestId, data);
+    } catch (err) {
+      console.error("[scrapower] P2P blob relay failed:", err);
+    }
   }
 
   private async submitResult(

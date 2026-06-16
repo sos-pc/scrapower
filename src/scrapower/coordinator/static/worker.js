@@ -228,6 +228,222 @@ async function executeGPU(inputBytes) {
   }
 }
 
+// src/p2p.ts
+var ICE_SERVERS = {
+  iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+};
+var P2PTransport = class {
+  ws;
+  workerId;
+  peers = /* @__PURE__ */ new Map();
+  blobCallbacks = /* @__PURE__ */ new Map();
+  onSignal;
+  constructor(ws, workerId, onSignal) {
+    this.ws = ws;
+    this.workerId = workerId;
+    this.onSignal = onSignal;
+  }
+  // Called when a P2P message arrives from the coordinator
+  async handleMessage(msg) {
+    if (msg.to !== this.workerId) return;
+    switch (msg.type) {
+      case "p2p_offer":
+        await this.handleOffer(msg);
+        break;
+      case "p2p_answer":
+        await this.handleAnswer(msg);
+        break;
+      case "p2p_ice":
+        await this.handleIce(msg);
+        break;
+      case "p2p_blob_response":
+        this.handleBlobResponse(msg);
+        break;
+    }
+  }
+  // Request a blob from a peer
+  async requestBlob(peerWorkerId, blobHash) {
+    const peer = this.peers.get(peerWorkerId);
+    if (peer?.channel && peer.channel.readyState === "open") {
+      return this.sendBlobRequest(peer, blobHash);
+    }
+    return this.connectAndRequest(peerWorkerId, blobHash);
+  }
+  // Check which peers have a given blob (via coordinator)
+  async findBlobPeers(blobHash) {
+    return new Promise((resolve) => {
+      const requestId = `find_${Math.random().toString(36).slice(2)}`;
+      this.sendSignal({ type: "p2p_blob_request", from: this.workerId, to: "", data: { blobHash, requestId } });
+      const handler = (e) => {
+        const msg = JSON.parse(e.data);
+        if (msg.type === "p2p_blob_peers" && msg.requestId === requestId) {
+          this.ws.removeEventListener("message", handler);
+          resolve(msg.peers || []);
+        }
+      };
+      this.ws.addEventListener("message", handler);
+      setTimeout(() => {
+        this.ws.removeEventListener("message", handler);
+        resolve([]);
+      }, 5e3);
+    });
+  }
+  async connectAndRequest(peerWorkerId, blobHash) {
+    const pc = new RTCPeerConnection(ICE_SERVERS);
+    const channel = pc.createDataChannel("scrapower-blob");
+    const peer = { pc, channel, workerId: peerWorkerId };
+    this.peers.set(peerWorkerId, peer);
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error(`P2P connection to ${peerWorkerId} timed out`));
+      }, 15e3);
+      channel.onopen = async () => {
+        clearTimeout(timeout);
+        try {
+          const data = await this.sendBlobRequest(peer, blobHash);
+          resolve(data);
+        } catch (err) {
+          reject(err);
+        }
+      };
+      pc.onicecandidate = (e) => {
+        if (e.candidate) {
+          this.sendSignal({
+            type: "p2p_ice",
+            from: this.workerId,
+            to: peerWorkerId,
+            data: e.candidate
+          });
+        }
+      };
+      pc.createOffer().then((offer) => {
+        pc.setLocalDescription(offer);
+        this.sendSignal({
+          type: "p2p_offer",
+          from: this.workerId,
+          to: peerWorkerId,
+          data: offer
+        });
+      }).catch(reject);
+    });
+  }
+  async sendBlobRequest(peer, blobHash) {
+    const requestId = Math.random().toString(36).slice(2, 10);
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("Blob request timeout")), 3e4);
+      this.blobCallbacks.set(requestId, (data) => {
+        clearTimeout(timeout);
+        resolve(data);
+      });
+      peer.channel.send(JSON.stringify({ type: "blob_request", blobHash, requestId }));
+    });
+  }
+  // Handle incoming blob request from a peer
+  onBlobRequest(blobHash, channel) {
+    return { channel, blobHash };
+  }
+  sendBlobResponse(channel, requestId, data) {
+    const CHUNK_SIZE = 16384;
+    const bytes = new Uint8Array(data);
+    const totalChunks = Math.ceil(bytes.length / CHUNK_SIZE);
+    channel.send(JSON.stringify({ type: "blob_response_start", requestId, totalChunks, totalSize: bytes.length }));
+    for (let i = 0; i < totalChunks; i++) {
+      const chunk = bytes.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+      channel.send(chunk);
+    }
+  }
+  async handleOffer(msg) {
+    const pc = new RTCPeerConnection(ICE_SERVERS);
+    const peer = { pc, channel: null, workerId: msg.from };
+    this.peers.set(msg.from, peer);
+    pc.ondatachannel = (e) => {
+      peer.channel = e.channel;
+      this.setupIncomingChannel(e.channel);
+    };
+    pc.onicecandidate = (e) => {
+      if (e.candidate) {
+        this.sendSignal({
+          type: "p2p_ice",
+          from: this.workerId,
+          to: msg.from,
+          data: e.candidate
+        });
+      }
+    };
+    await pc.setRemoteDescription(new RTCSessionDescription(msg.data));
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    this.sendSignal({ type: "p2p_answer", from: this.workerId, to: msg.from, data: answer });
+  }
+  async handleAnswer(msg) {
+    const peer = this.peers.get(msg.from);
+    if (peer) {
+      await peer.pc.setRemoteDescription(new RTCSessionDescription(msg.data));
+    }
+  }
+  async handleIce(msg) {
+    const peer = this.peers.get(msg.from);
+    if (peer && msg.data) {
+      await peer.pc.addIceCandidate(new RTCIceCandidate(msg.data));
+    }
+  }
+  handleBlobResponse(msg) {
+    if (msg.data?.blobData) {
+      const callback = this.blobCallbacks.get(msg.data.requestId);
+      if (callback) {
+        callback(new Uint8Array(msg.data.blobData).buffer);
+        this.blobCallbacks.delete(msg.data.requestId);
+      }
+    }
+  }
+  setupIncomingChannel(channel) {
+    const receivedChunks = /* @__PURE__ */ new Map();
+    channel.onmessage = (e) => {
+      if (typeof e.data === "string") {
+        const msg = JSON.parse(e.data);
+        if (msg.type === "blob_request") {
+          this.onSignal({ type: "p2p_blob_request", from: "", to: this.workerId, data: msg });
+        } else if (msg.type === "blob_response_start") {
+          receivedChunks.set(msg.requestId, { totalChunks: msg.totalChunks, chunks: [], totalSize: msg.totalSize });
+        }
+      } else if (e.data instanceof ArrayBuffer || e.data instanceof Uint8Array) {
+        for (const [reqId, state] of receivedChunks) {
+          if (state.chunks.length < state.totalChunks) {
+            state.chunks.push(new Uint8Array(e.data));
+            if (state.chunks.length === state.totalChunks) {
+              const result = new Uint8Array(state.totalSize);
+              let offset = 0;
+              for (const chunk of state.chunks) {
+                result.set(chunk, offset);
+                offset += chunk.length;
+              }
+              receivedChunks.delete(reqId);
+              const callback = this.blobCallbacks.get(reqId);
+              if (callback) {
+                callback(result.buffer);
+                this.blobCallbacks.delete(reqId);
+              }
+            }
+            break;
+          }
+        }
+      }
+    };
+  }
+  sendSignal(msg) {
+    if (this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(msg));
+    }
+  }
+  disconnect() {
+    for (const peer of this.peers.values()) {
+      peer.channel?.close();
+      peer.pc.close();
+    }
+    this.peers.clear();
+  }
+};
+
 // src/index.ts
 var sandboxCode = await fetch(
   new URL("./sandbox_worker.js", import.meta.url)
@@ -246,6 +462,8 @@ var BrowserWorker = class {
   pyodide = null;
   reconnectAttempts = 0;
   reconnectTimer = null;
+  p2p = null;
+  workerId = "";
   constructor(wsUrl2) {
     this.coordinatorUrl = wsUrl2;
     this.ui.onToggle((active) => {
@@ -288,6 +506,7 @@ var BrowserWorker = class {
       this.ws.onerror = () => reject(new Error("WebSocket connection failed"));
     });
     const workerId = `browser-${Math.random().toString(36).slice(2, 10)}`;
+    this.workerId = workerId;
     console.log("[scrapower] connecting to", this.coordinatorUrl);
     this.ws.send(
       JSON.stringify({
@@ -322,6 +541,8 @@ var BrowserWorker = class {
     );
     this.ws.onmessage = (e) => this.handleMessage(JSON.parse(e.data));
     this.ws.onclose = () => {
+      this.p2p?.disconnect();
+      this.p2p = null;
       this.reconnectAttempts = 0;
       if (this.active) {
         this.ui.update({ connected: false });
@@ -374,6 +595,17 @@ var BrowserWorker = class {
   // ── Message handling ───────────────────────────────────
   async handleMessage(msg) {
     if (!this.active) return;
+    if (msg.type?.startsWith("p2p_")) {
+      if (!this.p2p) {
+        this.p2p = new P2PTransport(this.ws, this.workerId, (p2pMsg) => {
+          if (p2pMsg.type === "p2p_blob_request") {
+            this.handleP2PBlobRequest(p2pMsg);
+          }
+        });
+      }
+      this.p2p.handleMessage(msg);
+      return;
+    }
     if (msg.type === "task_assign" || msg.type === "keepalive") {
       if (msg.type === "task_assign") {
         this.ws.send(
@@ -469,8 +701,31 @@ var BrowserWorker = class {
   }
   async downloadBlob(httpUrl, hash) {
     console.log("[scrapower] downloading blob:", hash.slice(0, 8));
+    if (this.p2p) {
+      try {
+        const peers = await this.p2p.findBlobPeers(hash);
+        if (peers.length > 0) {
+          console.log("[scrapower] P2P blob from", peers[0]);
+          return await this.p2p.requestBlob(peers[0], hash);
+        }
+      } catch (err) {
+        console.warn("[scrapower] P2P failed, falling back to HTTP:", err);
+      }
+    }
     const resp = await fetch(`${httpUrl}/blobs/${hash}`);
     return resp.arrayBuffer();
+  }
+  async handleP2PBlobRequest(msg) {
+    const { blobHash, requestId, channel } = msg.data || {};
+    console.log("[scrapower] P2P blob request for", blobHash?.slice(0, 8));
+    try {
+      const httpUrl = this.httpUrl();
+      const resp = await fetch(`${httpUrl}/blobs/${blobHash}`);
+      const data = await resp.arrayBuffer();
+      this.p2p.sendBlobResponse(channel, requestId, data);
+    } catch (err) {
+      console.error("[scrapower] P2P blob relay failed:", err);
+    }
   }
   async submitResult(task, outputBytes, result) {
     const httpUrl = this.httpUrl();
