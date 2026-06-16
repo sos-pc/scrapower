@@ -225,9 +225,7 @@ class WorkerClient:
         """Execute in the configured sandbox, return (output, output_hash)."""
         http_url = self._url.replace("ws://", "http://").replace("/worker/ws", "")
         result = await self._sandbox.execute(executable, input_data)
-        output = result.get("output_bytes", result.get("output_hash", "ok").encode())
-        if isinstance(output, str):
-            output = output.encode()
+        output: bytes = result.get("output_bytes") or result.get("output_hash", "ok").encode()
         async with aiohttp.ClientSession() as session:
             async with session.put(f"{http_url}/blobs", data=output) as r:
                 upload_resp = await r.json()

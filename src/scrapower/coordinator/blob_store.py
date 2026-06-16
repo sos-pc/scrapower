@@ -23,12 +23,6 @@ def compute_hash(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _hash_from_stream(stream) -> tuple[str, bytes]:
-    """Read all bytes from stream, return (hash, data)."""
-    data = stream.read()
-    return compute_hash(data), data
-
-
 async def store_blob(
     db: aiosqlite.Connection,
     blob_dir: str,
