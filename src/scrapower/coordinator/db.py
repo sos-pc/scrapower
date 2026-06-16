@@ -67,6 +67,14 @@ CREATE INDEX IF NOT EXISTS idx_tasks_client ON tasks(client_id);
 CREATE INDEX IF NOT EXISTS idx_results_task ON results(task_id);
 CREATE INDEX IF NOT EXISTS idx_events_task ON events(task_id);
 CREATE INDEX IF NOT EXISTS idx_blobs_created ON blobs(created_at);
+
+CREATE TABLE IF NOT EXISTS provider_tokens (
+    visitor_id     TEXT NOT NULL,
+    provider       TEXT NOT NULL,
+    token_encrypted TEXT NOT NULL,
+    created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (visitor_id, provider)
+);
 """
 
 

@@ -127,8 +127,13 @@ def live_server(live_data_dir) -> Generator[str, None, None]:
     # otherwise env vars are restored before lifespan runs.
     env_ctx = _test_env(live_data_dir)
     env_ctx.__enter__()
+    server = None
+    t = None
     try:
-        app = _import_app(live_data_dir)
+        try:
+            app = _import_app(live_data_dir)
+        except Exception as e:
+            pytest.fail(f"Failed to import app: {e}")
 
         config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
         server = uvicorn.Server(config)
@@ -148,8 +153,10 @@ def live_server(live_data_dir) -> Generator[str, None, None]:
 
         yield f"ws://127.0.0.1:{port}"
     finally:
-        server.should_exit = True
-        t.join(timeout=3)
+        if server is not None:
+            server.should_exit = True
+        if t is not None:
+            t.join(timeout=3)
         env_ctx.__exit__(None, None, None)
 
 

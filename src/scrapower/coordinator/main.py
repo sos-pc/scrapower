@@ -62,6 +62,7 @@ async def lifespan(app: FastAPI):
     app.state.config = config
 
     db = await init_db(config.db_path)
+    app.state.db = db
     log.info("database initialized", path=config.db_path)
 
     # Initialize session manager and zombie watchdog
@@ -172,6 +173,11 @@ app = FastAPI(
 )
 
 app.include_router(worker_router)
+
+# OAuth endpoints for connecting visitor accounts
+from .auth_oauth import router as oauth_router
+
+app.include_router(oauth_router)
 
 # Serve static files (browser worker)
 static_dir = Path(__file__).parent / "static"
