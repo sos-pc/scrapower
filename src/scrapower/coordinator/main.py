@@ -22,6 +22,7 @@ from .api.client_api import create_client_router
 from .blob_store import blob_exists, get_blob, run_gc, store_blob
 from .config import Config, load_config
 from .db import init_db
+from .domain import TaskService
 from .embedded_worker import EmbeddedWorker
 from .scheduler import Scheduler
 from .security import rate_limit, require_auth
@@ -76,12 +77,13 @@ async def lifespan(app: FastAPI):
     task_manager = TaskManager(db)
     app.state.task_manager = task_manager
     router_mod.task_manager = task_manager
+    task_service = TaskService(task_manager)
 
     # Purge orphaned assignments at startup (workers disconnected during restart)
     await _purge_orphaned_assignments(db, log)
 
     scheduler = Scheduler(
-        task_manager=task_manager,
+        task_service=task_service,
         session_manager=manager,
         tick_sec=config.scheduler_tick_sec,
         enforce_segregation=config.enforce_segregation,
