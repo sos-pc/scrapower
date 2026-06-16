@@ -243,6 +243,8 @@ var BrowserWorker = class {
   hbInterval = 1e4;
   hbTimer = null;
   coordinatorUrl;
+  pyodide = null;
+  // lazy-loaded Pyodide instance
   constructor(wsUrl2) {
     this.coordinatorUrl = wsUrl2;
     this.ui.onToggle((active) => {
@@ -295,7 +297,7 @@ var BrowserWorker = class {
         type: "capabilities",
         session_id: this.sessionId,
         payload: {
-          runtimes: ["wasm"],
+          runtimes: ["wasm", "python"],
           resources: {
             cpu_cores: navigator.hardwareConcurrency || 2,
             ram_mb: 4096,
@@ -355,6 +357,9 @@ var BrowserWorker = class {
     const httpUrl = this.httpUrl();
     try {
       const input = await this.downloadBlob(httpUrl, task.payload.input_hash);
+      if (task.runtime === "python") {
+        return await this.executePythonTask(task, input);
+      }
       const gpuRequired = task.resources_required?.gpu_required;
       if (gpuRequired && hasWebGPU()) {
         return await this.executeGpuTask(task, input);
@@ -362,6 +367,43 @@ var BrowserWorker = class {
       return await this.executeCpuTask(task, input, httpUrl);
     } catch (err) {
       console.error("[scrapower] task execution failed:", err.message || err);
+    }
+  }
+  async executePythonTask(task, input) {
+    console.log("[scrapower] \u{1F40D} Python task:", task.id);
+    const start = performance.now();
+    if (!this.pyodide) {
+      console.log("[scrapower] loading Pyodide...");
+      const script = document.createElement("script");
+      script.src = "https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js";
+      await new Promise((resolve, reject) => {
+        script.onload = () => resolve();
+        script.onerror = () => reject(new Error("Failed to load Pyodide"));
+        document.head.appendChild(script);
+      });
+      this.pyodide = await window.loadPyodide();
+      console.log("[scrapower] Pyodide ready");
+    }
+    try {
+      const code = new TextDecoder().decode(input);
+      let output = "";
+      this.pyodide.setStdout({
+        batched: (text) => {
+          output += text + "\n";
+        }
+      });
+      await this.pyodide.runPythonAsync(code);
+      const durationMs = Math.round(performance.now() - start);
+      const outputBytes = new TextEncoder().encode(output || "OK");
+      await this.submitResult(task, outputBytes, { outputBytes, durationMs });
+    } catch (err) {
+      const durationMs = Math.round(performance.now() - start);
+      const outputBytes = new TextEncoder().encode(err.message || String(err));
+      await this.submitResult(task, outputBytes, {
+        outputBytes,
+        durationMs,
+        error: err.message
+      });
     }
   }
   async executeGpuTask(task, input) {

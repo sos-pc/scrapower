@@ -19,6 +19,7 @@ const sandboxWorker = new Worker(URL.createObjectURL(sandboxBlob));
 
 interface TaskPayload {
   id: string;
+  runtime?: string;
   payload: { executable_hash: string; input_hash: string };
   resources_required?: { gpu_required?: boolean };
   assignment_token?: string;
@@ -41,6 +42,7 @@ class BrowserWorker {
   private hbInterval = 10_000;
   private hbTimer: ReturnType<typeof setInterval> | null = null;
   private coordinatorUrl: string;
+  private pyodide: any = null; // lazy-loaded Pyodide instance
 
   constructor(wsUrl: string) {
     this.coordinatorUrl = wsUrl;
@@ -105,7 +107,7 @@ class BrowserWorker {
         type: "capabilities",
         session_id: this.sessionId,
         payload: {
-          runtimes: ["wasm"],
+          runtimes: ["wasm", "python"],
           resources: {
             cpu_cores: navigator.hardwareConcurrency || 2,
             ram_mb: 4096,
@@ -171,8 +173,12 @@ class BrowserWorker {
   private async executeTask(task: TaskPayload) {
     const httpUrl = this.httpUrl();
     try {
-      // Download input (needed by both CPU and GPU paths)
       const input = await this.downloadBlob(httpUrl, task.payload.input_hash);
+
+      // Route to Python runtime
+      if (task.runtime === "python") {
+        return await this.executePythonTask(task, input);
+      }
 
       // Route to GPU or CPU
       const gpuRequired = task.resources_required?.gpu_required;
@@ -182,6 +188,48 @@ class BrowserWorker {
       return await this.executeCpuTask(task, input, httpUrl);
     } catch (err: any) {
       console.error("[scrapower] task execution failed:", err.message || err);
+    }
+  }
+
+  private async executePythonTask(task: TaskPayload, input: ArrayBuffer) {
+    console.log("[scrapower] 🐍 Python task:", task.id);
+    const start = performance.now();
+
+    // Lazy-load Pyodide on first Python task
+    if (!this.pyodide) {
+      console.log("[scrapower] loading Pyodide...");
+      const script = document.createElement("script");
+      script.src = "https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js";
+      await new Promise<void>((resolve, reject) => {
+        script.onload = () => resolve();
+        script.onerror = () => reject(new Error("Failed to load Pyodide"));
+        document.head.appendChild(script);
+      });
+      this.pyodide = await (window as any).loadPyodide();
+      console.log("[scrapower] Pyodide ready");
+    }
+
+    try {
+      const code = new TextDecoder().decode(input);
+      // Capture stdout
+      let output = "";
+      this.pyodide.setStdout({
+        batched: (text: string) => {
+          output += text + "\n";
+        },
+      });
+      await this.pyodide.runPythonAsync(code);
+      const durationMs = Math.round(performance.now() - start);
+      const outputBytes = new TextEncoder().encode(output || "OK");
+      await this.submitResult(task, outputBytes, { outputBytes, durationMs });
+    } catch (err: any) {
+      const durationMs = Math.round(performance.now() - start);
+      const outputBytes = new TextEncoder().encode(err.message || String(err));
+      await this.submitResult(task, outputBytes, {
+        outputBytes,
+        durationMs,
+        error: err.message,
+      });
     }
   }
 
