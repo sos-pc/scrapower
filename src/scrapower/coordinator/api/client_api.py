@@ -84,7 +84,7 @@ def create_client_router(require_auth: Callable | None = None) -> APIRouter:
         from ..blob_store import get_blob
 
         config = request.app.state.config
-        data = await get_blob(None, config.blob_dir, task.output_hash)
+        data = await get_blob(None, config.blob_dir, task.output_hash)  # type: ignore[arg-type]
         if data is None:
             return JSONResponse({"error": "BLOB_NOT_FOUND"}, status_code=404)
         return Response(content=data, media_type="application/octet-stream")

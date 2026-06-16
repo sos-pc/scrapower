@@ -34,7 +34,7 @@ from .worker_gateway.session import SessionManager
 # State (shared across the app)
 # ──────────────────────────────────────────────────────────────
 config: Config
-db: aiosqlite.Connection | None = None
+db: aiosqlite.Connection  # type: ignore[assignment]
 
 
 # ──────────────────────────────────────────────────────────────
@@ -76,7 +76,7 @@ async def lifespan(app: FastAPI):
     # Task manager and scheduler
     task_manager = TaskManager(db)
     app.state.task_manager = task_manager
-    router_mod.task_manager = task_manager
+    router_mod.task_manager = task_manager  # type: ignore[assignment]
     task_service = TaskService(task_manager)
 
     # Purge orphaned assignments at startup (workers disconnected during restart)
