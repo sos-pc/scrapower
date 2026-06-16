@@ -64,6 +64,30 @@ async def handle_ws(
                             break
                 continue
 
+            # DHT peer list request
+            if msg_type == "dht_peer_list":
+                peers = [s.worker_id for s in sessions.active_sessions]
+                await ws.send_json(
+                    {
+                        "type": "dht_peer_list_response",
+                        "requestId": msg.get("requestId", ""),
+                        "peers": peers,
+                    }
+                )
+                continue
+
+            # DHT find blob
+            if msg_type == "dht_find_blob":
+                # For now, return empty — DHT handles its own routing
+                await ws.send_json(
+                    {
+                        "type": "dht_find_blob_response",
+                        "requestId": msg.get("requestId", ""),
+                        "peers": [],
+                    }
+                )
+                continue
+
             if msg_type == "hello":
                 session = sessions.create(
                     msg.get("worker_id", "unknown"),

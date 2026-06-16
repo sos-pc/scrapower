@@ -4,6 +4,7 @@
 import { createUI } from "./ui";
 import { hasWebGPU, executeGPU } from "./gpu";
 import { P2PTransport } from "./p2p";
+import { DHT } from "./dht";
 
 // ── Sandbox worker (CPU WASM) ──────────────────────────────
 // The sandbox runs in a separate Web Worker so WASM execution
@@ -47,6 +48,7 @@ class BrowserWorker {
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private p2p: P2PTransport | null = null;
+  private dht: DHT | null = null;
   private workerId = "";
 
   constructor(wsUrl: string) {
@@ -205,11 +207,14 @@ class BrowserWorker {
     if (msg.type?.startsWith("p2p_")) {
       if (!this.p2p) {
         this.p2p = new P2PTransport(this.ws!, this.workerId, (p2pMsg) => {
-          // Handle incoming blob requests
           if (p2pMsg.type === "p2p_blob_request") {
             this.handleP2PBlobRequest(p2pMsg);
           }
         });
+        this.dht = new DHT(this.ws!, this.workerId, this.p2p);
+        this.dht
+          .init()
+          .catch((e) => console.warn("[scrapower:dht] init failed:", e));
       }
       this.p2p.handleMessage(msg);
       return;

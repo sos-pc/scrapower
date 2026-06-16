@@ -243,7 +243,6 @@ var P2PTransport = class {
     this.workerId = workerId;
     this.onSignal = onSignal;
   }
-  // Called when a P2P message arrives from the coordinator
   async handleMessage(msg) {
     if (msg.to !== this.workerId) return;
     switch (msg.type) {
@@ -264,26 +263,43 @@ var P2PTransport = class {
   // Request a blob from a peer
   async requestBlob(peerWorkerId, blobHash) {
     const peer = this.peers.get(peerWorkerId);
-    if (peer?.channel && peer.channel.readyState === "open") {
+    if (peer?.channel?.readyState === "open")
       return this.sendBlobRequest(peer, blobHash);
-    }
     return this.connectAndRequest(peerWorkerId, blobHash);
   }
-  // Check which peers have a given blob (via coordinator)
+  // Connect to peer (for DHT ping), returns channel or null
+  async connectTo(peerWorkerId) {
+    const existing = this.peers.get(peerWorkerId);
+    if (existing?.channel?.readyState === "open") return existing.channel;
+    try {
+      await this.connectAndRequest(peerWorkerId, "__ping__");
+      return this.peers.get(peerWorkerId)?.channel || null;
+    } catch {
+      return null;
+    }
+  }
+  // Find which peers have a blob (via coordinator)
   async findBlobPeers(blobHash) {
     return new Promise((resolve) => {
-      const requestId = `find_${Math.random().toString(36).slice(2)}`;
-      this.sendSignal({ type: "p2p_blob_request", from: this.workerId, to: "", data: { blobHash, requestId } });
-      const handler = (e) => {
-        const msg = JSON.parse(e.data);
-        if (msg.type === "p2p_blob_peers" && msg.requestId === requestId) {
-          this.ws.removeEventListener("message", handler);
-          resolve(msg.peers || []);
+      const rid = `find_${Math.random().toString(36).slice(2)}`;
+      this.ws.send(
+        JSON.stringify({
+          type: "p2p_blob_request",
+          from: this.workerId,
+          to: "",
+          data: { blobHash, requestId: rid }
+        })
+      );
+      const h = (e) => {
+        const m = JSON.parse(e.data);
+        if (m.type === "p2p_blob_peers" && m.requestId === rid) {
+          this.ws.removeEventListener("message", h);
+          resolve(m.peers || []);
         }
       };
-      this.ws.addEventListener("message", handler);
+      this.ws.addEventListener("message", h);
       setTimeout(() => {
-        this.ws.removeEventListener("message", handler);
+        this.ws.removeEventListener("message", h);
         resolve([]);
       }, 5e3);
     });
@@ -294,27 +310,27 @@ var P2PTransport = class {
     const peer = { pc, channel, workerId: peerWorkerId };
     this.peers.set(peerWorkerId, peer);
     return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error(`P2P connection to ${peerWorkerId} timed out`));
-      }, 15e3);
+      const timeout = setTimeout(() => reject(new Error("P2P timeout")), 15e3);
       channel.onopen = async () => {
         clearTimeout(timeout);
+        if (blobHash === "__ping__") {
+          resolve(new ArrayBuffer(0));
+          return;
+        }
         try {
-          const data = await this.sendBlobRequest(peer, blobHash);
-          resolve(data);
-        } catch (err) {
-          reject(err);
+          resolve(await this.sendBlobRequest(peer, blobHash));
+        } catch (e) {
+          reject(e);
         }
       };
       pc.onicecandidate = (e) => {
-        if (e.candidate) {
+        if (e.candidate)
           this.sendSignal({
             type: "p2p_ice",
             from: this.workerId,
             to: peerWorkerId,
             data: e.candidate
           });
-        }
       };
       pc.createOffer().then((offer) => {
         pc.setLocalDescription(offer);
@@ -328,29 +344,32 @@ var P2PTransport = class {
     });
   }
   async sendBlobRequest(peer, blobHash) {
-    const requestId = Math.random().toString(36).slice(2, 10);
+    const rid = Math.random().toString(36).slice(2, 10);
     return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("Blob request timeout")), 3e4);
-      this.blobCallbacks.set(requestId, (data) => {
-        clearTimeout(timeout);
-        resolve(data);
+      const t = setTimeout(() => reject(new Error("Blob timeout")), 3e4);
+      this.blobCallbacks.set(rid, (d) => {
+        clearTimeout(t);
+        resolve(d);
       });
-      peer.channel.send(JSON.stringify({ type: "blob_request", blobHash, requestId }));
+      peer.channel.send(
+        JSON.stringify({ type: "blob_request", blobHash, requestId: rid })
+      );
     });
   }
-  // Handle incoming blob request from a peer
-  onBlobRequest(blobHash, channel) {
-    return { channel, blobHash };
-  }
   sendBlobResponse(channel, requestId, data) {
-    const CHUNK_SIZE = 16384;
     const bytes = new Uint8Array(data);
-    const totalChunks = Math.ceil(bytes.length / CHUNK_SIZE);
-    channel.send(JSON.stringify({ type: "blob_response_start", requestId, totalChunks, totalSize: bytes.length }));
-    for (let i = 0; i < totalChunks; i++) {
-      const chunk = bytes.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
-      channel.send(chunk);
-    }
+    const CHUNK = 16384;
+    const total = Math.ceil(bytes.length / CHUNK);
+    channel.send(
+      JSON.stringify({
+        type: "blob_response_start",
+        requestId,
+        totalChunks: total,
+        totalSize: bytes.length
+      })
+    );
+    for (let i = 0; i < total; i++)
+      channel.send(bytes.slice(i * CHUNK, (i + 1) * CHUNK));
   }
   async handleOffer(msg) {
     const pc = new RTCPeerConnection(ICE_SERVERS);
@@ -358,70 +377,80 @@ var P2PTransport = class {
     this.peers.set(msg.from, peer);
     pc.ondatachannel = (e) => {
       peer.channel = e.channel;
-      this.setupIncomingChannel(e.channel);
+      this.setupIncoming(e.channel);
     };
     pc.onicecandidate = (e) => {
-      if (e.candidate) {
+      if (e.candidate)
         this.sendSignal({
           type: "p2p_ice",
           from: this.workerId,
           to: msg.from,
           data: e.candidate
         });
-      }
     };
     await pc.setRemoteDescription(new RTCSessionDescription(msg.data));
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
-    this.sendSignal({ type: "p2p_answer", from: this.workerId, to: msg.from, data: answer });
+    this.sendSignal({
+      type: "p2p_answer",
+      from: this.workerId,
+      to: msg.from,
+      data: answer
+    });
   }
   async handleAnswer(msg) {
     const peer = this.peers.get(msg.from);
-    if (peer) {
+    if (peer)
       await peer.pc.setRemoteDescription(new RTCSessionDescription(msg.data));
-    }
   }
   async handleIce(msg) {
     const peer = this.peers.get(msg.from);
-    if (peer && msg.data) {
+    if (peer?.data)
       await peer.pc.addIceCandidate(new RTCIceCandidate(msg.data));
-    }
   }
   handleBlobResponse(msg) {
     if (msg.data?.blobData) {
-      const callback = this.blobCallbacks.get(msg.data.requestId);
-      if (callback) {
-        callback(new Uint8Array(msg.data.blobData).buffer);
+      const cb = this.blobCallbacks.get(msg.data.requestId);
+      if (cb) {
+        cb(new Uint8Array(msg.data.blobData).buffer);
         this.blobCallbacks.delete(msg.data.requestId);
       }
     }
   }
-  setupIncomingChannel(channel) {
-    const receivedChunks = /* @__PURE__ */ new Map();
+  setupIncoming(channel) {
+    const chunks = /* @__PURE__ */ new Map();
     channel.onmessage = (e) => {
       if (typeof e.data === "string") {
-        const msg = JSON.parse(e.data);
-        if (msg.type === "blob_request") {
-          this.onSignal({ type: "p2p_blob_request", from: "", to: this.workerId, data: msg });
-        } else if (msg.type === "blob_response_start") {
-          receivedChunks.set(msg.requestId, { totalChunks: msg.totalChunks, chunks: [], totalSize: msg.totalSize });
-        }
-      } else if (e.data instanceof ArrayBuffer || e.data instanceof Uint8Array) {
-        for (const [reqId, state] of receivedChunks) {
-          if (state.chunks.length < state.totalChunks) {
-            state.chunks.push(new Uint8Array(e.data));
-            if (state.chunks.length === state.totalChunks) {
-              const result = new Uint8Array(state.totalSize);
-              let offset = 0;
-              for (const chunk of state.chunks) {
-                result.set(chunk, offset);
-                offset += chunk.length;
+        const m = JSON.parse(e.data);
+        if (m.type === "blob_request")
+          this.onSignal({
+            type: "p2p_blob_request",
+            from: "",
+            to: this.workerId,
+            data: m
+          });
+        else if (m.type === "blob_response_start")
+          chunks.set(m.requestId, {
+            total: m.totalChunks,
+            data: [],
+            size: m.totalSize
+          });
+      } else if (e.data instanceof ArrayBuffer) {
+        for (const [rid, s] of chunks) {
+          if (s.data.length < s.total) {
+            s.data.push(new Uint8Array(e.data));
+            if (s.data.length === s.total) {
+              const r = new Uint8Array(s.size);
+              let o = 0;
+              for (const c of s.data) {
+                r.set(c, o);
+                o += c.length;
               }
-              receivedChunks.delete(reqId);
-              const callback = this.blobCallbacks.get(reqId);
-              if (callback) {
-                callback(result.buffer);
-                this.blobCallbacks.delete(reqId);
+              chunks.delete(rid);
+              const cb = this.blobCallbacks.get(rid);
+              if (cb) {
+                cb(r.buffer);
+                this.blobCallbacks.delete(rid);
               }
             }
             break;
@@ -431,16 +460,182 @@ var P2PTransport = class {
     };
   }
   sendSignal(msg) {
-    if (this.ws.readyState === WebSocket.OPEN) {
+    if (this.ws.readyState === WebSocket.OPEN)
       this.ws.send(JSON.stringify(msg));
-    }
   }
   disconnect() {
-    for (const peer of this.peers.values()) {
-      peer.channel?.close();
-      peer.pc.close();
+    for (const p of this.peers.values()) {
+      p.channel?.close();
+      p.pc.close();
     }
     this.peers.clear();
+  }
+  get peerCount() {
+    return this.peers.size;
+  }
+};
+
+// src/dht.ts
+var K = 8;
+var ALPHA = 3;
+async function sha256Hex(input) {
+  const hashBuffer = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(input)
+  );
+  return Array.from(new Uint8Array(hashBuffer)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+function xorDistance(a, b) {
+  return BigInt("0x" + a) ^ BigInt("0x" + b);
+}
+var DHT = class {
+  nodeId;
+  workerId;
+  p2p;
+  routingTable = [];
+  // sorted by XOR distance from own node ID
+  _store = /* @__PURE__ */ new Map();
+  ws;
+  constructor(ws, workerId, p2p) {
+    this.ws = ws;
+    this.workerId = workerId;
+    this.p2p = p2p;
+    this.nodeId = "";
+  }
+  async init() {
+    this.nodeId = await sha256Hex(this.workerId);
+    await this.bootstrap();
+    console.log(
+      "[scrapower:dht] initialized, nodeId:",
+      this.nodeId.slice(0, 12)
+    );
+  }
+  // Bootstrap: ask coordinator for list of active workers, then ping them
+  async bootstrap() {
+    const peers = await this.requestPeerList();
+    console.log("[scrapower:dht] bootstrap: found", peers.length, "peers");
+    for (const peerId of peers.slice(0, K * 2)) {
+      if (peerId === this.workerId) continue;
+      await this.ping(peerId);
+    }
+  }
+  // Find the K closest nodes to a target (Kademlia FIND_NODE)
+  async findNode(targetId) {
+    const candidates = [...this.routingTable].sort(
+      (a, b) => Number(xorDistance(a.id, targetId) - xorDistance(b.id, targetId))
+    );
+    return candidates.slice(0, K);
+  }
+  // Store a key-value pair on the K closest nodes
+  async store(key, value) {
+    const targetId = await sha256Hex(key);
+    const closest = await this.findNode(targetId);
+    this._store.set(key, { key, value, timestamp: Date.now() });
+    for (const node of closest) {
+      try {
+        await this.p2p.requestBlob(node.workerId, key);
+      } catch {
+      }
+    }
+  }
+  // Find a value in the DHT
+  async findValue(key) {
+    const local = this._store.get(key);
+    if (local) return local.value;
+    const targetId = await sha256Hex(key);
+    const closest = await this.findNode(targetId);
+    for (const node of closest.slice(0, ALPHA)) {
+      try {
+        const data = await this.p2p.requestBlob(node.workerId, `dht:${key}`);
+        if (data) return new TextDecoder().decode(data);
+      } catch {
+        continue;
+      }
+    }
+    return null;
+  }
+  // Advertise that we have a blob
+  async advertiseBlob(blobHash) {
+    await this.store(`blob:${blobHash}`, this.workerId);
+  }
+  // Find which workers have a blob
+  async findBlobWorkers(blobHash) {
+    const value = await this.findValue(`blob:${blobHash}`);
+    if (value) return [value];
+    return this.findBlobPeersFromCoordinator(blobHash);
+  }
+  // Ping a peer and add to routing table
+  async ping(peerWorkerId) {
+    const peerNodeId = await sha256Hex(peerWorkerId);
+    const existing = this.routingTable.find((n) => n.id === peerNodeId);
+    if (existing) return;
+    try {
+      const channel = await this.p2p.connectTo(peerWorkerId);
+      if (channel) {
+        this.routingTable.push({ id: peerNodeId, workerId: peerWorkerId });
+        this.routingTable.sort(
+          (a, b) => Number(
+            xorDistance(a.id, this.nodeId) - xorDistance(b.id, this.nodeId)
+          )
+        );
+        if (this.routingTable.length > K * 20) {
+          this.routingTable = this.routingTable.slice(0, K * 20);
+        }
+      }
+    } catch {
+    }
+  }
+  // Remove stale entries
+  prune() {
+    const now = Date.now();
+    this._store.forEach((entry, key) => {
+      if (now - entry.timestamp > 36e5) {
+        this._store.delete(key);
+      }
+    });
+  }
+  // Get peer list from coordinator
+  async requestPeerList() {
+    return new Promise((resolve) => {
+      const requestId = `dht_peers_${Math.random().toString(36).slice(2)}`;
+      this.ws.send(JSON.stringify({ type: "dht_peer_list", requestId }));
+      const handler = (e) => {
+        const msg = JSON.parse(e.data);
+        if (msg.type === "dht_peer_list_response" && msg.requestId === requestId) {
+          this.ws.removeEventListener("message", handler);
+          resolve(msg.peers || []);
+        }
+      };
+      this.ws.addEventListener("message", handler);
+      setTimeout(() => {
+        this.ws.removeEventListener("message", handler);
+        resolve([]);
+      }, 5e3);
+    });
+  }
+  // Fallback: find blob peers via coordinator
+  async findBlobPeersFromCoordinator(blobHash) {
+    return new Promise((resolve) => {
+      const requestId = `dht_blob_${Math.random().toString(36).slice(2)}`;
+      this.ws.send(
+        JSON.stringify({ type: "dht_find_blob", blobHash, requestId })
+      );
+      const handler = (e) => {
+        const msg = JSON.parse(e.data);
+        if (msg.type === "dht_find_blob_response" && msg.requestId === requestId) {
+          this.ws.removeEventListener("message", handler);
+          resolve(msg.peers || []);
+        }
+      };
+      this.ws.addEventListener("message", handler);
+      setTimeout(() => {
+        this.ws.removeEventListener("message", handler);
+        resolve([]);
+      }, 5e3);
+    });
+  }
+  get nodeCount() {
+    return this.routingTable.length;
   }
 };
 
@@ -463,6 +658,7 @@ var BrowserWorker = class {
   reconnectAttempts = 0;
   reconnectTimer = null;
   p2p = null;
+  dht = null;
   workerId = "";
   constructor(wsUrl2) {
     this.coordinatorUrl = wsUrl2;
@@ -602,6 +798,8 @@ var BrowserWorker = class {
             this.handleP2PBlobRequest(p2pMsg);
           }
         });
+        this.dht = new DHT(this.ws, this.workerId, this.p2p);
+        this.dht.init().catch((e) => console.warn("[scrapower:dht] init failed:", e));
       }
       this.p2p.handleMessage(msg);
       return;
