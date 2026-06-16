@@ -14,8 +14,19 @@ import aiosqlite
 
 
 def _blob_path(blob_dir: str, hash_hex: str) -> Path:
-    """Convert hash to filesystem path: data/blobs/ab/abcdef..."""
+    """Convert hash to filesystem path: data/blobs/ab/abcdef...
+
+    Validates that hash_hex is exactly 64 hex characters to prevent
+    path traversal attacks via ../ or %2e%2e%2f encoding.
+    """
+    if not _is_valid_hash(hash_hex):
+        raise ValueError(f"Invalid blob hash: {hash_hex[:20]}...")
     return Path(blob_dir) / hash_hex[:2] / hash_hex
+
+
+def _is_valid_hash(hash_hex: str) -> bool:
+    """Check if string is a valid 64-char hex SHA-256 hash."""
+    return len(hash_hex) == 64 and all(c in "0123456789abcdef" for c in hash_hex)
 
 
 def compute_hash(data: bytes) -> str:

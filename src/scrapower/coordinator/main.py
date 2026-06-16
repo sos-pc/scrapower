@@ -21,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from .api.client_api import create_client_router
 from .blob_store import blob_exists, get_blob, run_gc, store_blob
 from .config import Config, load_config
+from .crypto_utils import CSP_HEADER_VALUE
 from .db import init_db
 from .domain import TaskService
 from .embedded_worker import EmbeddedWorker
@@ -217,7 +218,10 @@ async def download_blob(hash_hex: str):
     """Download a blob by its content hash."""
     from fastapi.responses import Response
 
-    data = await get_blob(db, config.blob_dir, hash_hex)
+    try:
+        data = await get_blob(db, config.blob_dir, hash_hex)
+    except ValueError:
+        return JSONResponse({"error": "INVALID_HASH"}, status_code=400)
     if data is None:
         return JSONResponse({"error": "NOT_FOUND"}, status_code=404)
     return Response(content=data, media_type="application/octet-stream")
@@ -226,7 +230,10 @@ async def download_blob(hash_hex: str):
 @app.head("/blobs/{hash_hex}")
 async def check_blob(hash_hex: str):
     """Check if a blob exists."""
-    exists = await blob_exists(db, config.blob_dir, hash_hex)
+    try:
+        exists = await blob_exists(db, config.blob_dir, hash_hex)
+    except ValueError:
+        return JSONResponse(None, status_code=400)
     return JSONResponse(None, status_code=200 if exists else 404)
 
 
@@ -241,7 +248,7 @@ async def homepage():
     from fastapi.responses import FileResponse
 
     index_path = Path(__file__).parent / "static" / "index.html"
-    return FileResponse(index_path)
+    return FileResponse(index_path, headers=CSP_HEADER_VALUE)
 
 
 @app.get("/health")

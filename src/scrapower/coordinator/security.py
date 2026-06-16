@@ -18,10 +18,10 @@ API_KEY = os.environ.get("SCRAPOWER_API_KEY", "")
 
 if not API_KEY:
     API_KEY = secrets.token_hex(32)
-    print(f"\n{'=' * 60}")
-    print(f"  API KEY: {API_KEY}")
-    print("  Set SCRAPOWER_API_KEY env var to persist across restarts")
-    print(f"{'=' * 60}\n")
+    import structlog
+
+    _log = structlog.get_logger()
+    _log.warning("no SCRAPOWER_API_KEY set, generated temporary key")
 
 
 # Rate limiting: per-IP counters
