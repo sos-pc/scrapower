@@ -21,7 +21,6 @@ from fastapi.staticfiles import StaticFiles
 from .api.client_api import create_client_router
 from .blob_store import blob_exists, get_blob, run_gc, store_blob
 from .config import Config, load_config
-from .crypto_utils import CSP_HEADER_VALUE
 from .db import init_db
 from .domain import TaskService
 from .embedded_worker import EmbeddedWorker
@@ -254,7 +253,7 @@ async def homepage():
     from fastapi.responses import FileResponse
 
     index_path = Path(__file__).parent / "static" / "index.html"
-    return FileResponse(index_path, headers=CSP_HEADER_VALUE)
+    return FileResponse(index_path)
 
 
 @app.get("/health")
