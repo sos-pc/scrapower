@@ -1,177 +1,113 @@
-# Roadmap Scrapower
+# Roadmap Scrapower v2
 
-> Agrégateur de puissance de calcul distribuée — gratuit, hétérogène, scalable.
+> Agrégateur de calcul distribué gratuit — navigateur natif, friction zéro, P2P-ready.
 
 ---
 
 ## ✅ Phase 1 — Fondations (v0.1) — **FAIT**
 
-**Sortir un MVP fonctionnel, déployé, avec 3 types de workers.**
-
 - [x] Coordinateur central (FastAPI + SQLite + WebSocket)
-- [x] Worker navigateur (TypeScript, WebAssembly sandbox, widget)
-- [x] Worker natif Python (aiohttp, WebSocket persistant)
-- [x] Worker embarqué (fallback intégré au coordinateur)
-- [x] Protocole Worker v2.1 (2 modes : WebSocket persistant + HTTP pull)
-- [x] WebGPU — multiplication matricielle sur GPU navigateur
-- [x] Distribution multi-worker avec load balancing intra-tick
-- [x] Sécurité : API key, rate limiting, port isolé (iptables)
-- [x] Déploiement Oracle Cloud Always Free + Caddy + Let's Encrypt
-- [x] 33 tests unitaires, lint clean
-- [x] GitHub, README, ROADMAP
+- [x] 3 types de workers : navigateur (WASM+WebGPU), natif Python, embedded
+- [x] Protocole Worker v2.1, load balancing intra-tick
+- [x] WebGPU fonctionnel (matmul 256×256 en ~100ms)
+- [x] Déploiement Oracle Cloud + CI/CD GitHub Actions
+- [x] 44 tests, lint 0, mypy clean
 
 ---
 
-## 🔜 Phase 2 — Plateforme utilisable (v0.2)
+## 🔜 Phase 2 — Plateforme (v0.2)
 
-**Rendre le projet utilisable par des tiers : SDK, CLI, dashboard.**
+**Rendre le projet utilisable par des tiers.**
 
-- [ ] **SDK Python `scrapower`**
-  - `pip install scrapower`
-  - `scrapower.submit(wasm_bytes, input_bytes)` → résultat
-  - Modules WASM pré-compilés inclus (sha256, matmul, monte_carlo, sort)
-  - Mode synchrone (bloque jusqu'au résultat) et async
-- [ ] **CLI `scrapower`**
-  - `scrapower serve` — lancer un coordinateur
-  - `scrapower submit --wasm module.wasm --input data.bin` — soumettre
-  - `scrapower status <task_id>` — état d'une tâche
-  - `scrapower worker` — lancer un worker natif
-  - `scrapower dashboard` — page web locale de monitoring
-- [ ] **Dashboard web**
-  - Page HTML simple embarquée dans le coordinateur
-  - Workers connectés (ID, type, GPU, uptime, charge)
-  - Tâches (queued, running, done) avec graphe en temps réel
-  - Historique des 100 dernières tâches
-- [ ] **Worker keepalive & reconnect**
-  - Reconnexion automatique navigateur après perte WebSocket
-  - Reconnexion avec backoff exponentiel
-  - Conservation des tâches en cours (retry sur nouveau worker)
-- [ ] **Multi-runtime WASM**
-  - Support WASI preview 1 (accès fichier sandboxé)
-  - Caching des modules WASM compilés (évite recompilation)
-  - Warm-up : pré-instanciation de modules fréquents
-- [ ] **CI/CD GitHub Actions**
-  - Tests automatiques à chaque push
-  - Lint (ruff) automatique
-  - Build du worker navigateur
-  - Badge coverage, badge tests
+- [ ] **SDK Python `scrapower`** — `pip install scrapower` → `scrapower.submit(wasm, input)`
+- [ ] **CLI** — `scrapower serve/submit/status/worker`
+- [ ] **Dashboard** — workers, tâches, santé en temps réel
+- [ ] **Worker keepalive** — reconnexion automatique + backoff
+- [ ] **Cache WASM (IndexedDB)** — un module jamais re-téléchargé
+- [ ] **Service Worker** — le worker survit en arrière-plan
 
 ---
 
-## 📋 Phase 3 — Scale (v0.3)
+## 📋 Phase 3 — P2P (v0.3) ← pivot
 
-**Passer à l'échelle : plus de workers, plus de sources, plus de fiabilité.**
+**Introduire libp2p pour décentraliser le réseau de workers.**
 
-- [ ] **Harvester multi-providers**
-  - Google Colab : provisioning auto de notebooks workers gratuits
-  - GitHub Actions : workers via workflow runners gratuits
-  - Oracle Cloud : workers additionnels sur instances Always Free
-  - Rotation automatique (timeout gratuit 1h-6h selon provider)
-  - Queue de remplacement (un worker part, un autre arrive)
-- [ ] **Python runtime**
-  - Exécution de fonctions Python soumises dynamiquement
-  - Sandboxing via `RestrictedPython` ou subprocess isolé
-  - Pas de compilation WASM nécessaire côté utilisateur
-  - Cache de fonctions fréquentes
-- [ ] **Vérification par challenge**
-  - Mode `challenge` : 2+ workers exécutent la même tâche
-  - Comparaison des résultats (hash identique = validé)
-  - Détection de workers malveillants ou défaillants
-  - Mode `trust` (actuel) pour les tâches bénignes
-- [ ] **Réputation workers**
-  - Score basé sur : succès/échecs, latence, uptime
-  - Priorité aux workers à haut score
-  - Blacklist automatique après N échecs consécutifs
-  - Affichage du score dans le widget
-- [ ] **Multi-tenant**
-  - Isolation par `client_id` avec quotas configurables
-  - Limite de tâches simultanées par client
-  - Priorités inter-client (premium > standard)
-- [ ] **Persistance avancée**
-  - Backup automatique de la DB SQLite
-  - Migration vers PostgreSQL pour les déploiements lourds
-  - Export/import de configuration
+- [ ] **libp2p + WebRTC** — communication directe worker↔worker
+  - Le coordinateur actuel devient bootstrap node + signalling server
+  - Transfert de blobs en P2P (plus de bottleneck coordinateur)
+- [ ] **Kademlia DHT** — découverte et routage dynamique des workers
+  - `task.hash → DHT.lookup → N workers responsables`
+  - Tolérance de panne : un worker part, le DHT reroute
+  - Scale horizontal : chaque worker ajoute de la capacité de routage
+- [ ] **GossipSub** — broadcast de tâches disponibles entre workers
+- [ ] **Stockage distribué** — IndexedDB + DHT pour cache de blobs P2P
+  - Un worker peut servir un blob à un autre sans coordinateur
 
 ---
 
-## 🚀 Phase 4 — Intelligence (v0.4)
+## 🚀 Phase 4 — Capacités navigateur (v0.4)
 
-**Optimiser automatiquement : routing, prédiction, adaptation.**
+**Exploiter TOUT ce qu'un navigateur peut fournir.**
 
-- [ ] **Scheduler intelligent**
-  - Prédiction de durée des tâches basée sur l'historique
-  - Matching worker/tâche optimisé (GPU pour matrices, CPU pour logique)
-  - Work stealing : worker libre vole une tâche à un worker lent
-  - Priorité dynamique : les tâches âgées montent dans la queue
-- [ ] **WebGPU avancé**
-  - Shaders configurables par l'utilisateur (upload WGSL + WASM)
-  - Support float64 quand disponible
-  - Réduction parallèle multi-GPU (si plusieurs workers GPU)
-  - Benchmark automatique CPU vs GPU au premier run
-- [ ] **Optimisation réseau**
-  - Compression des blobs (gzip/brotli)
-  - Cache HTTP (ETag) pour les blobs fréquents
-  - Streaming des résultats partiels (tâches longues)
-  - Batch de tâches : grouper N petites tâches en un seul envoi
-- [ ] **Observabilité**
-  - Métriques Prometheus : tâches/min, latence p50/p95/p99, workers actifs
-  - Logs structurés JSON (compatible ELK/Loki)
-  - Alertes : workers < N, latence > seuil, erreurs > seuil
-- [ ] **Sécurité renforcée**
-  - Chiffrement TLS mutuel (mTLS) workers → coordinateur
-  - Signatures Ed25519 pour les résultats
-  - Audit log immuable (toutes les transitions de tâches)
+- [ ] **SIMD WASM** — calcul vectoriel CPU (physique, finance, cracking)
+- [ ] **Canvas/OffscreenCanvas** — traitement d'images distribué
+- [ ] **WebCodecs** — transcodage vidéo/audio distribué
+- [ ] **Web Audio API** — FFT, traitement de signal
+- [ ] **Web Crypto** — signatures Ed25519, preuves d'exécution
+- [ ] **File System Access API** — accès aux fichiers locaux (si autorisé)
 
 ---
 
-## 🌐 Phase 5 — Décentralisation (v1.0)
+## ⚡ Phase 5 — Intelligence (v0.5)
 
-**Sortir du modèle centralisé : fédération, marketplace, communauté.**
+**Optimisation automatique et workloads avancés.**
 
-- [ ] **Coordinateurs fédérés**
-  - Protocole de fédération entre coordinateurs
-  - Découverte automatique (DNS-SD, mDNS)
-  - Routage inter-coordinateur : tâche → meilleur cluster
-  - Failover : si un coordinateur tombe, les autres reprennent
-- [ ] **Marketplace de calcul**
-  - Crédits de calcul : 1 tâche CPU = X crédits, 1 tâche GPU = Y crédits
-  - Gagner des crédits en fournissant du calcul
-  - Dépenser des crédits pour soumettre des tâches
-  - Prix dynamique basé sur l'offre/demande
-- [ ] **Identité & portabilité**
-  - Clé Ed25519 par client (identité portable entre coordinateurs)
-  - Wallet de crédits transférable
-  - Réputation globale (fédérée)
-- [ ] **Gouvernance**
-  - Spécification ouverte du protocole worker
-  - Implémentations de référence (Python, JS, Rust, Go)
-  - RFCs pour les évolutions du protocole
+- [ ] **Scheduler IA** — prédiction durée, matching optimal, work stealing
+- [ ] **MoE LLM distribué** — Mixtral 8×7B sur 8 workers GPU navigateurs
+  - Quantification 4-bit → 4 Go par expert → tient dans WASM
+  - Batch processing, pas temps réel
+- [ ] **CDN éclaté** — les workers servent des fichiers statiques
+- [ ] **Observabilité** — Prometheus, logs JSON, alertes
+- [ ] **Vérification ZK** — preuves à divulgation nulle via Web Crypto
 
 ---
 
-## 💭 Phase 6 — Horizon (v2.0+)
+## 🌐 Phase 6 — Scale (v1.0)
 
-**Idées exploratoires, long terme.**
-
-- [ ] **Compute-to-earn mobile** — app iOS/Android qui fournit du calcul en arrière-plan
-- [ ] **Navigateur headless pool** — ferme de Puppeteer/Playwright sur serveurs pour workers GPU
-- [ ] **WASI preview 2** — sandboxing standardisé, composants WASM
-- [ ] **SIMD + Threads WASM** — accélération vectorielle et multithreading CPU
-- [ ] **Plugin système** — providers de workers : Kubernetes, AWS Lambda free tier, Cloudflare Workers
-- [ ] **Streaming tasks** — résultats intermédiaires affichés en temps réel (p ex. rendu 3D progressif)
-- [ ] **Dataset distribué** — partage de datasets entre tâches (cache distribué)
-- [ ] **ML distribué** — TensorFlow/PyTorch en mode data-parallel sur workers gratuits
-- [ ] **Intégration IPFS** — stockage décentralisé des blobs
-- [ ] **Token crypto** — ERC-20 pour les crédits, smart contract pour la vérification
+- [ ] **Harvester** — Colab, GitHub Actions, Oracle (workers cloud gratuits)
+- [ ] **Python runtime** — fonctions Python sandboxées
+- [ ] **Réputation workers** — score, blacklist, priorité
+- [ ] **Multi-tenant** — isolation client_id, quotas, priorités
 
 ---
 
-## 📊 Métriques de succès par phase
+## 💭 Horizon (v2.0+)
 
-| Phase | Workers simultanés | Tâches/jour | Temps moyen/tâche | Uptime coordinateur |
-|-------|-------------------|-------------|-------------------|-------------------|
-| v0.1  | 5-15              | 100         | < 2s              | 99%               |
-| v0.2  | 20-50             | 1 000       | < 1s              | 99.5%             |
-| v0.3  | 50-200            | 10 000      | < 500ms           | 99.9%             |
-| v0.4  | 200-1 000         | 100 000     | < 200ms           | 99.95%            |
-| v1.0  | 1 000+            | 1M+         | < 100ms           | 99.99%            |
+- [ ] Marketplace — crédits de calcul, offre/demande
+- [ ] Fédération de coordinateurs
+- [ ] WASI preview 2 — sandboxing standardisé
+- [ ] Compute-to-earn mobile — app iOS/Android
+- [ ] Intégration IPFS — stockage décentralisé des blobs
+- [ ] Token crypto — ERC-20 pour crédits
+
+---
+
+## 📊 Métriques
+
+| Phase | Workers | Tâches/jour | Latence | Uptime |
+|-------|---------|-------------|---------|--------|
+| v0.1  | 5-15    | 100         | < 2s    | 99%    |
+| v0.2  | 20-50   | 1 000       | < 1s    | 99.5%  |
+| v0.3  | 50-500  | 10 000      | < 500ms | 99.9%  |
+| v0.4  | 500-5K  | 100 000     | < 200ms | 99.95% |
+| v1.0  | 5K+     | 1M+         | < 100ms | 99.99% |
+
+---
+
+## 🔑 Dette technique à résorber
+
+- [ ] `main.py` : extraire HTML, découper lifespan
+- [ ] `index.ts` : sandbox dans un fichier séparé
+- [ ] `client.py` : séparer download/execute/upload
+- [ ] Docstrings sur toutes les fonctions publiques
+- [ ] Coverage ≥ 80%
