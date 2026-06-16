@@ -6,7 +6,7 @@ workflows on their behalf.
 
 Requirements:
 - GitHub OAuth App with 'workflow' scope
-- A template repo with scrapower-worker.yml workflow
+- A repo with scrapower-worker.yml workflow
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from .base import Provider
 log = logging.getLogger(__name__)
 
 # Template repo where the worker workflow lives
-TEMPLATE_REPO = os.environ.get("SCRAPOWER_GH_TEMPLATE", "sos-pc/scrapower-worker-template")
+TEMPLATE_REPO = os.environ.get("SCRAPOWER_GH_TEMPLATE", "sos-pc/scrapower")
 WORKFLOW_ID = "scrapower-worker.yml"
 
 # Workflow dispatch API
@@ -102,7 +102,7 @@ class GitHubActionsProvider(Provider):
             "X-GitHub-Api-Version": "2022-11-28",
         }
         body = {
-            "ref": "main",
+            "ref": "master",
             "inputs": {
                 "coordinator_url": self._coordinator_url,
                 "worker_id": f"gh-{int(time.time())}",

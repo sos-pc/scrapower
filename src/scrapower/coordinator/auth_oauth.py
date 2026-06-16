@@ -56,7 +56,7 @@ async def github_login(request: Request):
         f"https://github.com/login/oauth/authorize"
         f"?client_id={GITHUB_CLIENT_ID}"
         f"&redirect_uri={redirect_uri}"
-        f"&scope=workflow"
+        f"&scope=workflow%20public_repo"
         f"&state={state}"
     )
     return RedirectResponse(github_url)
@@ -81,8 +81,9 @@ async def github_callback(request: Request):
     if not token:
         return JSONResponse({"error": "TOKEN_EXCHANGE_FAILED"}, status_code=400)
 
-    # Verify token has workflow scope
-    if not await _verify_scope(token):
+    # Verify token has required scopes
+    scopes = await _get_scopes(token)
+    if "workflow" not in scopes:
         return JSONResponse(
             {"error": "INSUFFICIENT_SCOPE", "hint": "Token must have workflow scope"},
             status_code=400,
@@ -142,8 +143,8 @@ async def _exchange_code(code: str) -> str | None:
             return data.get("access_token")
 
 
-async def _verify_scope(token: str) -> bool:
-    """Verify the token has 'workflow' scope."""
+async def _get_scopes(token: str) -> str:
+    """Get the scopes of a token."""
     async with aiohttp.ClientSession() as session:
         async with session.get(
             "https://api.github.com/user",
@@ -154,10 +155,8 @@ async def _verify_scope(token: str) -> bool:
             },
         ) as r:
             if r.status != 200:
-                return False
-            # Check scopes via X-OAuth-Scopes header
-            scopes = r.headers.get("X-OAuth-Scopes", "")
-            return "workflow" in scopes
+                return ""
+            return r.headers.get("X-OAuth-Scopes", "")
 
 
 def _clean_expired_states():
