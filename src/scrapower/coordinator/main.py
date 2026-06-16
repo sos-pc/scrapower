@@ -64,6 +64,28 @@ async def lifespan(app: FastAPI):
     app.state.db = db
     log.info("database initialized", path=config.db_path)
 
+    # ── OAuth configuration ──────────────────────────────────────
+    oauth_client_id = os.environ.get("SCRAPOWER_GITHUB_CLIENT_ID", "")
+    oauth_client_secret = os.environ.get("SCRAPOWER_GITHUB_CLIENT_SECRET", "")
+    coordinator_url = os.environ.get(
+        "SCRAPOWER_COORDINATOR_URL",
+        "https://scrapower.talos-int.com",
+    )
+    if oauth_client_id and oauth_client_secret:
+        from .auth_oauth import configure_oauth
+
+        configure_oauth(oauth_client_id, oauth_client_secret, coordinator_url)
+        log.info(
+            "oauth configured",
+            provider="github",
+            callback=f"{coordinator_url}/auth/github/callback",
+        )
+    else:
+        log.warning(
+            "oauth not configured",
+            hint="set SCRAPOWER_GITHUB_CLIENT_ID and SCRAPOWER_GITHUB_CLIENT_SECRET",
+        )
+
     # Initialize session manager and zombie watchdog
     manager = SessionManager(
         heartbeat_interval_sec=config.heartbeat_interval_sec,
