@@ -60,7 +60,7 @@ async def test_full_flow_submit_execute_result(live_server):
     )
 
     # Worker executes and submits result
-    await worker._execute(msg["task"])
+    await worker._execute_task(msg["task"])
 
     # 4. Check task is validated
     async with httpx.AsyncClient(headers={"X-API-Key": "test-api-key"}) as client:

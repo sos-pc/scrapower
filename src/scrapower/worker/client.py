@@ -1,4 +1,7 @@
-"""Native worker — connects to coordinator, executes tasks."""
+"""Native Python worker — connects to coordinator, executes tasks.
+
+Implements Worker Protocol v2.1 Mode A (persistent WebSocket).
+"""
 
 from __future__ import annotations
 
@@ -8,11 +11,14 @@ import uuid
 
 import aiohttp
 
-from .sandbox import MockSandbox, Sandbox
+from .sandbox import Sandbox
 
 
 class WorkerClient:
-    """Implements Worker Protocol v2.1 Mode A (WebSocket)."""
+    """Worker that connects to a Scrapower coordinator via WebSocket.
+
+    Handles handshake, heartbeat, task reception, execution, and result submission.
+    """
 
     def __init__(
         self,
@@ -26,7 +32,7 @@ class WorkerClient:
         self._worker_id = worker_id or f"worker-{uuid.uuid4().hex[:8]}"
         self._auth_token = auth_token
         self._runtimes = runtimes or ["wasm"]
-        self._sandbox = sandbox or MockSandbox()
+        self._sandbox: Sandbox = sandbox or _default_sandbox()
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._session_id: str | None = None
         self._running = False
@@ -36,15 +42,61 @@ class WorkerClient:
     def session_id(self) -> str | None:
         return self._session_id
 
+    # ── Connection lifecycle ──────────────────────────────
+
     async def connect(self):
-        """Connect to coordinator, complete handshake."""
+        """Open WebSocket, complete handshake, send capabilities."""
         self._session = aiohttp.ClientSession()
         self._ws = await self._session.ws_connect(self._url)
 
+        await self._send_hello()
+        await self._receive_session()
+        await self._send_capabilities()
+
+    async def disconnect(self):
+        """Send bye and close the WebSocket cleanly."""
+        self._running = False
+        if self._ws and not self._ws.closed:
+            await self._ws.send_json(
+                {
+                    "type": "bye",
+                    "session_id": self._session_id,
+                    "reason": "user_disconnect",
+                }
+            )
+            await self._ws.close()
+        if self._session:
+            await self._session.close()
+
+    async def run(self):
+        """Main loop: heartbeat + receive messages."""
+        self._running = True
+        await self.connect()
+        next_hb = asyncio.get_event_loop().time() + self._heartbeat_interval
+
+        try:
+            while self._running and self._ws and not self._ws.closed:
+                now = asyncio.get_event_loop().time()
+                if now >= next_hb:
+                    await self._send_heartbeat()
+                    next_hb = now + self._heartbeat_interval
+                try:
+                    msg = await asyncio.wait_for(self._ws.receive_json(), timeout=1.0)
+                except TimeoutError:
+                    continue
+                except Exception:
+                    break
+                await self._handle_message(msg)
+        finally:
+            self._running = False
+            await self.disconnect()
+
+    # ── Protocol messages (outgoing) ──────────────────────
+
+    async def _send_hello(self):
         auth = {"method": "none"}
         if self._auth_token:
             auth = {"method": "token", "value": self._auth_token}
-
         await self._ws.send_json(
             {
                 "type": "hello",
@@ -55,12 +107,14 @@ class WorkerClient:
             }
         )
 
+    async def _receive_session(self):
         msg = await self._ws.receive_json()
         if msg["type"] != "session":
             raise RuntimeError(f"Expected session, got {msg['type']}")
         self._session_id = msg["session_id"]
         self._heartbeat_interval = msg.get("heartbeat_interval_ms", 10000) // 1000
 
+    async def _send_capabilities(self):
         await self._ws.send_json(
             {
                 "type": "capabilities",
@@ -86,95 +140,28 @@ class WorkerClient:
             }
         )
 
-    async def run(self):
-        """Main loop: heartbeat + receive messages."""
-        self._running = True
-        await self.connect()
-        next_hb = asyncio.get_event_loop().time() + self._heartbeat_interval
+    async def _send_heartbeat(self):
+        await self._ws.send_json(
+            {
+                "type": "heartbeat",
+                "session_id": self._session_id,
+                "current_load_pct": 0.0,
+                "tasks_in_progress": 0,
+                "uptime_sec": 0,
+                "expected_remaining_sec": None,
+            }
+        )
 
-        try:
-            while self._running and self._ws and not self._ws.closed:
-                now = asyncio.get_event_loop().time()
-                if now >= next_hb:
-                    await self._ws.send_json(
-                        {
-                            "type": "heartbeat",
-                            "session_id": self._session_id,
-                            "current_load_pct": 0.0,
-                            "tasks_in_progress": 0,
-                            "uptime_sec": 0,
-                            "expected_remaining_sec": None,
-                        }
-                    )
-                    next_hb = now + self._heartbeat_interval
-
-                try:
-                    msg = await asyncio.wait_for(self._ws.receive_json(), timeout=1.0)
-                except TimeoutError:
-                    continue
-                except Exception:
-                    break
-
-                msg_type = msg.get("type", "")
-                if msg_type == "heartbeat_ack":
-                    pass
-                elif msg_type == "task_assign":
-                    await self._ws.send_json(
-                        {
-                            "type": "task_accept",
-                            "session_id": self._session_id,
-                            "task_id": msg["task"]["id"],
-                            "assignment_token": msg["task"]["assignment_token"],
-                        }
-                    )
-                    await self._execute(msg["task"])
-                elif msg_type == "keepalive":
-                    await self._execute(msg["task"])
-        finally:
-            self._running = False
-            if self._ws and not self._ws.closed:
-                await self._ws.close()
-            if self._session:
-                await self._session.close()
-
-    async def _execute(self, task: dict):
-        """Download blobs, execute task, upload result, submit."""
-        http_url = self._url.replace("ws://", "http://").replace("/worker/ws", "")
-        exec_hash = task["payload"]["executable_hash"]
-        input_hash = task["payload"]["input_hash"]
-
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(f"{http_url}/blobs/{exec_hash}") as r:
-                    executable = await r.read()
-                async with session.get(f"{http_url}/blobs/{input_hash}") as r:
-                    input_data = await r.read()
-
-                result = await self._sandbox.execute(executable, input_data)
-
-                output = result.get("output_bytes", result.get("output_hash", "ok").encode())
-                if isinstance(output, str):
-                    output = output.encode()
-                async with session.put(f"{http_url}/blobs", data=output) as r:
-                    upload_resp = await r.json()
-                    output_hash = upload_resp.get("hash", hashlib.sha256(output).hexdigest())
-
-                status = "success"
-                exit_code = 0
-                stderr = ""
-        except Exception as e:
-            status = "error"
-            output_hash = ""
-            exit_code = 1
-            stderr = str(e)[:4096]
-
+    async def _send_result(
+        self, task_id: str, token: str, status: str, output_hash: str, exit_code: int, stderr: str
+    ):
         assert self._ws is not None
         await self._ws.send_json(
             {
                 "type": "task_result",
                 "session_id": self._session_id,
-                "task_id": task["id"],
-                "assignment_token": task.get("assignment_token", ""),
+                "task_id": task_id,
+                "assignment_token": token,
                 "status": status,
                 "result": {
                     "output_hash": output_hash,
@@ -188,17 +175,70 @@ class WorkerClient:
             }
         )
 
-    async def disconnect(self):
-        """Send bye and close."""
-        self._running = False
-        if self._ws and not self._ws.closed:
-            await self._ws.send_json(
-                {
-                    "type": "bye",
-                    "session_id": self._session_id,
-                    "reason": "user_disconnect",
-                }
+    # ── Message handling ──────────────────────────────────
+
+    async def _handle_message(self, msg: dict):
+        msg_type = msg.get("type", "")
+        if msg_type == "heartbeat_ack":
+            pass
+        elif msg_type in ("task_assign", "keepalive"):
+            if msg_type == "task_assign":
+                await self._ws.send_json(
+                    {
+                        "type": "task_accept",
+                        "session_id": self._session_id,
+                        "task_id": msg["task"]["id"],
+                        "assignment_token": msg["task"]["assignment_token"],
+                    }
+                )
+            await self._execute_task(msg["task"])
+
+    # ── Task execution ────────────────────────────────────
+
+    async def _execute_task(self, task: dict):
+        """Download blobs, execute in sandbox, upload result, submit."""
+        token = task.get("assignment_token", "")
+        try:
+            executable, input_data = await self._download_blobs(
+                task["payload"]["executable_hash"],
+                task["payload"]["input_hash"],
             )
-            await self._ws.close()
-        if self._session:
-            await self._session.close()
+            output, output_hash = await self._run_sandbox(executable, input_data)
+            status, exit_code, stderr = "success", 0, ""
+        except Exception as e:
+            output_hash = ""
+            status, exit_code, stderr = "error", 1, str(e)[:4096]
+
+        await self._send_result(task["id"], token, status, output_hash, exit_code, stderr)
+
+    async def _download_blobs(self, exec_hash: str, input_hash: str) -> tuple[bytes, bytes]:
+        """Download executable and input blobs from the coordinator."""
+        http_url = self._url.replace("ws://", "http://").replace("/worker/ws", "")
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{http_url}/blobs/{exec_hash}") as r:
+                executable = await r.read()
+            async with session.get(f"{http_url}/blobs/{input_hash}") as r:
+                input_data = await r.read()
+        return executable, input_data
+
+    async def _run_sandbox(self, executable: bytes, input_data: bytes) -> tuple[bytes, str]:
+        """Execute in the configured sandbox, return (output, output_hash)."""
+        http_url = self._url.replace("ws://", "http://").replace("/worker/ws", "")
+        result = await self._sandbox.execute(executable, input_data)
+        output = result.get("output_bytes", result.get("output_hash", "ok").encode())
+        if isinstance(output, str):
+            output = output.encode()
+        async with aiohttp.ClientSession() as session:
+            async with session.put(f"{http_url}/blobs", data=output) as r:
+                upload_resp = await r.json()
+                output_hash = upload_resp.get("hash", hashlib.sha256(output).hexdigest())
+        return output, output_hash
+
+
+# ── Default sandbox (mock, overridable) ─────────────────────
+
+
+def _default_sandbox() -> Sandbox:
+    from .sandbox import MockSandbox
+
+    return MockSandbox()

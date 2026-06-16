@@ -224,27 +224,12 @@ async def check_blob(hash_hex: str):
 
 
 @app.get("/")
-async def homepage(request: Request):
+async def homepage():
     """Serve the browser worker page."""
-    from fastapi.responses import HTMLResponse
+    from fastapi.responses import FileResponse
 
-    return HTMLResponse("""<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Scrapower Worker</title>
-</head>
-<body>
-  <h1 style="text-align:center;margin-top:40vh;color:#888;font-family:system-ui">
-    Scrapower Worker
-  </h1>
-  <script>
-    // Auto-detected by worker.js
-  </script>
-  <script type="module" src="/static/worker.js"></script>
-</body>
-</html>""")
+    index_path = Path(__file__).parent / "static" / "index.html"
+    return FileResponse(index_path)
 
 
 @app.get("/health")
