@@ -7,7 +7,7 @@ import os
 try:
     import tomllib
 except ImportError:
-    import tomli as tomllib
+    import tomli as tomllib  # type: ignore[no-redef]
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any

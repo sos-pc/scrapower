@@ -7,7 +7,7 @@ Used by: scheduler, ws_handler, http_handler, worker client, browser worker.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 # ──────────────────────────────────────────────────────────────
 # Worker → Coordinator
@@ -137,7 +137,7 @@ class ErrorMessage:
 # ──────────────────────────────────────────────────────────────
 
 # Map message type string → dataclass for deserialization
-_INCOMING: dict[str, type] = {
+_INCOMING: dict[str, Any] = {
     "hello": Hello,
     "capabilities": Capabilities,
     "task_accept": TaskAccept,
@@ -146,7 +146,7 @@ _INCOMING: dict[str, type] = {
     "bye": Bye,
 }
 
-_OUTGOING: dict[str, type] = {
+_OUTGOING: dict[str, Any] = {
     "session": SessionCreated,
     "task_assign": TaskAssign,
     "heartbeat_ack": HeartbeatAck,

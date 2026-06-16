@@ -168,6 +168,7 @@ class WorkerClient:
             exit_code = 1
             stderr = str(e)[:4096]
 
+        assert self._ws is not None
         await self._ws.send_json(
             {
                 "type": "task_result",

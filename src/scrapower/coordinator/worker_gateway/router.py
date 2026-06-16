@@ -18,16 +18,16 @@ task_manager = None  # set by coordinator lifespan
 @router.websocket("/worker/ws")
 async def worker_ws(ws: WebSocket):
     """Mode A: Persistent WebSocket connection."""
-    await handle_ws(ws, session_manager, task_manager)
+    await handle_ws(ws, session_manager, task_manager)  # type: ignore[arg-type]
 
 
 @router.post("/worker/pull")
 async def worker_pull(request: Request):
-    """Mode B: Ephemeral worker pulls a task."""
-    return await pull(request, session_manager)
+    """Mode B: Ephemeral HTTP pull."""
+    return await pull(request, session_manager)  # type: ignore[arg-type]
 
 
 @router.post("/worker/submit")
 async def worker_submit(request: Request):
-    """Mode B: Ephemeral worker submits a result."""
-    return await submit(request, session_manager)
+    """Worker submits a result via HTTP."""
+    return await submit(request, session_manager)  # type: ignore[arg-type]
