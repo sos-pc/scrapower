@@ -26,5 +26,5 @@ check: lint typecheck test
 
 # ── Build ───────────────────────────────────────────────
 build:
-	@cd worker-browser && npx esbuild src/index.ts --bundle --format=esm --outfile=../src/scrapower/coordinator/static/worker.js
-	@echo "✓ worker.js buildé"
+	@cd worker-browser && npm run build
+	@echo "✓ worker.js + sandbox_worker.js buildés"

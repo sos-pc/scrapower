@@ -229,93 +229,64 @@ async function executeGPU(inputBytes) {
 }
 
 // src/index.ts
-var SANDBOX_CODE = `
-// Web Worker sandbox \u2014 executes WASM modules.
-console.log("[scrapower:sandbox] ready");
-
-async function sha256(data) {
-  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
-  return Array.from(new Uint8Array(hashBuffer))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-self.onmessage = async function (e) {
-  if (e.data.type !== "execute") return;
-  const start = performance.now();
-  try {
-    const wasm = e.data.wasm;
-    const input = e.data.input;
-    const module = await WebAssembly.instantiate(wasm);
-    const memory = module.instance.exports.memory;
-    const compute = module.instance.exports.compute;
-    if (!compute) throw new Error("no compute export");
-
-    const inputBytes = new Uint8Array(input);
-    const memView = new Uint8Array(memory.buffer);
-    memView.set(inputBytes, 0);
-    const outOff = Math.ceil(inputBytes.length / 64) * 64;
-    const outSize = 4096;
-
-    compute(0, inputBytes.length, outOff, outSize);
-    const outputBytes = new Uint8Array(memView.slice(outOff, outOff + outSize));
-    const outputHash = await sha256(outputBytes);
-    const ms = Math.round(performance.now() - start);
-
-    self.postMessage({ type: "result", outputHash, outputBytes, durationMs: ms });
-  } catch (err) {
-    self.postMessage({
-      type: "result",
-      outputHash: "",
-      outputBytes: new Uint8Array(),
-      durationMs: Math.round(performance.now() - start),
-      error: err.message || String(err),
-    });
-  }
-};
-`;
-var sandboxURL = URL.createObjectURL(
-  new Blob([SANDBOX_CODE], { type: "application/javascript" })
-);
-var sandboxWorker = new Worker(sandboxURL);
+var sandboxCode = await fetch(
+  new URL("./sandbox_worker.js", import.meta.url)
+).then((r) => r.text());
+var sandboxBlob = new Blob([sandboxCode], { type: "application/javascript" });
+var sandboxWorker = new Worker(URL.createObjectURL(sandboxBlob));
 var BrowserWorker = class {
   ws = null;
   sessionId = "";
-  ui;
+  ui = createUI();
   active = true;
   stats = { tasks: 0, cpuMs: 0, dataBytes: 0 };
   hbInterval = 1e4;
   hbTimer = null;
-  url;
+  coordinatorUrl;
   constructor(wsUrl2) {
-    this.url = wsUrl2;
-    this.ui = createUI();
+    this.coordinatorUrl = wsUrl2;
     this.ui.onToggle((active) => {
       this.active = active;
     });
   }
+  // ── Lifecycle ──────────────────────────────────────────
   async start() {
     await this.connect();
     this.hbTimer = setInterval(() => this.heartbeat(), this.hbInterval);
     this.ui.update({ connected: true });
   }
+  async disconnect() {
+    if (this.hbTimer) clearInterval(this.hbTimer);
+    if (this.ws && !this.ws.closed) {
+      this.ws.send(
+        JSON.stringify({
+          type: "bye",
+          session_id: this.sessionId,
+          reason: "user_disconnect"
+        })
+      );
+      this.ws.close();
+    }
+  }
+  // ── Connection ─────────────────────────────────────────
   async connect() {
-    this.ws = new WebSocket(this.url);
+    this.ws = new WebSocket(this.coordinatorUrl);
     await new Promise((resolve, reject) => {
       this.ws.onopen = () => resolve();
       this.ws.onerror = () => reject(new Error("WebSocket connection failed"));
     });
-    console.log("[scrapower] connecting to", this.url);
+    const workerId = `browser-${Math.random().toString(36).slice(2, 10)}`;
+    console.log("[scrapower] connecting to", this.coordinatorUrl);
     this.ws.send(
       JSON.stringify({
         type: "hello",
         version: "2.1",
         mode: "persistent",
-        worker_id: `browser-${Math.random().toString(36).slice(2, 10)}`,
+        worker_id: workerId,
         auth: { method: "none" }
       })
     );
-    const sessionMsg = await this.receive();
+    const sessionMsg = await this.receiveOnce();
     this.sessionId = sessionMsg.session_id;
     this.hbInterval = sessionMsg.heartbeat_interval_ms || 1e4;
     console.log("[scrapower] connected, session:", this.sessionId);
@@ -338,11 +309,9 @@ var BrowserWorker = class {
       })
     );
     this.ws.onmessage = (e) => this.handleMessage(JSON.parse(e.data));
-    this.ws.onclose = () => {
-      this.ui.update({ connected: false });
-    };
+    this.ws.onclose = () => this.ui.update({ connected: false });
   }
-  receive() {
+  receiveOnce() {
     return new Promise((resolve) => {
       const handler = (e) => {
         this.ws.removeEventListener("message", handler);
@@ -364,6 +333,7 @@ var BrowserWorker = class {
       })
     );
   }
+  // ── Message handling ───────────────────────────────────
   async handleMessage(msg) {
     if (!this.active) return;
     if (msg.type === "task_assign" || msg.type === "keepalive") {
@@ -377,64 +347,61 @@ var BrowserWorker = class {
           })
         );
       }
-      console.log("[scrapower] task received:", msg.task.id);
       await this.executeTask(msg.task);
     }
   }
+  // ── Task execution ─────────────────────────────────────
   async executeTask(task) {
-    const httpUrl = this.url.replace("wss://", "https://").replace("ws://", "http://").replace("/worker/ws", "");
+    const httpUrl = this.httpUrl();
     try {
-      console.log(
-        "[scrapower] downloading input:",
-        task.payload.input_hash.slice(0, 8)
-      );
-      const inputResp = await fetch(
-        `${httpUrl}/blobs/${task.payload.input_hash}`
-      );
-      const input = await inputResp.arrayBuffer();
+      const input = await this.downloadBlob(httpUrl, task.payload.input_hash);
       const gpuRequired = task.resources_required?.gpu_required;
       if (gpuRequired && hasWebGPU()) {
-        console.log("[scrapower] \u26A1 GPU task:", task.id);
-        const gpuResult = await executeGPU(new Uint8Array(input));
-        await this.submitResult(task, gpuResult.outputBytes, gpuResult);
-        return;
+        return await this.executeGpuTask(task, input);
       }
-      console.log(
-        "[scrapower] downloading wasm:",
-        task.payload.executable_hash.slice(0, 8)
-      );
-      const execResp = await fetch(
-        `${httpUrl}/blobs/${task.payload.executable_hash}`
-      );
-      const wasm = await execResp.arrayBuffer();
-      const result = await new Promise((resolve) => {
-        const handler = (e) => {
-          sandboxWorker.removeEventListener("message", handler);
-          resolve(e.data);
-        };
-        sandboxWorker.addEventListener("message", handler);
-        sandboxWorker.postMessage({ type: "execute", wasm, input }, [
-          wasm,
-          input
-        ]);
-      });
-      await this.submitResult(task, result.outputBytes, result);
+      return await this.executeCpuTask(task, input, httpUrl);
     } catch (err) {
-      console.error("Browser worker: task execution failed", err);
+      console.error("[scrapower] task execution failed:", err.message || err);
     }
   }
+  async executeGpuTask(task, input) {
+    console.log("[scrapower] \u26A1 GPU task:", task.id);
+    const result = await executeGPU(new Uint8Array(input));
+    await this.submitResult(task, result.outputBytes, result);
+  }
+  async executeCpuTask(task, input, httpUrl) {
+    console.log("[scrapower] CPU task:", task.id);
+    const wasm = await this.downloadBlob(httpUrl, task.payload.executable_hash);
+    const result = await new Promise((resolve) => {
+      const handler = (e) => {
+        sandboxWorker.removeEventListener("message", handler);
+        resolve(e.data);
+      };
+      sandboxWorker.addEventListener("message", handler);
+      sandboxWorker.postMessage({ type: "execute", wasm, input }, [
+        wasm,
+        input
+      ]);
+    });
+    await this.submitResult(task, result.outputBytes, result);
+  }
+  // ── Helpers ────────────────────────────────────────────
+  httpUrl() {
+    return this.coordinatorUrl.replace("wss://", "https://").replace("ws://", "http://").replace("/worker/ws", "");
+  }
+  async downloadBlob(httpUrl, hash) {
+    console.log("[scrapower] downloading blob:", hash.slice(0, 8));
+    const resp = await fetch(`${httpUrl}/blobs/${hash}`);
+    return resp.arrayBuffer();
+  }
   async submitResult(task, outputBytes, result) {
-    const httpUrl = this.url.replace("wss://", "https://").replace("ws://", "http://").replace("/worker/ws", "");
+    const httpUrl = this.httpUrl();
     console.log("[scrapower] uploading result");
     const putResp = await fetch(`${httpUrl}/blobs`, {
       method: "PUT",
       body: outputBytes
     });
     const { hash: outputHash } = await putResp.json();
-    console.log(
-      "[scrapower] submitting result, status:",
-      result.error ? "error" : "success"
-    );
     this.ws.send(
       JSON.stringify({
         type: "task_result",
@@ -462,20 +429,7 @@ var BrowserWorker = class {
       dataMb: this.stats.dataBytes / (1024 * 1024)
     });
   }
-  async disconnect() {
-    if (this.hbTimer) clearInterval(this.hbTimer);
-    if (this.ws && !this.ws.closed) {
-      this.ws.send(
-        JSON.stringify({
-          type: "bye",
-          session_id: this.sessionId,
-          reason: "user_disconnect"
-        })
-      );
-      this.ws.close();
-    }
-  }
 };
 var wsUrl = window.SCRAPOWER_WS_URL || (location.protocol === "https:" ? `wss://${location.host}/worker/ws` : `ws://${location.host}/worker/ws`);
-var worker = new BrowserWorker(wsUrl);
-worker.start();
+var instance = new BrowserWorker(wsUrl);
+instance.start();

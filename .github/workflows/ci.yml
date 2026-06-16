@@ -36,7 +36,7 @@ jobs:
       - name: Build browser worker
         run: |
           cd worker-browser
-          npx esbuild src/index.ts --bundle --format=esm --outfile=../src/scrapower/coordinator/static/worker.js
+          npm run build
 
       - name: Test
         run: pytest tests/ -q --ignore=tests/test_distribution.py --ignore=tests/test_gpu.py
