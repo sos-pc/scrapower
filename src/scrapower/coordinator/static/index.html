@@ -8,10 +8,35 @@
             body {
                 margin: 0;
                 background: #0d1117;
+                color: #c9d1d9;
+                font-family: system-ui;
+            }
+            #status-bar {
+                position: fixed;
+                top: 10px;
+                right: 10px;
+                background: #161b22;
+                border: 1px solid #30363d;
+                border-radius: 6px;
+                padding: 8px 14px;
+                font-size: 13px;
+            }
+            #status-bar .connected {
+                color: #3fb950;
+            }
+            #status-bar .disconnected {
+                color: #8b949e;
+            }
+            #gh-status {
+                font-weight: 500;
             }
         </style>
     </head>
     <body>
+        <div id="status-bar">
+            GitHub:
+            <span id="gh-status" class="disconnected">not connected</span>
+        </div>
         <h1
             style="
                 text-align: center;
@@ -25,6 +50,7 @@
         </h1>
         <div style="text-align: center; margin-top: 20px">
             <a
+                id="gh-link"
                 href="/auth/github/login"
                 style="
                     display: inline-block;
@@ -41,5 +67,18 @@
             </a>
         </div>
         <script type="module" src="/static/worker.js"></script>
+        <script>
+            // Check connection status from URL params
+            const params = new URLSearchParams(window.location.search);
+            if (params.get("github") === "connected") {
+                document.getElementById("gh-status").textContent = "connected";
+                document.getElementById("gh-status").className = "connected";
+                document.getElementById("gh-link").textContent =
+                    "⬡ GitHub connected";
+                document.getElementById("gh-link").style.background = "#238636";
+                // Clean URL
+                window.history.replaceState({}, "", "/");
+            }
+        </script>
     </body>
 </html>
