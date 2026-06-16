@@ -1,6 +1,6 @@
 """Task lifecycle management.
 
-States: PENDING → QUEUED → ASSIGNED → SUBMITTED → VALIDATED | FAILED | TIMEOUT
+States: PENDING → QUEUED → ASSIGNED → VALIDATED | FAILED | TIMEOUT
 
 Each task has a unique assignment_token per assignment attempt to prevent races.
 """
@@ -19,7 +19,6 @@ class TaskState(str, Enum):
     PENDING = "pending"
     QUEUED = "queued"
     ASSIGNED = "assigned"
-    SUBMITTED = "submitted"
     VALIDATED = "validated"
     FAILED = "failed"
     TIMEOUT = "timeout"
@@ -30,12 +29,11 @@ VALID_TRANSITIONS: dict[TaskState, set[TaskState]] = {
     TaskState.PENDING: {TaskState.QUEUED, TaskState.CANCELLED},
     TaskState.QUEUED: {TaskState.ASSIGNED, TaskState.CANCELLED},
     TaskState.ASSIGNED: {
-        TaskState.SUBMITTED,
+        TaskState.VALIDATED,  # worker completed successfully
         TaskState.TIMEOUT,
         TaskState.FAILED,
         TaskState.CANCELLED,
     },
-    TaskState.SUBMITTED: {TaskState.VALIDATED, TaskState.FAILED},
     TaskState.TIMEOUT: {TaskState.QUEUED, TaskState.FAILED},  # requeue if retries remain
     TaskState.VALIDATED: set(),  # terminal
     TaskState.FAILED: set(),  # terminal
@@ -73,7 +71,7 @@ class Task:
 
 
 # --- Task lifecycle ---
-# States: PENDING → QUEUED → ASSIGNED → SUBMITTED → VALIDATED/FAILED/TIMEOUT
+# States: PENDING → QUEUED → ASSIGNED → VALIDATED/FAILED/TIMEOUT
 # TIMEOUT can loop back to QUEUED if retries remain (max 3).
 # Each assignment has a unique token to prevent double-execution.
 class TaskManager:
@@ -249,8 +247,8 @@ class TaskManager:
         """Mark a task as validated and store the output hash."""
         now = time.time()
         await self._db.execute(
-            "UPDATE tasks SET state = ?, output_hash = ?, updated_at = ? WHERE id = ?",
-            (TaskState.VALIDATED, output_hash, str(now), task_id),
+            "UPDATE tasks SET output_hash = ?, updated_at = ? WHERE id = ?",
+            (output_hash, str(now), task_id),
         )
         await self._db.commit()
-        return self._db.total_changes > 0
+        return await self.transition(task_id, TaskState.VALIDATED)
