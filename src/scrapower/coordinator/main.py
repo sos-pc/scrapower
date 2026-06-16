@@ -175,6 +175,16 @@ static_dir = Path(__file__).parent / "static"
 static_dir.mkdir(exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
+
+# Serve Service Worker from root (required for scope "/")
+@app.get("/sw.js")
+async def service_worker():
+    from fastapi.responses import FileResponse
+
+    sw_path = static_dir / "sw.js"
+    return FileResponse(sw_path, media_type="application/javascript")
+
+
 # Client API router needs task_manager from app.state
 client_api_router = create_client_router(require_auth)
 app.include_router(client_api_router)

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --outfile=../src/scrapower/coordinator/static/worker.js --format=esm && esbuild src/sandbox_worker.ts --outfile=../src/scrapower/coordinator/static/sandbox_worker.js --format=esm",
+    "build": "esbuild src/index.ts --bundle --outfile=../src/scrapower/coordinator/static/worker.js --format=esm && esbuild src/sandbox_worker.ts --outfile=../src/scrapower/coordinator/static/sandbox_worker.js --format=esm && esbuild src/sw.ts --outfile=../src/scrapower/coordinator/static/sw.js --format=esm",
     "dev": "esbuild src/index.ts --bundle --outfile=../src/scrapower/coordinator/static/worker.js --format=esm --watch"
   },
   "devDependencies": {

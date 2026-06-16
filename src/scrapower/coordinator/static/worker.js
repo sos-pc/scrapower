@@ -244,7 +244,8 @@ var BrowserWorker = class {
   hbTimer = null;
   coordinatorUrl;
   pyodide = null;
-  // lazy-loaded Pyodide instance
+  reconnectAttempts = 0;
+  reconnectTimer = null;
   constructor(wsUrl2) {
     this.coordinatorUrl = wsUrl2;
     this.ui.onToggle((active) => {
@@ -253,11 +254,20 @@ var BrowserWorker = class {
   }
   // ── Lifecycle ──────────────────────────────────────────
   async start() {
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) {
+        console.log("[scrapower] tab hidden, pausing UI updates");
+      } else {
+        console.log("[scrapower] tab visible");
+      }
+    });
     await this.connect();
     this.hbTimer = setInterval(() => this.heartbeat(), this.hbInterval);
     this.ui.update({ connected: true });
   }
   async disconnect() {
+    this.active = false;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.hbTimer) clearInterval(this.hbTimer);
     if (this.ws && !this.ws.closed) {
       this.ws.send(
@@ -311,7 +321,13 @@ var BrowserWorker = class {
       })
     );
     this.ws.onmessage = (e) => this.handleMessage(JSON.parse(e.data));
-    this.ws.onclose = () => this.ui.update({ connected: false });
+    this.ws.onclose = () => {
+      this.reconnectAttempts = 0;
+      if (this.active) {
+        this.ui.update({ connected: false });
+        this.scheduleReconnect();
+      }
+    };
   }
   receiveOnce() {
     return new Promise((resolve) => {
@@ -321,6 +337,26 @@ var BrowserWorker = class {
       };
       this.ws.addEventListener("message", handler);
     });
+  }
+  scheduleReconnect() {
+    if (!this.active || this.reconnectTimer) return;
+    const delay = Math.min(2e3 * Math.pow(2, this.reconnectAttempts), 6e4);
+    console.log(
+      `[scrapower] reconnecting in ${delay / 1e3}s (attempt ${this.reconnectAttempts + 1})`
+    );
+    this.reconnectTimer = setTimeout(async () => {
+      this.reconnectTimer = null;
+      this.reconnectAttempts++;
+      try {
+        await this.connect();
+        this.reconnectAttempts = 0;
+        this.ui.update({ connected: true });
+        console.log("[scrapower] reconnected");
+      } catch (err) {
+        console.error("[scrapower] reconnect failed:", err.message || err);
+        this.scheduleReconnect();
+      }
+    }, delay);
   }
   heartbeat() {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
@@ -472,6 +508,9 @@ var BrowserWorker = class {
     });
   }
 };
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch((err) => console.warn("[scrapower] SW registration failed:", err));
+}
 var wsUrl = window.SCRAPOWER_WS_URL || (location.protocol === "https:" ? `wss://${location.host}/worker/ws` : `ws://${location.host}/worker/ws`);
 var instance = new BrowserWorker(wsUrl);
 instance.start();
