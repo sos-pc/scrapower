@@ -1048,7 +1048,7 @@ var BrowserWorker = class {
   async submitResult(task, outputBytes, result) {
     const httpUrl = this.httpUrl();
     console.log("[scrapower] uploading result");
-    const putResp = await fetch(`${httpUrl}/blobs`, {
+    const putResp = await fetch(`${httpUrl}/blobs?assignment_token=${task.assignment_token || ""}`, {
       method: "PUT",
       body: outputBytes
     });

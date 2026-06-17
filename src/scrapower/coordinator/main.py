@@ -25,7 +25,7 @@ from .db import init_db
 from .domain import TaskService
 from .embedded_worker import EmbeddedWorker
 from .scheduler import Scheduler
-from .security import rate_limit, require_auth
+from .security import rate_limit, require_auth, verify_api_key
 from .task_manager import TaskManager
 from .worker_gateway.router import router as worker_router
 from .worker_gateway.session import SessionManager
@@ -149,6 +149,17 @@ async def lifespan(app: FastAPI):
         log.info("scrapower coordinator shut down")
 
 
+async def _verify_assignment_token(db, token: str) -> bool:
+    """Check if an assignment_token is valid (belongs to an ASSIGNED task)."""
+    if not token:
+        return False
+    cursor = await db.execute(
+        "SELECT id FROM tasks WHERE current_assignment_token = ? AND state = ?",
+        (token, "assigned"),
+    )
+    row = await cursor.fetchone()
+    return row is not None
+
 async def _purge_orphaned_assignments(db, log) -> int:
     """Reset ASSIGNED tasks back to QUEUED at startup — they're orphaned after restart."""
     import time as _time
@@ -233,9 +244,17 @@ log = structlog.get_logger()
 
 
 @app.put("/blobs", status_code=200)
-async def upload_blob(request: Request, _rate=Depends(rate_limit), _auth=Depends(require_auth)):
-    """Upload a blob. Returns its content hash."""
+async def upload_blob(request: Request, _rate=Depends(rate_limit)):
+    """Upload a blob. Workers use assignment_token, admins use API key."""
     body = await request.body()
+    assignment_token = request.query_params.get("assignment_token", "")
+    is_worker = assignment_token and await _verify_assignment_token(db, assignment_token)
+    is_admin = verify_api_key(request)
+    if not is_worker and not is_admin:
+        return JSONResponse(
+            {"error": "UNAUTHORIZED", "hint": "Use API key or assignment_token"},
+            status_code=401,
+        )
     if len(body) > config.max_blob_size_mb * 1024 * 1024:
         return JSONResponse(
             {"error": "PAYLOAD_TOO_LARGE", "max_size_mb": config.max_blob_size_mb},

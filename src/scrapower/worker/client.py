@@ -204,7 +204,7 @@ class WorkerClient:
                 task["payload"]["executable_hash"],
                 task["payload"]["input_hash"],
             )
-            output, output_hash = await self._run_sandbox(executable, input_data)
+            output, output_hash = await self._run_sandbox(executable, input_data, task.get("assignment_token", ""))
             status, exit_code, stderr = "success", 0, ""
         except Exception as e:
             output_hash = ""
@@ -222,13 +222,14 @@ class WorkerClient:
                 input_data = await r.read()
         return executable, input_data
 
-    async def _run_sandbox(self, executable: bytes, input_data: bytes) -> tuple[bytes, str]:
+    async def _run_sandbox(self, executable: bytes, input_data: bytes, assignment_token: str = "") -> tuple[bytes, str]:
         """Execute in the configured sandbox, return (output, output_hash)."""
         http_url = self._url.replace("ws://", "http://").replace("/worker/ws", "")
         result = await self._sandbox.execute(executable, input_data)
         output: bytes = result.get("output_bytes") or result.get("output_hash", "ok").encode()
         async with aiohttp.ClientSession() as session:
-            async with session.put(f"{http_url}/blobs", data=output) as r:
+            token_param = f"?assignment_token={assignment_token}" if assignment_token else ""
+            async with session.put(f"{http_url}/blobs{token_param}", data=output) as r:
                 upload_resp = await r.json()
                 output_hash = upload_resp.get("hash", hashlib.sha256(output).hexdigest())
         return output, output_hash
