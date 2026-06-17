@@ -1,17 +1,22 @@
-.PHONY: deploy test lint typecheck build
+.PHONY: deploy test lint typecheck build docker-build docker-up docker-down docker-logs
 
-# ── Déploiement production ──────────────────────────────
-deploy: build
-	scp -i ~/.ssh/clouscard-ghost.key src/scrapower/coordinator/static/worker.js ubuntu@130.110.242.56:~/scrapower/scrapower/coordinator/static/
-	scp -i ~/.ssh/clouscard-ghost.key src/scrapower/coordinator/*.py ubuntu@130.110.242.56:~/scrapower/scrapower/coordinator/
-	scp -i ~/.ssh/clouscard-ghost.key src/scrapower/coordinator/api/*.py ubuntu@130.110.242.56:~/scrapower/scrapower/coordinator/api/
-	ssh -i ~/.ssh/clouscard-ghost.key ubuntu@130.110.242.56 "kill \$$(pgrep -f scrapower.coordinator | head -1) 2>/dev/null; sleep 2; cd ~/scrapower && SCRAPOWER_HOST=0.0.0.0 SCRAPOWER_API_KEY=sp-secure-key-2026 nohup .venv/bin/python -m scrapower.coordinator.main < /dev/null > scrapower.log 2>&1 & disown"
-	@sleep 4
+# ── Déploiement production ─────────────────────────────────────
+SSH_KEY := ~/.ssh/clouscard-ghost.key
+SERVER  := ubuntu@130.110.242.56
+
+deploy: build docker-build
+	scp -i $(SSH_KEY) docker-compose.yml .env $(SERVER):~/scrapower/
+	scp -i $(SSH_KEY) Dockerfile $(SERVER):~/scrapower/
+	scp -i $(SSH_KEY) pyproject.toml $(SERVER):~/scrapower/
+	scp -r -i $(SSH_KEY) src/ $(SERVER):~/scrapower/
+	scp -r -i $(SSH_KEY) worker-browser/ $(SERVER):~/scrapower/
+	ssh -i $(SSH_KEY) $(SERVER) "cd ~/scrapower && docker compose down 2>/dev/null; docker compose up -d --build"
+	@sleep 5
 	@curl -sk https://scrapower.talos-int.com/health
 	@echo ""
 	@echo "✓ Déployé — https://scrapower.talos-int.com"
 
-# ── Qualité ─────────────────────────────────────────────
+# ── Qualité ────────────────────────────────────────────────────
 test:
 	.venv/Scripts/python.exe -m pytest tests/ -q --ignore=tests/test_distribution.py --ignore=tests/test_gpu.py
 
@@ -24,7 +29,20 @@ typecheck:
 check: lint typecheck test
 	@echo "✓ Tout est propre"
 
-# ── Build ───────────────────────────────────────────────
+# ── Build ──────────────────────────────────────────────────────
 build:
 	@cd worker-browser && npm run build
 	@echo "✓ worker.js + sandbox_worker.js buildés"
+
+# ── Docker (local dev) ─────────────────────────────────────────
+docker-build:
+	docker build -t scrapower .
+
+docker-up:
+	docker compose up -d --build
+
+docker-down:
+	docker compose down
+
+docker-logs:
+	docker compose logs -f

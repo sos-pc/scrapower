@@ -1,20 +1,17 @@
-# docker-compose.yml — Scrapower coordinator + optional workers
+# docker-compose.yml — Scrapower coordinator
+# Deploy: docker compose up -d --build
+# Logs:   docker compose logs -f
 
 services:
   coordinator:
     build: .
-    ports:
-      - "8777:8777"
-    volumes:
-      - scrapower_data:/app/data
+    network_mode: host
     restart: unless-stopped
-
-  # Optional: additional local workers (uncomment to add more)
-  # worker-1:
-  #   build: .
-  #   command: python -m scrapower.cli.worker_standalone --coordinator ws://coordinator:8777/worker/ws
-  #   depends_on:
-  #     - coordinator
-
-volumes:
-  scrapower_data:
+    volumes:
+      # Mount host data directory (preserves existing DB on migration)
+      - ./data:/app/data
+    environment:
+      - SCRAPOWER_HOST=0.0.0.0
+      - SCRAPOWER_DATA_DIR=/app/data
+    env_file:
+      - .env
