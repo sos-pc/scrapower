@@ -183,6 +183,7 @@ class WorkerClient:
             pass
         elif msg_type in ("task_assign", "keepalive"):
             if msg_type == "task_assign":
+                assert self._ws is not None
                 await self._ws.send_json(
                     {
                         "type": "task_accept",

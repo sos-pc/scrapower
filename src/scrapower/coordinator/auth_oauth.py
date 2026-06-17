@@ -190,7 +190,7 @@ async def github_callback(request: Request):
             )
         await db.commit()
 
-    return RedirectResponse(f"/?github=connected")
+    return RedirectResponse("/?github=connected")
 
 
 @router.delete("/github/revoke")

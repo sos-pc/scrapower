@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import WebSocket, WebSocketDisconnect
 
@@ -149,7 +149,7 @@ async def handle_ws(
                 await ws.send_json(
                     to_dict(
                         HeartbeatAck(
-                            lease_renewed_until=datetime.now(timezone.utc).isoformat(),
+                            lease_renewed_until=datetime.now(UTC).isoformat(),
                         )
                     )
                 )
