@@ -102,7 +102,7 @@ def is_valid_blob_hash(hash_hex: str) -> bool:
 # Content Security Policy (reference only — served via Caddy in production)
 CSP_HEADER = (
     "default-src 'self'; "
-    "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+    "script-src ""self"" ""unsafe-inline"" blob: https://cdn.jsdelivr.net; worker-src ""self"" blob:; "
     "connect-src 'self' wss: ws: https://cdn.jsdelivr.net; "
     "style-src 'self' 'unsafe-inline'; "
     "img-src 'self' data:; "
