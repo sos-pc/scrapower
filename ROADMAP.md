@@ -25,6 +25,7 @@
 - [x] **Harvester GitHub Actions** — workers 7 GB RAM, 6h max
 - [x] **Dashboard** — endpoint `/stats` avec capacité, workers, throughput
 - [x] **Sécurité** — audit complet 25 vulnérabilités, 22 corrigées
+- [x] **Vérification** — mode "challenge" (10% double-exécution), "trust" (défaut)
 
 ---
 

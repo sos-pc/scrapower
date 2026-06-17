@@ -48,7 +48,7 @@ class Config:
     keepalive_duration_sec: int = 2
 
     # Verification
-    default_verification_mode: str = "trust"
+    default_verification_mode: str = "trust"  # "trust" (no check) | "challenge" (10% double-exec) | "redundant" (100% double-exec)
 
     # Logging
     log_level: str = "INFO"

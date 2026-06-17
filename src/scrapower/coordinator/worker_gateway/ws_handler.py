@@ -182,7 +182,12 @@ async def handle_ws(
                                 )
                             )
                             continue
-                        await task_service.complete(msg["task_id"], output_hash, token)
+                        # Check if this is a challenged task
+                        resolved = await task_service._tm.resolve_challenge(
+                            msg["task_id"], token, output_hash
+                        )
+                        if resolved:
+                            await task_service.complete(msg["task_id"], output_hash, token)
 
             elif msg_type == "heartbeat":
                 # Rate limit: max 1 heartbeat per 2 seconds
