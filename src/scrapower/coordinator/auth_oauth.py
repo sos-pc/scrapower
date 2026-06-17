@@ -10,6 +10,7 @@ Flow:
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import secrets
 import time
@@ -31,26 +32,27 @@ COORDINATOR_URL = ""
 # CSRF state storage (in-memory, valid for 10 minutes)
 _oauth_states: dict[str, float] = {}
 
-# Minimal worker workflow (embedded in code, no external files needed)
+# Worker workflow YAML — uses heredoc (no shell escaping, proper YAML indentation)
 _WORKER_WORKFLOW_YML = """name: Scrapower Worker
 on:
   workflow_dispatch:
     inputs:
       coordinator_url:
-        description: "Coordinator URL"
+        description: 'Coordinator URL'
         required: true
-        default: "https://scrapower.talos-int.com"
+        default: 'https://scrapower.talos-int.com'
       worker_id:
-        description: "Worker ID"
+        description: 'Worker ID'
         required: false
-        default: "gh-actions"
+        default: 'gh-actions'
 jobs:
   worker:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
       - uses: actions/setup-python@v5
-        with: {python-version: "3.12"}
+        with:
+          python-version: '3.12'
       - name: Install
         run: pip install aiohttp wasmtime
       - name: Run Worker
@@ -58,48 +60,64 @@ jobs:
           COORDINATOR_URL: ${{ inputs.coordinator_url }}
           WORKER_ID: ${{ inputs.worker_id }}
         run: |
-          python -c "
-import asyncio, aiohttp, os, sys, uuid, hashlib
-C=os.environ['COORDINATOR_URL'].replace('https://','wss://').replace('http://','ws://')
-if not C.endswith('/worker/ws'):C=C.rstrip('/')+'/worker/ws'
-W=os.environ.get('WORKER_ID',f'gh-{uuid.uuid4().hex[:8]}')
-async def m():
-    async with aiohttp.ClientSession() as s:
-        async with s.ws_connect(C) as ws:
-            await ws.send_json({'type':'hello','version':'2.1','mode':'persistent','worker_id':W,'auth':{'method':'none'}})
-            msg=await ws.receive_json()
-            if msg['type']!='session':return
-            sid=msg['session_id'];hb=msg.get('heartbeat_interval_ms',10000)//1000
-            await ws.send_json({'type':'capabilities','session_id':sid,'payload':{'runtimes':['wasm'],'resources':{'cpu_cores':2,'ram_mb':7168,'gpu':{'supported':False}},'lifecycle':{'mode':'ephemeral','max_lifetime_sec':21600},'verification':{'can_challenge':False},'network':{'connectivity':'outgoing_only'},'limits':{'max_task_duration_ms':300000,'max_concurrent_tasks':1}}})
-            nxt=asyncio.get_event_loop().time()+hb
-            while True:
-                now=asyncio.get_event_loop().time()
-                if now>=nxt:
-                    await ws.send_json({'type':'heartbeat','session_id':sid,'current_load_pct':0,'tasks_in_progress':0,'uptime_sec':0,'expected_remaining_sec':None})
-                    nxt=now+hb
-                try:msg=await asyncio.wait_for(ws.receive_json(),timeout=1.0)
-                except asyncio.TimeoutError:continue
-                except Exception:break
-                mt=msg.get('type','')
-                if mt in('task_assign','keepalive'):
-                    if mt=='task_assign':
-                        await ws.send_json({'type':'task_accept','session_id':sid,'task_id':msg['task']['id'],'assignment_token':msg['task']['assignment_token']})
-                    H=C.replace('ws://','http://').replace('/worker/ws','')
-                    try:
-                        async with aiohttp.ClientSession() as s2:
-                            async with s2.get(f'{H}/blobs/{msg[\"task\"][\"payload\"][\"executable_hash\"]}') as r:executable=await r.read()
-                            async with s2.get(f'{H}/blobs/{msg[\"task\"][\"payload\"][\"input_hash\"]}') as r:inp=await r.read()
-                        try:
-                            import wasmtime;m=wasmtime.Module(executable);inst=wasmtime.Instance(m,[]);mem=inst.exports['memory'];mem.write_bytes(0,inp);inst.exports['compute'](0,len(inp),1024,4096);out=bytes(mem.read_bytes(1024,4096))
-                        except:out=inp[:100]
-                        oh=hashlib.sha256(out).hexdigest()
-                        async with aiohttp.ClientSession() as s3:
-                            async with s3.put(f'{H}/blobs',data=out) as r:pass
-                        status,exit_code,stderr='success',0,''
-                    except Exception as e:oh,status,exit_code,stderr='','error',1,str(e)[:4096]
-                    await ws.send_json({'type':'task_result','session_id':sid,'task_id':msg['task']['id'],'assignment_token':msg['task'].get('assignment_token',''),'status':status,'result':{'output_hash':oh,'execution_metadata':{'duration_ms':0,'exit_code':exit_code,'stderr':stderr}},'verification_data':None})
-asyncio.run(m())
-"
+          python << 'PYEOF'
+          import asyncio, aiohttp, os, uuid, hashlib
+          C = os.environ['COORDINATOR_URL'].replace('https://', 'wss://').replace('http://', 'ws://')
+          if not C.endswith('/worker/ws'):
+              C = C.rstrip('/') + '/worker/ws'
+          W = os.environ.get('WORKER_ID', f'gh-{uuid.uuid4().hex[:8]}')
+          async def main():
+              async with aiohttp.ClientSession() as s:
+                  async with s.ws_connect(C) as ws:
+                      await ws.send_json({'type': 'hello', 'version': '2.1', 'mode': 'persistent', 'worker_id': W, 'auth': {'method': 'none'}})
+                      msg = await ws.receive_json()
+                      if msg['type'] != 'session':
+                          return
+                      sid = msg['session_id']
+                      hb = msg.get('heartbeat_interval_ms', 10000) // 1000
+                      await ws.send_json({'type': 'capabilities', 'session_id': sid, 'payload': {'runtimes': ['wasm'], 'resources': {'cpu_cores': 2, 'ram_mb': 7168, 'gpu': {'supported': False}}, 'lifecycle': {'mode': 'ephemeral', 'max_lifetime_sec': 21600}, 'verification': {'can_challenge': False}, 'network': {'connectivity': 'outgoing_only'}, 'limits': {'max_task_duration_ms': 300000, 'max_concurrent_tasks': 1}}})
+                      nxt = asyncio.get_event_loop().time() + hb
+                      while True:
+                          now = asyncio.get_event_loop().time()
+                          if now >= nxt:
+                              await ws.send_json({'type': 'heartbeat', 'session_id': sid, 'current_load_pct': 0, 'tasks_in_progress': 0, 'uptime_sec': 0, 'expected_remaining_sec': None})
+                              nxt = now + hb
+                          try:
+                              msg = await asyncio.wait_for(ws.receive_json(), timeout=1.0)
+                          except asyncio.TimeoutError:
+                              continue
+                          except Exception:
+                              break
+                          mt = msg.get('type', '')
+                          if mt in ('task_assign', 'keepalive'):
+                              if mt == 'task_assign':
+                                  await ws.send_json({'type': 'task_accept', 'session_id': sid, 'task_id': msg['task']['id'], 'assignment_token': msg['task']['assignment_token']})
+                              H = C.replace('ws://', 'http://').replace('/worker/ws', '')
+                              try:
+                                  async with aiohttp.ClientSession() as s2:
+                                      async with s2.get(H + '/blobs/' + msg['task']['payload']['executable_hash']) as r:
+                                          executable = await r.read()
+                                      async with s2.get(H + '/blobs/' + msg['task']['payload']['input_hash']) as r:
+                                          inp = await r.read()
+                                  try:
+                                      import wasmtime
+                                      m = wasmtime.Module(executable)
+                                      inst = wasmtime.Instance(m, [])
+                                      mem = inst.exports['memory']
+                                      mem.write_bytes(0, inp)
+                                      inst.exports['compute'](0, len(inp), 1024, 4096)
+                                      out = bytes(mem.read_bytes(1024, 4096))
+                                  except Exception:
+                                      out = inp[:100]
+                                  oh = hashlib.sha256(out).hexdigest()
+                                  async with aiohttp.ClientSession() as s3:
+                                      await s3.put(H + '/blobs', data=out)
+                                  status, exit_code, stderr = 'success', 0, ''
+                              except Exception as e:
+                                  oh, status, exit_code, stderr = '', 'error', 1, str(e)[:4096]
+                              await ws.send_json({'type': 'task_result', 'session_id': sid, 'task_id': msg['task']['id'], 'assignment_token': msg['task'].get('assignment_token', ''), 'status': status, 'result': {'output_hash': oh, 'execution_metadata': {'duration_ms': 0, 'exit_code': exit_code, 'stderr': stderr}}, 'verification_data': None})
+          asyncio.run(main())
+          PYEOF
 """
 
 
@@ -181,7 +199,6 @@ async def github_callback(request: Request):
                VALUES (?, 'github', ?, ?)""",
             (visitor_id, encrypted, str(time.time())),
         )
-        # Also store the repo name for the harvester
         if repo_name:
             await db.execute(
                 """INSERT OR REPLACE INTO provider_tokens (visitor_id, provider, token_encrypted, created_at)
@@ -274,27 +291,28 @@ async def _ensure_worker_repo(token: str, username: str) -> str | None:
             headers=headers,
         ) as r:
             if r.status == 200:
-                # Repo exists, ensure workflow file is up to date
                 await _upsert_workflow(session, headers, full_name)
                 return full_name
             elif r.status != 404:
-                return None  # Unexpected error
+                return None
 
-        # Create repo
+        # Create repo with auto_init=True so it has a branch
         async with session.post(
             "https://api.github.com/user/repos",
             json={
                 "name": repo_name,
                 "description": "Scrapower distributed worker",
                 "private": False,
-                "auto_init": False,
+                "auto_init": True,
             },
             headers=headers,
         ) as r:
             if r.status not in (200, 201):
                 return None
 
-        # Push workflow file
+        # Wait for GitHub to initialize the repo
+        await asyncio.sleep(2)
+
         await _upsert_workflow(session, headers, full_name)
         return full_name
 
@@ -307,7 +325,6 @@ async def _upsert_workflow(
     """Create or update the worker workflow file in the repo."""
     content_b64 = base64.b64encode(_WORKER_WORKFLOW_YML.encode()).decode()
 
-    # Check if file exists (for SHA)
     sha = None
     async with session.get(
         f"https://api.github.com/repos/{repo}/contents/.github/workflows/scrapower-worker.yml",

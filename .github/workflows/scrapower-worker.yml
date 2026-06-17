@@ -30,47 +30,47 @@ jobs:
           COORDINATOR_URL: ${{ inputs.coordinator_url }}
           WORKER_ID: ${{ inputs.worker_id }}
         run: |
-          python -c "
-import asyncio, aiohttp, os, sys, uuid, hashlib
-COORD = os.environ['COORDINATOR_URL'].replace('https://','wss://').replace('http://','ws://')
-if not COORD.endswith('/worker/ws'): COORD = COORD.rstrip('/') + '/worker/ws'
-WID = os.environ.get('WORKER_ID', f'gh-{uuid.uuid4().hex[:8]}')
-async def main():
-    async with aiohttp.ClientSession() as s:
-        async with s.ws_connect(COORD) as ws:
-            await ws.send_json({'type':'hello','version':'2.1','mode':'persistent','worker_id':WID,'auth':{'method':'none'}})
-            msg = await ws.receive_json()
-            if msg['type'] != 'session': return
-            sid = msg['session_id']; hb = msg.get('heartbeat_interval_ms',10000)//1000
-            await ws.send_json({'type':'capabilities','session_id':sid,'payload':{'runtimes':['wasm'],'resources':{'cpu_cores':2,'ram_mb':7168,'gpu':{'supported':False}},'lifecycle':{'mode':'ephemeral','max_lifetime_sec':21600},'verification':{'can_challenge':False},'network':{'connectivity':'outgoing_only'},'limits':{'max_task_duration_ms':300000,'max_concurrent_tasks':1}}})
-            nxt = asyncio.get_event_loop().time() + hb
-            while True:
-                now = asyncio.get_event_loop().time()
-                if now >= nxt:
-                    await ws.send_json({'type':'heartbeat','session_id':sid,'current_load_pct':0,'tasks_in_progress':0,'uptime_sec':0,'expected_remaining_sec':None})
-                    nxt = now + hb
-                try: msg = await asyncio.wait_for(ws.receive_json(), timeout=1.0)
-                except asyncio.TimeoutError: continue
-                except Exception: break
-                mt = msg.get('type','')
-                if mt in ('task_assign','keepalive'):
-                    if mt == 'task_assign':
-                        await ws.send_json({'type':'task_accept','session_id':sid,'task_id':msg['task']['id'],'assignment_token':msg['task']['assignment_token']})
-                    http = COORD.replace('ws://','http://').replace('/worker/ws','')
-                    try:
-                        async with aiohttp.ClientSession() as s2:
-                            async with s2.get(f'{http}/blobs/{msg[\"task\"][\"payload\"][\"executable_hash\"]}') as r:
-                                executable = await r.read()
-                            async with s2.get(f'{http}/blobs/{msg[\"task\"][\"payload\"][\"input_hash\"]}') as r:
-                                inp = await r.read()
-                        try:
-                            import wasmtime; m = wasmtime.Module(executable); inst = wasmtime.Instance(m,[]); mem = inst.exports['memory']; mem.write_bytes(0, inp); inst.exports['compute'](0, len(inp), 1024, 4096); out = bytes(mem.read_bytes(1024, 4096))
-                        except: out = inp[:100]
-                        oh = hashlib.sha256(out).hexdigest()
-                        async with aiohttp.ClientSession() as s3:
-                            async with s3.put(f'{http}/blobs', data=out) as r: pass
-                        status, exit_code, stderr = 'success', 0, ''
-                    except Exception as e: oh, status, exit_code, stderr = '', 'error', 1, str(e)[:4096]
-                    await ws.send_json({'type':'task_result','session_id':sid,'task_id':msg['task']['id'],'assignment_token':msg['task'].get('assignment_token',''),'status':status,'result':{'output_hash':oh,'execution_metadata':{'duration_ms':0,'exit_code':exit_code,'stderr':stderr}},'verification_data':None})
-asyncio.run(main())
-"
+          python << 'PYEOF'
+          import asyncio, aiohttp, os, sys, uuid, hashlib
+          COORD = os.environ['COORDINATOR_URL'].replace('https://','wss://').replace('http://','ws://')
+          if not COORD.endswith('/worker/ws'): COORD = COORD.rstrip('/') + '/worker/ws'
+          WID = os.environ.get('WORKER_ID', f'gh-{uuid.uuid4().hex[:8]}')
+          async def main():
+              async with aiohttp.ClientSession() as s:
+                  async with s.ws_connect(COORD) as ws:
+                      await ws.send_json({'type':'hello','version':'2.1','mode':'persistent','worker_id':WID,'auth':{'method':'none'}})
+                      msg = await ws.receive_json()
+                      if msg['type'] != 'session': return
+                      sid = msg['session_id']; hb = msg.get('heartbeat_interval_ms',10000)//1000
+                      await ws.send_json({'type':'capabilities','session_id':sid,'payload':{'runtimes':['wasm'],'resources':{'cpu_cores':2,'ram_mb':7168,'gpu':{'supported':False}},'lifecycle':{'mode':'ephemeral','max_lifetime_sec':21600},'verification':{'can_challenge':False},'network':{'connectivity':'outgoing_only'},'limits':{'max_task_duration_ms':300000,'max_concurrent_tasks':1}}})
+                      nxt = asyncio.get_event_loop().time() + hb
+                      while True:
+                          now = asyncio.get_event_loop().time()
+                          if now >= nxt:
+                              await ws.send_json({'type':'heartbeat','session_id':sid,'current_load_pct':0,'tasks_in_progress':0,'uptime_sec':0,'expected_remaining_sec':None})
+                              nxt = now + hb
+                          try: msg = await asyncio.wait_for(ws.receive_json(), timeout=1.0)
+                          except asyncio.TimeoutError: continue
+                          except Exception: break
+                          mt = msg.get('type','')
+                          if mt in ('task_assign','keepalive'):
+                              if mt == 'task_assign':
+                                  await ws.send_json({'type':'task_accept','session_id':sid,'task_id':msg['task']['id'],'assignment_token':msg['task']['assignment_token']})
+                              http = COORD.replace('ws://','http://').replace('/worker/ws','')
+                              try:
+                                  async with aiohttp.ClientSession() as s2:
+                                      async with s2.get(f'{http}/blobs/{msg["task"]["payload"]["executable_hash"]}') as r:
+                                          executable = await r.read()
+                                      async with s2.get(f'{http}/blobs/{msg["task"]["payload"]["input_hash"]}') as r:
+                                          inp = await r.read()
+                                  try:
+                                      import wasmtime; m = wasmtime.Module(executable); inst = wasmtime.Instance(m,[]); mem = inst.exports['memory']; mem.write_bytes(0, inp); inst.exports['compute'](0, len(inp), 1024, 4096); out = bytes(mem.read_bytes(1024, 4096))
+                                  except: out = inp[:100]
+                                  oh = hashlib.sha256(out).hexdigest()
+                                  async with aiohttp.ClientSession() as s3:
+                                      async with s3.put(f'{http}/blobs', data=out) as r: pass
+                                  status, exit_code, stderr = 'success', 0, ''
+                              except Exception as e: oh, status, exit_code, stderr = '', 'error', 1, str(e)[:4096]
+                              await ws.send_json({'type':'task_result','session_id':sid,'task_id':msg['task']['id'],'assignment_token':msg['task'].get('assignment_token',''),'status':status,'result':{'output_hash':oh,'execution_metadata':{'duration_ms':0,'exit_code':exit_code,'stderr':stderr}},'verification_data':None})
+          asyncio.run(main())
+          PYEOF
