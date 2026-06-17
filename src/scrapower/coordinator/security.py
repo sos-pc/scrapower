@@ -42,11 +42,14 @@ def _log_audit(event: str, request: Request, **extra) -> None:
 
 def verify_api_key(request: Request) -> bool:
     """Check if request has valid API key in header or query param."""
-    token = request.headers.get("X-API-Key", "") or request.query_params.get("api_key", "")
+    token = request.headers.get("X-API-Key", "")  # Header only — query params leak in logs
     if not token or not API_KEY:
         return False
-    return (
-        hashlib.sha256(token.encode()).hexdigest() == hashlib.sha256(API_KEY.encode()).hexdigest()
+    # Constant-time comparison (prevents timing side-channel)
+    import hmac
+    return hmac.compare_digest(
+        hashlib.sha256(token.encode()).hexdigest(),
+        hashlib.sha256(API_KEY.encode()).hexdigest(),
     )
 
 

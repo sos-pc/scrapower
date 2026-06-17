@@ -113,7 +113,7 @@ async def handle_ws(
             if msg_type == "hello":
                 # Rate limit: max 5 workers per IP (embedded exempt)
                 same_ip = sum(1 for s in sessions.active_sessions if s.peer_ip == client_ip)
-                if same_ip >= 5 and not msg.get("worker_id", "").startswith("_"):
+                if same_ip >= 5 and msg.get("worker_id", "") != "_embedded":
                     await ws.send_json(
                         {
                             "type": "error",
@@ -168,8 +168,14 @@ async def handle_ws(
                     session.tasks_in_progress = max(0, session.tasks_in_progress - 1)
                     if task_service:
                         output_hash = msg.get("result", {}).get("output_hash", "")
-                        # Verify assignment_token to prevent result spoofing
-                        token = msg.get("assignment_token", "")
+                        token = msg.get("assignment_token")
+                        # Reject if no token (prevents result spoofing)
+                        if not token:
+                            await ws.send_json(to_dict(ErrorMessage(
+                                code="MISSING_TOKEN",
+                                message="assignment_token required",
+                            )))
+                            continue
                         await task_service.complete(msg["task_id"], output_hash, token)
 
             elif msg_type == "heartbeat":

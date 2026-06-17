@@ -7,7 +7,7 @@ import hashlib
 import time
 from typing import Any
 
-from wasmtime import Engine, Module, Store
+from wasmtime import Config, Engine, Module, Store
 
 from ..sandbox import Sandbox
 
@@ -27,7 +27,9 @@ class WasmRuntime(Sandbox):
     """
 
     def __init__(self, max_memory_pages: int = WASM_MAX_MEMORY_PAGES):
-        self._engine = Engine()
+        config = Config()
+        config.consume_fuel = True
+        self._engine = Engine(config)
         self._max_memory = max_memory_pages
 
     async def execute(self, executable_bytes: bytes, input_bytes: bytes) -> dict[str, Any]:
@@ -35,11 +37,8 @@ class WasmRuntime(Sandbox):
 
         store = Store(self._engine)
 
-        # Enable fuel metering
-        try:
-            store.set_fuel(WASM_FUEL_LIMIT)
-        except Exception:
-            pass  # Not all wasmtime builds support fuel
+        # Enable fuel metering (required — fails task if not supported)
+        store.set_fuel(WASM_FUEL_LIMIT)
 
         module = Module(self._engine, executable_bytes)
 
