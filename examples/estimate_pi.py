@@ -1,3 +1,4 @@
+import os
 """Estimate π via Monte Carlo on Scrapower.
 
 Usage: python examples/estimate_pi.py [--coordinator http://localhost:8777] [--tasks 10]
@@ -29,7 +30,7 @@ async def main():
     wasm_bytes = compile_wat(wat_path.read_text())
     print(f"WASM compiled: {len(wasm_bytes)} bytes")
 
-    async with aiohttp.ClientSession(headers={"X-API-Key": "sp-secure-key-2026"}) as session:
+    async with aiohttp.ClientSession(headers={"X-API-Key": os.environ.get("SCRAPOWER_API_KEY", "your-api-key")}) as session:
         # Upload WASM once
         async with session.put(f"{coord}/blobs", data=wasm_bytes) as r:
             exec_hash = (await r.json())["hash"]

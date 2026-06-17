@@ -66,7 +66,7 @@ class Scheduler:
             # Best worker: external first, idle first. Skip embedded for untrusted tasks.
             worker = compatible[0]
             if worker.worker_id == "_embedded":
-                continue  # Skip embedded — only for trusted/system tasks
+                continue  # Skip embedded - only for trusted/system tasks
             log.info(
                 "assigning task %s to %s (in_progress=%d)",
                 task.id[:8],

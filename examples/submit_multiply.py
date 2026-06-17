@@ -1,3 +1,4 @@
+import os
 """Example: submit a WASM multiply task and get the result.
 
 Usage: python examples/submit_multiply.py [--coordinator http://localhost:8777]
@@ -33,7 +34,7 @@ async def main():
     input_bytes = struct.pack("<ii", args.a, args.b)
     print(f"Input: {args.a} × {args.b}")
 
-    async with aiohttp.ClientSession(headers={"X-API-Key": "sp-secure-key-2026"}) as session:
+    async with aiohttp.ClientSession(headers={"X-API-Key": os.environ.get("SCRAPOWER_API_KEY", "your-api-key")}) as session:
         # 3. Upload WASM
         async with session.put(f"{coord}/blobs", data=wasm) as r:
             wasm_hash = (await r.json())["hash"]

@@ -8,7 +8,7 @@ h11 < 0.14 validation bug that rejects valid CSP values containing
 
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 # ── Content Security Policy ──────────────────────────────────────────
 CSP_VALUE = (

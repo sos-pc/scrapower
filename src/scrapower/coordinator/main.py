@@ -221,6 +221,7 @@ app.include_router(client_api_router)
 
 # Stats endpoint
 from .api.stats_api import router as stats_router
+
 app.include_router(stats_router)
 
 log = structlog.get_logger()

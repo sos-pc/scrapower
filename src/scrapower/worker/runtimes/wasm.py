@@ -83,7 +83,7 @@ class WasmRuntime(Sandbox):
                 ),
                 timeout=WASM_TIMEOUT_SEC,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return {
                 "output_hash": "",
                 "output_bytes": b"",
