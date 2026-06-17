@@ -304,8 +304,8 @@ async def embed_page(request: Request):
     from fastapi.responses import FileResponse
     embed_path = Path(__file__).parent / "static" / "embed.html"
     resp = FileResponse(embed_path)
-    # Allow framing (override global DENY for this page only)
-    resp.headers["X-Frame-Options"] = "ALLOW"
+    # No X-Frame-Options = allow framing from any origin
+    # CSP frame-ancestors is the modern equivalent (set via Caddy)
     return resp
 
 @app.get("/")
