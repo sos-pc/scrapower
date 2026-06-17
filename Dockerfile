@@ -28,7 +28,9 @@ COPY --from=builder /build/dist/sandbox_worker.js src/scrapower/coordinator/stat
 COPY --from=builder /build/dist/sw.js src/scrapower/coordinator/static/sw.js
 
 # Data directory (mounted as volume in production)
-RUN mkdir -p data/blobs
+RUN mkdir -p data/blobs && chown -R 1000:1000 /app
+
+USER 1000:1000
 
 EXPOSE 8777
 

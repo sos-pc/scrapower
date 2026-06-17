@@ -5,6 +5,7 @@ Uses typed protocol messages from coordinator.protocol.
 """
 
 from __future__ import annotations
+import time
 
 import json
 import logging
@@ -179,6 +180,12 @@ async def handle_ws(
                         await task_service.complete(msg["task_id"], output_hash, token)
 
             elif msg_type == "heartbeat":
+                # Rate limit: max 1 heartbeat per 2 seconds
+                now_hb = time.time()
+                if session and hasattr(session, "_last_hb") and now_hb - session._last_hb < 2:
+                    continue  # Silently drop excessive heartbeats
+                if session:
+                    session._last_hb = now_hb
                 if not session or not sessions.heartbeat(session_id):
                     await ws.send_json(
                         to_dict(

@@ -97,4 +97,11 @@ class SessionManager:
                     session.is_zombie = True
                     if on_zombie:
                         await on_zombie(session)
+            # Cleanup: remove zombies older than 1 hour
+            to_remove = [
+                sid for sid, s in self._sessions.items()
+                if s.is_zombie and (now - s.last_heartbeat) > 3600
+            ]
+            for sid in to_remove:
+                del self._sessions[sid]
             await asyncio.sleep(self._heartbeat_interval)
