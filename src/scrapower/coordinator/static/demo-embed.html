@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Exemple d'intégration Scrapower</title>
+    <style>
+        body {
+            font-family: system-ui, sans-serif;
+            max-width: 640px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #0d1117;
+            color: #c9d1d9;
+            line-height: 1.6;
+        }
+        h1 { color: #58a6ff; }
+        pre {
+            background: #161b22;
+            padding: 16px;
+            border-radius: 8px;
+            overflow-x: auto;
+            font-size: 13px;
+        }
+        code { color: #7ee787; }
+        .note {
+            background: #1b2a1f;
+            border-left: 3px solid #238636;
+            padding: 12px;
+            border-radius: 4px;
+            margin: 16px 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>🧩 Intégrer Scrapower sur votre site</h1>
+
+    <p>
+        Ajoutez cette iframe n'importe où sur votre page. Le widget charge
+        un worker de calcul distribué. <strong>Aucun accès à votre DOM.</strong>
+        Le visiteur doit cliquer "Activer" pour commencer.
+    </p>
+
+    <pre><code>&lt;iframe
+  src="https://scrapower.talos-int.com/embed"
+  style="width:260px; height:85px; border:none;
+         position:fixed; bottom:16px; right:16px;
+         z-index:9999; border-radius:8px;
+         overflow:hidden;"
+  title="Scrapower — Calcul distribué"
+  loading="lazy"&gt;
+&lt;/iframe&gt;</code></pre>
+
+    <div class="note">
+        ✅ Aucune dépendance JavaScript<br>
+        ✅ Isolé dans une iframe (sandbox)<br>
+        ✅ Opt-in : le visiteur clique pour activer<br>
+        ✅ Conforme RGPD : pas de cookies, pas de tracking
+    </div>
+
+    <!-- Widget Scrapower -->
+    <iframe
+      src="https://scrapower.talos-int.com/embed"
+      style="width:260px; height:85px; border:none;
+             position:fixed; bottom:16px; right:16px;
+             z-index:9999; border-radius:8px;
+             overflow:hidden;"
+      title="Scrapower"
+      loading="lazy">
+    </iframe>
+</body>
+</html>

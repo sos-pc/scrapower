@@ -204,6 +204,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# CORS � allows cross-origin embed on any website
+from .cors_middleware import CORSMiddleware
+app.add_middleware(CORSMiddleware)
+
 app.include_router(worker_router)
 
 # OAuth endpoints for connecting visitor accounts
@@ -292,6 +296,17 @@ async def check_blob(hash_hex: str):
 # Health check
 # ──────────────────────────────────────────────────────────────
 
+
+@app.get("/embed")
+@app.get("/worker")
+async def embed_page(request: Request):
+    """Serve the embeddable worker page (iframe-compatible)."""
+    from fastapi.responses import FileResponse
+    embed_path = Path(__file__).parent / "static" / "embed.html"
+    resp = FileResponse(embed_path)
+    # Allow framing (override global DENY for this page only)
+    resp.headers["X-Frame-Options"] = "ALLOW"
+    return resp
 
 @app.get("/")
 async def homepage():
