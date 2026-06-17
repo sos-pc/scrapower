@@ -11,7 +11,7 @@ import secrets
 import time
 from collections import defaultdict
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 
 API_KEY = os.environ.get("SCRAPOWER_API_KEY", "")
@@ -57,13 +57,16 @@ def check_rate_limit(ip: str) -> bool:
 
 
 async def require_auth(request: Request):
-    """FastAPI dependency — requires valid API key."""
+    """FastAPI dependency — requires valid API key. Raises HTTPException if missing."""
     if not verify_api_key(request):
-        return JSONResponse({"error": "UNAUTHORIZED"}, status_code=401)
+        raise HTTPException(
+            status_code=401,
+            detail={"error": "UNAUTHORIZED", "hint": "Add X-API-Key header"},
+        )
 
 
 async def rate_limit(request: Request):
-    """FastAPI dependency — rate limits by IP."""
+    """FastAPI dependency — rate limits by IP. Raises HTTPException if exceeded."""
     ip = request.client.host if request.client else "unknown"
     if not check_rate_limit(ip):
-        return JSONResponse({"error": "RATE_LIMITED"}, status_code=429)
+        raise HTTPException(status_code=429, detail={"error": "RATE_LIMITED"})

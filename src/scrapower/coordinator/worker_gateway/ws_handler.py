@@ -36,6 +36,16 @@ async def handle_ws(
     try:
         while True:
             raw = await ws.receive_text()
+            # Limit message size (JSON bomb protection)
+            if len(raw) > 65536:
+                await ws.send_json(
+                    {
+                        "type": "error",
+                        "code": "MESSAGE_TOO_LARGE",
+                        "message": "Max 64KB per message",
+                    }
+                )
+                continue
             msg = _parse_json(raw)
 
             if msg is None:
@@ -65,8 +75,17 @@ async def handle_ws(
                             break
                 continue
 
-            # DHT peer list request
+            # DHT peer list request (auth_level >= 1 only)
             if msg_type == "dht_peer_list":
+                if not session or session.auth_level < 1:
+                    await ws.send_json(
+                        {
+                            "type": "error",
+                            "code": "UNAUTHORIZED",
+                            "message": "Auth required for peer list",
+                        }
+                    )
+                    continue
                 peers = [s.worker_id for s in sessions.active_sessions]
                 await ws.send_json(
                     {
@@ -79,7 +98,6 @@ async def handle_ws(
 
             # DHT find blob
             if msg_type == "dht_find_blob":
-                # For now, return empty — DHT handles its own routing
                 await ws.send_json(
                     {
                         "type": "dht_find_blob_response",
@@ -90,6 +108,19 @@ async def handle_ws(
                 continue
 
             if msg_type == "hello":
+                # Rate limit: max 5 workers per IP (embedded exempt)
+                same_ip = sum(1 for s in sessions.active_sessions if s.peer_ip == client_ip)
+                if same_ip >= 5 and not msg.get("worker_id", "").startswith("_"):
+                    await ws.send_json(
+                        {
+                            "type": "error",
+                            "code": "TOO_MANY_WORKERS",
+                            "message": "Max 5 workers per IP",
+                        }
+                    )
+                    await ws.close()
+                    return
+
                 session = sessions.create(
                     msg.get("worker_id", "unknown"),
                     ws=ws,
@@ -134,7 +165,9 @@ async def handle_ws(
                     session.tasks_in_progress = max(0, session.tasks_in_progress - 1)
                     if task_service:
                         output_hash = msg.get("result", {}).get("output_hash", "")
-                        await task_service.complete(msg["task_id"], output_hash)
+                        # Verify assignment_token to prevent result spoofing
+                        token = msg.get("assignment_token", "")
+                        await task_service.complete(msg["task_id"], output_hash, token)
 
             elif msg_type == "heartbeat":
                 if not session or not sessions.heartbeat(session_id):

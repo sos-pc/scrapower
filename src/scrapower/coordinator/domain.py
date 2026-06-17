@@ -45,9 +45,9 @@ class TaskService:
         """Try to assign a task to a worker. Returns (success, token)."""
         return await self._tm.assign(task_id, worker_id)
 
-    async def complete(self, task_id: str, output_hash: str) -> bool:
+    async def complete(self, task_id: str, output_hash: str, assignment_token: str = "") -> bool:
         """Mark a task as validated."""
-        return await self._tm.complete(task_id, output_hash)
+        return await self._tm.complete(task_id, output_hash, assignment_token)
 
     async def cancel(self, task_id: str) -> bool:
         """Cancel a queued or assigned task."""

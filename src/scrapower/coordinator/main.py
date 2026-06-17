@@ -232,7 +232,7 @@ log = structlog.get_logger()
 
 
 @app.put("/blobs", status_code=200)
-async def upload_blob(request: Request, _rate=Depends(rate_limit)):
+async def upload_blob(request: Request, _rate=Depends(rate_limit), _auth=Depends(require_auth)):
     """Upload a blob. Returns its content hash."""
     body = await request.body()
     if len(body) > config.max_blob_size_mb * 1024 * 1024:

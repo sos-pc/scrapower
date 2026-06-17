@@ -243,8 +243,17 @@ class TaskManager:
         success = self._db.total_changes > 0
         return success, token
 
-    async def complete(self, task_id: str, output_hash: str) -> bool:
-        """Mark a task as validated and store the output hash."""
+    async def complete(self, task_id: str, output_hash: str, assignment_token: str = "") -> bool:
+        """Mark a task as validated. Verifies assignment_token if provided."""
+        # Verify token matches current assignment (prevents result spoofing)
+        if assignment_token:
+            cursor = await self._db.execute(
+                "SELECT current_assignment_token FROM tasks WHERE id = ?",
+                (task_id,),
+            )
+            row = await cursor.fetchone()
+            if not row or row["current_assignment_token"] != assignment_token:
+                return False
         now = time.time()
         await self._db.execute(
             "UPDATE tasks SET output_hash = ?, updated_at = ? WHERE id = ?",
