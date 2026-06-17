@@ -75,6 +75,11 @@ CREATE TABLE IF NOT EXISTS provider_tokens (
     created_at     TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (visitor_id, provider)
 );
+
+CREATE TABLE IF NOT EXISTS oauth_states (
+    state      TEXT PRIMARY KEY,
+    created_at REAL NOT NULL
+);
 """
 
 
