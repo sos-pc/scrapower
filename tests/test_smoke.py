@@ -65,7 +65,7 @@ async def test_full_flow_submit_execute_result(live_server):
     # 4. Check task is validated
     async with httpx.AsyncClient(headers={"X-API-Key": "test-api-key"}) as client:
         r = await client.get(f"{http_url}/tasks/{task_id}")
-        assert r.json()["status"] == "validated"
+        assert r.json()["status"] == "completed"
 
         # 5. Retrieve result
         r = await client.get(f"{http_url}/results/{task_id}")

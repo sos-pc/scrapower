@@ -62,7 +62,7 @@ async def main():
             await asyncio.sleep(2)
             async with session.get(f"{coord}/tasks/multiply-{args.a}x{args.b}-{uuid.uuid4().hex[:6]}") as r:
                 status = (await r.json()).get("status", "unknown")
-            if status == "validated":
+            if status == "completed":
                 async with session.get(f"{coord}/results/multiply-{args.a}x{args.b}-{uuid.uuid4().hex[:6]}") as r:
                     data = await r.read()
                 result = struct.unpack("<i", data[:4])[0]

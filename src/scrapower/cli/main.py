@@ -118,7 +118,7 @@ async def _submit(args):
             r = await client.get(f"{coord_url}/tasks/{task_id}")
             status = r.json().get("status", "unknown")
             print(f"  Status: {status}")
-            if status == "validated":
+            if status == "completed":
                 # Get result
                 r = await client.get(f"{coord_url}/results/{task_id}")
                 result_data = r.content

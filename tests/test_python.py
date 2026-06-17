@@ -86,7 +86,7 @@ async def main():
                         if r.status != 200:
                             continue
                         info = await r.json()
-                        if info.get("status") in ("validated", "failed", "cancelled"):
+                        if info.get("status") in ("completed", "failed", "cancelled"):
                             completed[tid] = info
                 except Exception:
                     pass

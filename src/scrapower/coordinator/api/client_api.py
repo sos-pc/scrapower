@@ -100,7 +100,7 @@ def create_client_router(require_auth: Callable | None = None) -> APIRouter:
 
         task_service = request.app.state.task_service
         task = await task_service.get(task_id)
-        if task is None or task.state != TaskState.VALIDATED:
+        if task is None or task.state != TaskState.COMPLETED:
             raise HTTPException(status_code=404, detail={"error": "NOT_FOUND_OR_NOT_READY"})
         _check_owner(task, request)
 

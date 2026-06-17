@@ -98,7 +98,7 @@ async def submit_and_wait(
                     if r.status != 200:
                         continue
                     info = await r.json()
-                    if info.get("status") in ("validated", "failed", "cancelled"):
+                    if info.get("status") in ("completed", "failed", "cancelled"):
                         completed[tid] = info
                         wid = info.get("assigned_worker_id", "?")
                         workers[wid] = workers.get(wid, 0) + 1
@@ -107,7 +107,7 @@ async def submit_and_wait(
         await asyncio.sleep(0.1)
 
     elapsed = time.time() - start
-    success = sum(1 for t in completed.values() if t["status"] == "validated")
+    success = sum(1 for t in completed.values() if t["status"] == "completed")
     return elapsed, workers, success
 
 

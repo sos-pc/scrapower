@@ -89,7 +89,7 @@ async def main():
                     continue
                 data = r.json()
                 status = data.get("status")
-                if status == "validated":
+                if status == "completed":
                     r = await client.get(f"{coord_url}/results/{tid}", headers=h)
                     result = r.content
                     if result and len(result) >= 8:
@@ -99,7 +99,7 @@ async def main():
                             found = (found_seed, hh)
                             break
                     total_checked += args.range
-                elif status not in ("validated", "failed", "cancelled"):
+                elif status not in ("completed", "failed", "cancelled"):
                     all_done = False
 
             if found or all_done:

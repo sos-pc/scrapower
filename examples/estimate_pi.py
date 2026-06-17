@@ -68,7 +68,7 @@ async def main():
                 async with session.get(f"{coord}/tasks/{task_id}") as r:
                     task_json = await r.json()
                     status = task_json.get("status", "unknown")
-                if status == "validated":
+                if status == "completed":
                     async with session.get(f"{coord}/results/{task_id}") as r:
                         data = await r.read()
                     inside = struct.unpack("<Q", data[:8])[0]

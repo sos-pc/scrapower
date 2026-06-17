@@ -1,6 +1,6 @@
 """Task lifecycle management.
 
-States: PENDING → QUEUED → ASSIGNED → VALIDATED | FAILED | TIMEOUT
+States: PENDING → QUEUED → ASSIGNED → COMPLETED | FAILED | TIMEOUT
 
 Each task has a unique assignment_token per assignment attempt to prevent races.
 """
@@ -19,23 +19,30 @@ class TaskState(str, Enum):
     PENDING = "pending"
     QUEUED = "queued"
     ASSIGNED = "assigned"
-    VALIDATED = "validated"
+    COMPLETED = "completed"  # renamed from VALIDATED (trust-based, not verified)
     FAILED = "failed"
     TIMEOUT = "timeout"
     CANCELLED = "cancelled"
+
+    @classmethod
+    def _missing_(cls, value):
+        """Backward compat: map old DB value to COMPLETED."""
+        if value == "validated":
+            return cls.COMPLETED
+        return None
 
 
 VALID_TRANSITIONS: dict[TaskState, set[TaskState]] = {
     TaskState.PENDING: {TaskState.QUEUED, TaskState.CANCELLED},
     TaskState.QUEUED: {TaskState.ASSIGNED, TaskState.CANCELLED},
     TaskState.ASSIGNED: {
-        TaskState.VALIDATED,  # worker completed successfully
+        TaskState.COMPLETED,  # worker completed successfully
         TaskState.TIMEOUT,
         TaskState.FAILED,
         TaskState.CANCELLED,
     },
     TaskState.TIMEOUT: {TaskState.QUEUED, TaskState.FAILED},  # requeue if retries remain
-    TaskState.VALIDATED: set(),  # terminal
+    TaskState.COMPLETED: set(),  # terminal (result submitted, not verified)
     TaskState.FAILED: set(),  # terminal
     TaskState.CANCELLED: set(),  # terminal
 }
@@ -63,7 +70,7 @@ class Task:
 
     @property
     def is_terminal(self) -> bool:
-        return self.state in (TaskState.VALIDATED, TaskState.FAILED, TaskState.CANCELLED)
+        return self.state in (TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED)
 
     @property
     def can_retry(self) -> bool:
@@ -261,4 +268,4 @@ class TaskManager:
             (output_hash, str(now), task_id),
         )
         await self._db.commit()
-        return await self.transition(task_id, TaskState.VALIDATED)
+        return await self.transition(task_id, TaskState.COMPLETED)

@@ -5,10 +5,10 @@ Uses typed protocol messages from coordinator.protocol.
 """
 
 from __future__ import annotations
-import time
 
 import json
 import logging
+import time
 from datetime import UTC, datetime
 
 from fastapi import WebSocket, WebSocketDisconnect
@@ -132,9 +132,10 @@ async def handle_ws(
                     auth_level=_auth_level(msg),
                 )
                 log.info(
-                    "worker connected: %s (session=%s)",
+                    "worker connected: %s (session=%s auth=%d)",
                     session.worker_id,
                     session.session_id[:8],
+                    session.auth_level,
                 )
                 await ws.send_json(
                     to_dict(
@@ -172,10 +173,14 @@ async def handle_ws(
                         token = msg.get("assignment_token")
                         # Reject if no token (prevents result spoofing)
                         if not token:
-                            await ws.send_json(to_dict(ErrorMessage(
-                                code="MISSING_TOKEN",
-                                message="assignment_token required",
-                            )))
+                            await ws.send_json(
+                                to_dict(
+                                    ErrorMessage(
+                                        code="MISSING_TOKEN",
+                                        message="assignment_token required",
+                                    )
+                                )
+                            )
                             continue
                         await task_service.complete(msg["task_id"], output_hash, token)
 
@@ -237,10 +242,34 @@ def _parse_json(raw: str) -> dict | None:
 
 
 def _auth_level(msg: dict) -> int:
-    """Determine auth level from hello message."""
-    auth_method = msg.get("auth", {}).get("method", "none")
-    if auth_method == "token":
-        return 1
-    if auth_method == "signed_nonce":
+    """Determine auth level from hello message.
+
+    Levels:
+        0 = anonymous (method: "none") — can receive tasks, cannot access DHT
+        1 = authenticated (method: "token" with valid API key) — DHT access, trusted
+        2 = signed (method: "signed_nonce") — reserved for future challenge-response
+    """
+    auth = msg.get("auth", {})
+    method = auth.get("method", "none")
+
+    if method == "token":
+        # Verify token against SCRAPOWER_API_KEY
+        import hashlib
+        import os
+
+        api_key = os.environ.get("SCRAPOWER_API_KEY", "")
+        token = auth.get("value", "")
+        if api_key and token:
+            if (
+                hashlib.sha256(token.encode()).hexdigest()
+                == hashlib.sha256(api_key.encode()).hexdigest()
+            ):
+                return 1
+        # Token present but invalid → stay anonymous (don't grant auth_level)
+        return 0
+
+    if method == "signed_nonce":
+        # Reserved for future challenge-response
         return 2
+
     return 0
