@@ -25,6 +25,7 @@ class WorkerSession:
     last_heartbeat: float = field(default_factory=time.time)
     tasks_in_progress: int = 0
     is_zombie: bool = False
+    peer_ip: str = ""
 
 
 class SessionManager:
@@ -35,7 +36,7 @@ class SessionManager:
         self._heartbeat_interval = heartbeat_interval_sec
         self._heartbeat_threshold = heartbeat_miss_threshold
 
-    def create(self, worker_id: str, ws: Any = None, auth_level: int = 0) -> WorkerSession:
+    def create(self, worker_id: str, ws: Any = None, auth_level: int = 0, peer_ip: str = "") -> WorkerSession:
         """Create a new session for a worker."""
         session_id = uuid.uuid4().hex[:16]
         session = WorkerSession(
@@ -43,6 +44,7 @@ class SessionManager:
             worker_id=worker_id,
             ws=ws,
             auth_level=auth_level,
+            peer_ip=peer_ip,
         )
         self._sessions[session_id] = session
         return session

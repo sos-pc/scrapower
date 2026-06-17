@@ -30,6 +30,7 @@ async def handle_ws(
 ):
     """Handle a single WebSocket connection from a worker."""
     await ws.accept()
+    client_ip = ws.client.host if ws.client else "unknown"
     session = None
 
     try:
@@ -92,6 +93,7 @@ async def handle_ws(
                 session = sessions.create(
                     msg.get("worker_id", "unknown"),
                     ws=ws,
+                    peer_ip=client_ip,
                     auth_level=_auth_level(msg),
                 )
                 log.info(

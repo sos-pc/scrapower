@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import time
-
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
@@ -12,7 +10,11 @@ router = APIRouter(prefix="/stats", tags=["stats"])
 
 @router.get("")
 async def get_stats(request: Request):
-    """Return infrastructure capacity and health metrics."""
+    """Return infrastructure capacity and health metrics.
+
+    Workers from the same IP are grouped as a single machine to avoid
+    double-counting CPU/RAM/GPU from multiple browser tabs.
+    """
     import scrapower.coordinator.worker_gateway.router as router_mod
 
     sm = getattr(router_mod, "session_manager", None)
@@ -21,51 +23,82 @@ async def get_stats(request: Request):
 
     sessions = sm.active_sessions
 
-    # Aggregate by worker type
+    # Group workers by IP to deduplicate shared resources
+    by_ip: dict[str, list] = {}
+    for s in sessions:
+        ip = s.peer_ip if hasattr(s, "peer_ip") and s.peer_ip else "unknown"
+        by_ip.setdefault(ip, []).append(s)
+
+    # Aggregate by type
     by_type: dict[str, dict] = {}
+    total_machines = 0
     total_cpu = 0
     total_ram_mb = 0
     total_gpu = 0
     total_tasks = 0
     total_completed = 0
 
-    for s in sessions:
-        wid = s.worker_id
-        if wid.startswith("browser-"):
-            wtype = "browser"
-        elif wid.startswith("gh-"):
-            wtype = "github"
-        elif wid == "_embedded":
-            wtype = "embedded"
-        else:
-            wtype = "other"
+    for ip, ip_sessions in by_ip.items():
+        # For a single machine: use max values, not sum
+        max_cpu = 0
+        max_ram = 0
+        has_gpu = False
+        tab_count = 0
+        wtype = "other"
+
+        for s in ip_sessions:
+            wid = s.worker_id
+            caps = s.capabilities or {}
+            resources = caps.get("resources", {})
+            cpu = resources.get("cpu_cores", 1)
+            ram = resources.get("ram_mb", 128)
+            gpu = resources.get("gpu", {}).get("supported", False)
+
+            max_cpu = max(max_cpu, cpu)
+            max_ram = max(max_ram, ram)
+            if gpu:
+                has_gpu = True
+            tab_count += 1
+
+            # Determine primary type
+            if wid.startswith("browser-"):
+                wtype = "browser"
+            elif wid.startswith("gh-"):
+                wtype = "github"
+            elif wid == "_embedded":
+                wtype = "embedded"
+
+        total_machines += 1
+        total_cpu += max_cpu
+        total_ram_mb += max_ram
+        if has_gpu:
+            total_gpu += 1
 
         if wtype not in by_type:
-            by_type[wtype] = {"count": 0, "cpu": 0, "ram_mb": 0, "gpu": 0, "workers": []}
+            by_type[wtype] = {"machines": 0, "tabs": 0, "cpu": 0, "ram_mb": 0, "gpu": 0}
 
+        by_type[wtype]["machines"] += 1
+        by_type[wtype]["tabs"] += tab_count
+        by_type[wtype]["cpu"] += max_cpu
+        by_type[wtype]["ram_mb"] += max_ram
+        if has_gpu:
+            by_type[wtype]["gpu"] += 1
+
+    # Individual worker details
+    worker_list = []
+    for s in sessions:
         caps = s.capabilities or {}
         resources = caps.get("resources", {})
-        cpu = resources.get("cpu_cores", 1)
-        ram = resources.get("ram_mb", 128)
-        gpu = 1 if resources.get("gpu", {}).get("supported") else 0
-
-        by_type[wtype]["count"] += 1
-        by_type[wtype]["cpu"] += cpu
-        by_type[wtype]["ram_mb"] += ram
-        by_type[wtype]["gpu"] += gpu
-        by_type[wtype]["workers"].append(
+        worker_list.append(
             {
-                "id": wid[:20],
-                "cpu": cpu,
-                "ram_mb": ram,
-                "gpu": bool(gpu),
+                "id": s.worker_id[:20],
+                "ip": s.peer_ip if hasattr(s, "peer_ip") else "?",
+                "cpu": resources.get("cpu_cores", 1),
+                "ram_mb": resources.get("ram_mb", 128),
+                "gpu": resources.get("gpu", {}).get("supported", False),
                 "tasks_in_progress": s.tasks_in_progress,
             }
         )
-
-        total_cpu += cpu
-        total_ram_mb += ram
-        total_gpu += gpu
         total_tasks += s.tasks_in_progress
 
     # Get completed task count from DB
@@ -76,16 +109,17 @@ async def get_stats(request: Request):
         if row:
             total_completed = row["n"]
 
-    # Throughput estimate based on actual workers
     n_workers = max(len(sessions), 1)
     est_tps = n_workers / 5.0  # conservative: 1 task every 5s per worker
 
     return JSONResponse(
         {
             "workers_total": n_workers,
+            "machines_total": total_machines,
             "by_type": {
                 k: {
-                    "count": v["count"],
+                    "machines": v["machines"],
+                    "tabs": v["tabs"],
                     "cpu_cores": v["cpu"],
                     "ram_mb": v["ram_mb"],
                     "gpu": v["gpu"],
@@ -105,6 +139,6 @@ async def get_stats(request: Request):
             },
             "active_tasks": total_tasks,
             "completed_tasks": total_completed,
-            "workers": [w for v in by_type.values() for w in v["workers"]],
+            "workers": worker_list,
         }
     )
