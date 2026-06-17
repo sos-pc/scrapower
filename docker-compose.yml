@@ -8,10 +8,19 @@ services:
     network_mode: host
     restart: unless-stopped
     volumes:
-      # Mount host data directory (preserves existing DB on migration)
       - ./data:/app/data
     environment:
       - SCRAPOWER_HOST=0.0.0.0
       - SCRAPOWER_DATA_DIR=/app/data
     env_file:
       - .env
+    # Security hardening
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=64M
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE # needed for port 8777 binding with host network
