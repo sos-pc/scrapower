@@ -64,6 +64,11 @@ async def lifespan(app: FastAPI):
     app.state.db = db
     log.info("database initialized", path=config.db_path)
 
+    # Crypto: Fernet with per-deployment salt from SQLite
+    from .crypto_utils import init_fernet
+    init_fernet(config.db_path)
+    log.info("fernet initialized")
+
     # ── OAuth configuration ──────────────────────────────────────
     oauth_client_id = os.environ.get("SCRAPOWER_GITHUB_CLIENT_ID", "")
     oauth_client_secret = os.environ.get("SCRAPOWER_GITHUB_CLIENT_SECRET", "")

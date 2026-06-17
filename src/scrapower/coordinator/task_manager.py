@@ -105,7 +105,7 @@ class TaskManager:
             created_at=str(now),
             updated_at=str(now),
         )
-        await self._db.execute(
+        cursor = await self._db.execute(
             """INSERT INTO tasks (id, client_id, state, definition_json, retries,
                executable_hash, input_hash, runtime, gpu_required, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -127,7 +127,7 @@ class TaskManager:
         return task
 
     async def get(self, task_id: str) -> Task | None:
-        cursor = await self._db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
+        cursor = cursor = await self._db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
         row = await cursor.fetchone()
         if row is None:
             return None
@@ -149,7 +149,7 @@ class TaskManager:
         )
 
     async def get_queued(self, limit: int = 100) -> list[Task]:
-        cursor = await self._db.execute(
+        cursor = cursor = await self._db.execute(
             "SELECT * FROM tasks WHERE state = ? ORDER BY created_at ASC LIMIT ?",
             (TaskState.QUEUED, limit),
         )
@@ -199,7 +199,7 @@ class TaskManager:
 
         if new_state == TaskState.ASSIGNED:
             token = uuid.uuid4().hex
-            await self._db.execute(
+            cursor = await self._db.execute(
                 """UPDATE tasks SET state = ?, updated_at = ?, current_assignment_token = ?,
                    assigned_worker_id = ?, assigned_at = ?
                    WHERE id = ? AND state = ?""",
@@ -208,39 +208,39 @@ class TaskManager:
         elif new_state == TaskState.TIMEOUT:
             if task.can_retry:
                 # Requeue
-                await self._db.execute(
+                cursor = await self._db.execute(
                     """UPDATE tasks SET state = ?, retries = retries + 1, updated_at = ?,
                        current_assignment_token = NULL, assigned_worker_id = NULL
                        WHERE id = ? AND state = ?""",
                     (TaskState.QUEUED, str(now), task_id, task.state),
                 )
             else:
-                await self._db.execute(
+                cursor = await self._db.execute(
                     """UPDATE tasks SET state = ?, updated_at = ?
                        WHERE id = ? AND state = ?""",
                     (TaskState.FAILED, str(now), task_id, task.state),
                 )
         else:
-            await self._db.execute(
+            cursor = await self._db.execute(
                 "UPDATE tasks SET state = ?, updated_at = ? WHERE id = ? AND state = ?",
                 (new_state, str(now), task_id, task.state),
             )
 
         await self._db.commit()
-        return self._db.total_changes > 0
+        return cursor.rowcount > 0  # rowcount = rows actually updated by this statement
 
     async def assign(self, task_id: str, worker_id: str) -> tuple[bool, str]:
         """Assign a task to a worker. Returns (success, assignment_token)."""
         token = uuid.uuid4().hex
         now = time.time()
-        await self._db.execute(
+        cursor = cursor = await self._db.execute(
             """UPDATE tasks SET state = ?, current_assignment_token = ?,
                assigned_worker_id = ?, assigned_at = ?, updated_at = ?
                WHERE id = ? AND state = ?""",
             (TaskState.ASSIGNED, token, worker_id, now, str(now), task_id, TaskState.QUEUED),
         )
         await self._db.commit()
-        success = self._db.total_changes > 0
+        success = cursor.rowcount > 0  # rowcount = rows actually updated by this statement
         return success, token
 
     async def complete(self, task_id: str, output_hash: str, assignment_token: str = "") -> bool:
@@ -248,7 +248,7 @@ class TaskManager:
         # Always verify token (reject if missing or mismatched)
         if not assignment_token:
             return False
-        cursor = await self._db.execute(
+        cursor = cursor = await self._db.execute(
             "SELECT current_assignment_token FROM tasks WHERE id = ?",
             (task_id,),
         )
@@ -256,7 +256,7 @@ class TaskManager:
         if not row or row["current_assignment_token"] != assignment_token:
             return False
         now = time.time()
-        await self._db.execute(
+        cursor = await self._db.execute(
             "UPDATE tasks SET output_hash = ?, updated_at = ? WHERE id = ?",
             (output_hash, str(now), task_id),
         )
