@@ -62,17 +62,20 @@ async def handle_ws(
             msg_type = msg.get("type", "")
             session_id = msg.get("session_id", "")
 
-            # P2P signalling relay: forward to target worker
+            # P2P signalling relay: forward to target worker (same IP only)
             if msg_type.startswith("p2p_"):
                 target_id = msg.get("to", "")
                 if target_id:
+                    target_session = None
                     for s in sessions.active_sessions:
                         if s.worker_id == target_id and s.ws:
-                            try:
-                                await s.ws.send_json(msg)
-                            except Exception:
-                                pass
+                            target_session = s
                             break
+                    if target_session and target_session.peer_ip == client_ip:
+                        try:
+                            await target_session.ws.send_json(msg)
+                        except Exception:
+                            pass
                 continue
 
             # DHT peer list request (auth_level >= 1 only)
