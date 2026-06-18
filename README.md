@@ -89,6 +89,7 @@ src/scrapower/
 
 - **Content-addressing** : tous les blobs identifiés par SHA-256 → immuables
 - **Assignment token** : token unique par tâche, vérifié avant complétion
+- **Vérification challenge** : 10% des tâches double-exécutées, résultats comparés (mode configurable)
 - **Inter-client isolation** : un client ne peut pas lire les tâches d'un autre
 - **API key** : obligatoire pour `/tasks`, `/results`, `/stats`
 - **Rate limiting** : 30 req/min/IP, max 5 workers/IP

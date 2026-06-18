@@ -25,7 +25,10 @@
 - [x] **Harvester GitHub Actions** — workers 7 GB RAM, 6h max
 - [x] **Dashboard** — endpoint `/stats` avec capacité, workers, throughput
 - [x] **Sécurité** — audit complet 25 vulnérabilités, 22 corrigées
-- [x] **Vérification** — mode "challenge" (10% double-exécution), "trust" (défaut)
+- [x] **Auth worker** — vérification du token contre la clé API
+- [x] **Vérification challenge** — 10% des tâches double-exécutées, comparaison des résultats
+- [x] **Embed widget** — iframe intégrable sur n'importe quel site, consentement opt-in
+- [x] **CORS** — middleware ASGI pour appels cross-origin
 
 ---
 
@@ -37,23 +40,26 @@
 
 ---
 
-## 🔜 Phase 4 — Capacités navigateur (v0.4)
+## 🔜 Phase 4 — Fiabilité & Capacités (v0.4)
 
+- [ ] **Réputation workers** — score basé sur challenges matched/mismatched, blacklist automatique
+- [ ] **Challenge adaptatif** — nouveau worker = 100% challengé, fiable = 1%, suspect = 50%
+- [ ] **Dashboard temps réel** — WebSocket push des stats, workers live, challenges
+- [ ] **Web Crypto** — signatures Ed25519 côté worker, preuves d'exécution
+- [ ] **Multi-tenant** — isolation client_id, quotas, priorités par client
 - [ ] **SIMD WASM** — calcul vectoriel CPU
-- [ ] **Canvas/OffscreenCanvas** — traitement d'images distribué
-- [ ] **WebCodecs** — transcodage vidéo/audio
-- [ ] **Web Crypto** — signatures Ed25519, preuves d'exécution
-- [ ] **Multi-tenant** — isolation client_id, quotas, priorités
+- [ ] **Vanity Hash Finder** — démonstrateur de recherche distribuée (SHA-256 brute force)
 
 ---
 
-## 🔜 Phase 5 — Scale (v0.5)
+## 🔜 Phase 5 — Scale & Monétisation (v0.5)
 
 - [ ] **Google Cloud Run Harvester** — workers 4 GB RAM, 60 min
 - [ ] **Hugging Face Spaces** — workers GPU gratuits (16 GB, T4)
-- [ ] **Réputation workers** — score, blacklist, priorité
+- [ ] **Golem Network** — brancher Scrapower comme provider sur le marketplace (rémunéré en GLM)
 - [ ] **Observabilité** — Prometheus, logs JSON, alertes
-- [ ] **Vérification ZK** — preuves à divulgation nulle
+- [ ] **Vérification ZK** — preuves à divulgation nulle (pas de redondance, vérification O(1))
+- [ ] **SDK Python** — `pip install scrapower`, soumission de tâches en 3 lignes
 
 ---
 
@@ -61,10 +67,9 @@
 
 - [ ] Marketplace — crédits de calcul, offre/demande
 - [ ] Fédération de coordinateurs
-- [ ] SDK Python `pip install scrapower`
 - [ ] Compute-to-earn mobile
 - [ ] Intégration IPFS — stockage décentralisé des blobs
-- [ ] Token crypto — ERC-20 pour crédits
+- [ ] Token ERC-20 — rémunération on-chain des workers
 
 ---
 
