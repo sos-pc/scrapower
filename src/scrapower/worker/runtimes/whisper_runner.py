@@ -64,7 +64,7 @@ def _transcribe(audio_path, model_name, language, fmt):
     from faster_whisper import WhisperModel
 
     model = WhisperModel(
-        model_name, device="cpu", compute_type="int8", download_root=str(MODEL_CACHE)
+        model_name, device="cuda", compute_type="float16", download_root=str(MODEL_CACHE)
     )
     segments, info = model.transcribe(
         str(audio_path), language=language, beam_size=5, vad_filter=True

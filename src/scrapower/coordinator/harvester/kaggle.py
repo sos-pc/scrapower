@@ -131,6 +131,7 @@ class KaggleHarvester:
                         "is_private": False,
                         "enable_gpu": True,
                         "enable_internet": True,
+                        "machine_shape": "NvidiaTeslaT4",
                     },
                     f,
                 )
