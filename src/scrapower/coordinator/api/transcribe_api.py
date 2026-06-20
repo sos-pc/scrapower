@@ -36,6 +36,7 @@ async def transcribe(request: Request):
     model = body.get("model", "large-v3")
     language = body.get("language") or None
     fmt = body.get("format", "json")
+    cookies_hash = body.get("cookies_hash", "") or ""
 
     task_service = request.app.state.task_service
     task_id = uuid.uuid4().hex
@@ -49,7 +50,7 @@ async def transcribe(request: Request):
             "model": model,
             "language": language,
             "format": fmt,
-            "cookies_hash": "d7040e7866e8105a3232a231a4cc5f9f2c77bac55ff3ac76f4903979bab85e2b",
+            "cookies_hash": cookies_hash,
         }
     ).encode()
 
@@ -78,7 +79,7 @@ async def transcribe(request: Request):
             "model": model,
             "language": language or "auto",
             "format": fmt,
-            "cookies_hash": "d7040e7866e8105a3232a231a4cc5f9f2c77bac55ff3ac76f4903979bab85e2b",
+            "cookies_hash": cookies_hash or None,
             "hint": f"GET /results/{task_id} for transcript",
         }
     )
