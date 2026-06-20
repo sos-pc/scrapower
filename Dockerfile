@@ -15,8 +15,11 @@ WORKDIR /app
 
 # System deps for yt-dlp (ffmpeg + nodejs for YouTube JS extraction)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl ca-certificates ffmpeg nodejs npm deno \
+    curl ca-certificates ffmpeg nodejs npm \
     && rm -rf /var/lib/apt/lists/*
+# Install deno (JS runtime for yt-dlp EJS)
+RUN curl -fsSL https://deno.land/install.sh | sh -s -- -y
+ENV PATH="/root/.deno/bin:${PATH}"
 
 # Copy and install Python dependencies
 COPY pyproject.toml .
