@@ -50,3 +50,4 @@ ENV KAGGLE_CONFIG_DIR=/app/.kaggle
 ENV PYTHONPATH=/app/src
 
 CMD ["python", "-m", "scrapower.coordinator.main"]
+
