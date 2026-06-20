@@ -1,20 +1,10 @@
 """Whisper transcription worker for Scrapower.
 
-Downloads audio (via URL or blob hash), transcribes with faster-whisper,
+Downloads audio (via direct URL or yt-dlp), transcribes with faster-whisper,
 and returns the transcript via the blob store.
 
 Input format (JSON):
-  {
-    "url": "https://youtube.com/watch?v=...",   // OR input_hash from blob store
-    "model": "large-v3",                         // tiny, base, small, medium, large-v3
-    "language": "fr",                            // auto-detect if omitted
-    "format": "srt"                              // srt, txt, json (default: json)
-  }
-
-Dependencies needed on the worker:
-  - faster-whisper
-  - yt-dlp (for URL downloads)
-  - ffmpeg (for audio extraction fallback and yt-dlp)
+  { "url": "...", "model": "large-v3", "language": "fr", "format": "srt" }
 """
 
 from __future__ import annotations
@@ -26,16 +16,15 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.request
 from pathlib import Path
 
-# ── Cache directories ──────────────────────────────────────────
 MODEL_CACHE = Path(os.environ.get("WHISPER_MODEL_DIR", "/tmp/whisper-models"))
+DIRECT_EXTS = (".wav", ".mp3", ".m4a", ".ogg", ".flac", ".opus", ".aac", ".weba")
 
 
 def _ensure_deps():
-    """Install missing packages (idempotent, runs on worker startup)."""
-    deps = ["faster-whisper", "yt-dlp"]
-    for pkg in deps:
+    for pkg in ["faster-whisper", "yt-dlp"]:
         try:
             __import__(pkg.replace("-", "_"))
         except ImportError:
@@ -43,71 +32,69 @@ def _ensure_deps():
 
 
 def _download_audio(url: str, workdir: Path) -> Path:
-    """Download audio from a URL (direct or via yt-dlp)."""
-    # Direct audio/video file extensions � just download
-    direct_exts = (".wav", ".mp3", ".m4a", ".ogg", ".flac", ".opus", ".aac", ".weba")
-    if any(url.lower().endswith(ext) for ext in direct_exts):
-        import urllib.request
-        fname = url.split("/")[-1].split("?")[0] or "audio" + (
-            "." + url.split(".")[-1].split("?")[0] if "." in url.split("/")[-1] else ".mp3"
-        )
+    """Download audio from direct URL or via yt-dlp."""
+    # Direct audio/video file
+    if any(url.lower().endswith(ext) for ext in DIRECT_EXTS):
+        fname = url.split("/")[-1].split("?")[0] or "audio"
         dest = workdir / fname
         urllib.request.urlretrieve(url, str(dest))
         return dest
 
-    # Platform URLs (YouTube, etc.) � use yt-dlp
-    output_template = str(workdir / "%(id)s.%(ext)s")
+    # Platform URLs (YouTube etc.) via yt-dlp
+    tmpl = str(workdir / "%(id)s.%(ext)s")
     subprocess.run(
         [
-            sys.executable, "-m", "yt_dlp",
-            "-x", "--audio-format", "mp3", "--audio-quality", "0",
-            "-o", output_template,
+            sys.executable,
+            "-m",
+            "yt_dlp",
+            "-x",
+            "--audio-format",
+            "mp3",
+            "--audio-quality",
+            "0",
+            "-o",
+            tmpl,
             "--no-playlist",
-            "--js-runtimes", "node",
+            "--js-runtimes",
+            "node",
             "--no-warnings",
             url,
         ],
-        check=True, capture_output=True, timeout=600,
+        check=True,
+        capture_output=True,
+        timeout=600,
     )
     for f in workdir.iterdir():
         if f.suffix in (".mp3", ".m4a", ".opus", ".webm"):
             return f
-    raise FileNotFoundError(f"No audio file found in {workdir}")
+    raise FileNotFoundError(f"No audio in {workdir}")
 
 
 def _transcribe(audio_path: Path, model_name: str, language: str | None, fmt: str) -> str:
-    """Transcribe audio file using faster-whisper.
-
-    Returns the transcript in the requested format.
-    """
     from faster_whisper import WhisperModel
 
-    # Load model (cached on disk after first download)
     model = WhisperModel(
         model_name, device="cpu", compute_type="int8", download_root=str(MODEL_CACHE)
     )
-
     segments, info = model.transcribe(
         str(audio_path),
         language=language,
         beam_size=5,
-        vad_filter=True,  # skip silence
+        vad_filter=True,
     )
-
     if fmt == "srt":
         return _to_srt(segments)
     elif fmt == "txt":
-        return " ".join(seg.text for seg in segments)
-    else:  # json
-        segs = [
-            {"start": round(seg.start, 2), "end": round(seg.end, 2), "text": seg.text.strip()}
-            for seg in segments
-        ]
+        return " ".join(s.text for s in segments)
+    else:
         return json.dumps(
             {
                 "language": info.language,
                 "duration": round(info.duration, 1),
-                "segments": segs,
+                "segments": [
+                    {"start": round(s.start, 2), "end": round(s.end, 2), "text": s.text.strip()}
+                    for s in segments
+                ],
             },
             ensure_ascii=False,
             indent=2,
@@ -115,65 +102,38 @@ def _transcribe(audio_path: Path, model_name: str, language: str | None, fmt: st
 
 
 def _to_srt(segments) -> str:
-    """Convert segments to SRT subtitle format."""
     lines = []
     for i, seg in enumerate(segments, 1):
-        start = _fmt_time(seg.start)
-        end = _fmt_time(seg.end)
-        text = seg.text.strip()
-        lines.append(f"{i}\n{start} --> {end}\n{text}\n")
+        s, e = _fmt(seg.start), _fmt(seg.end)
+        lines.append(f"{i}\n{s} --> {e}\n{seg.text.strip()}\n")
     return "\n".join(lines)
 
 
-def _fmt_time(seconds: float) -> str:
-    h = int(seconds // 3600)
-    m = int((seconds % 3600) // 60)
-    s = int(seconds % 60)
-    ms = int((seconds - int(seconds)) * 1000)
+def _fmt(sec: float) -> str:
+    h, m, s = int(sec // 3600), int((sec % 3600) // 60), int(sec % 60)
+    ms = int((sec - int(sec)) * 1000)
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
-# ── Main entry point ───────────────────────────────────────────
-
-
 def main():
-    """Called by the worker sandbox: receives JSON input via stdin or argv."""
     _ensure_deps()
-
-    # Read input
-    if len(sys.argv) > 1:
-        input_data = sys.argv[1]
-    else:
-        input_data = sys.stdin.read()
-
+    input_data = sys.argv[1] if len(sys.argv) > 1 else sys.stdin.read()
     config = json.loads(input_data)
     url = config.get("url", "")
     model_name = config.get("model", "large-v3")
-    language = config.get("language") or None  # None = auto-detect
+    language = config.get("language") or None
     fmt = config.get("format", "json")
 
     with tempfile.TemporaryDirectory() as tmp:
         workdir = Path(tmp)
-
-        if url:
-            # Download audio from URL
-            print(f"Downloading audio from: {url}", file=sys.stderr)
-            audio_path = _download_audio(url, workdir)
-        else:
-            # Assume audio file was passed as bytes (from blob store)
-            # Not implemented in this version — use URL mode
-            raise ValueError("URL required (input_hash mode not yet implemented)")
-
-        print(f"Audio: {audio_path} ({audio_path.stat().st_size} bytes)", file=sys.stderr)
-        print(f"Transcribing with model: {model_name} (lang={language or 'auto'})", file=sys.stderr)
-
+        print(f"Downloading: {url}", file=sys.stderr)
+        audio_path = _download_audio(url, workdir)
+        print(f"Audio: {audio_path} ({audio_path.stat().st_size}B)", file=sys.stderr)
+        print(f"Transcribing: {model_name} (lang={language or 'auto'})", file=sys.stderr)
         start = time.time()
         transcript = _transcribe(audio_path, model_name, language, fmt)
-        elapsed = time.time() - start
+        print(f"Done in {time.time() - start:.1f}s", file=sys.stderr)
 
-        print(f"Done in {elapsed:.1f}s", file=sys.stderr)
-
-    # Output transcript as bytes (Scrapower sandbox expects bytes output)
     output = transcript.encode("utf-8")
     output_hash = hashlib.sha256(output).hexdigest()
     print(json.dumps({"output_bytes": output.hex(), "output_hash": output_hash}))
