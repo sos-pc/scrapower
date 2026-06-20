@@ -13,6 +13,11 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+# System deps for yt-dlp (ffmpeg + nodejs for YouTube JS extraction)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl ca-certificates ffmpeg nodejs npm \
+    && rm -rf /var/lib/apt/lists/*
+
 # Copy and install Python dependencies
 COPY pyproject.toml .
 RUN pip install --no-cache-dir \
