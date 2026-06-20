@@ -180,6 +180,7 @@ async def handle_ws(
                     if task_service:
                         output_hash = msg.get("result", {}).get("output_hash", "")
                         token = msg.get("assignment_token")
+                        status = msg.get("status", "success")
                         # Reject if no token (prevents result spoofing)
                         if not token:
                             await ws.send_json(
@@ -189,6 +190,20 @@ async def handle_ws(
                                         message="assignment_token required",
                                     )
                                 )
+                            )
+                            continue
+                        # Reject empty/error results — mark FAILED so they can be retried
+                        if not output_hash or status == "error":
+                            log.warning(
+                                "worker returned empty/error result, marking FAILED: task=%s worker=%s",
+                                msg["task_id"][:12],
+                                session.worker_id[:16],
+                            )
+                            await task_service._tm.transition(
+                                msg["task_id"],
+                                __import__(
+                                    "scrapower.coordinator.task_manager", fromlist=["TaskState"]
+                                ).TaskState.FAILED,
                             )
                             continue
                         # Check if this is a challenged task
