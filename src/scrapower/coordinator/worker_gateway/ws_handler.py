@@ -19,6 +19,7 @@ from ..protocol import (
     SessionCreated,
     to_dict,
 )
+from ..task_manager import TaskState
 from .session import SessionManager
 
 log = logging.getLogger(__name__)
@@ -192,18 +193,16 @@ async def handle_ws(
                                 )
                             )
                             continue
-                        # Reject empty/error results — mark FAILED so they can be retried
+                        # Reject empty/error results — mark TIMEOUT so they requeue
                         if not output_hash or status == "error":
                             log.warning(
-                                "worker returned empty/error result, marking FAILED: task=%s worker=%s",
+                                "worker returned empty/error result, marking TIMEOUT: task=%s worker=%s",
                                 msg["task_id"][:12],
                                 session.worker_id[:16],
                             )
                             await task_service._tm.transition(
                                 msg["task_id"],
-                                __import__(
-                                    "scrapower.coordinator.task_manager", fromlist=["TaskState"]
-                                ).TaskState.FAILED,
+                                TaskState.TIMEOUT,
                             )
                             continue
                         # Check if this is a challenged task

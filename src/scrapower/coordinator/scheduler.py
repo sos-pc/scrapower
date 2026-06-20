@@ -63,6 +63,13 @@ class Scheduler:
         if not tasks:
             return
 
+        # Mode B workers pull via HTTP — WS push is secondary.
+        # Temporarily skip WS push when Mode B is primary (env toggle).
+        import os
+
+        if os.environ.get("SCRAPOWER_WS_ASSIGN", "1") == "0":
+            return
+
         workers = self._sm.active_sessions
         if not workers:
             return
