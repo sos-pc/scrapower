@@ -43,7 +43,7 @@ EXPOSE 8777
 ENV SCRAPOWER_HOST=0.0.0.0
 ENV PYTHONUNBUFFERED=1
 ENV HOME=/app
-ENV KAGGLE_CONFIG_DIR=/app/.kaggle
+ENV KAGGLE_CONFIG_DIR=/tmp/.kaggle
 ENV PYTHONPATH=/app/src
 
-CMD ["python", "-m", "scrapower.coordinator.main"]
+CMD ["python", "-m", "scrapower.coordinator.main"]
