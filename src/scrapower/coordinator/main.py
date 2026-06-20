@@ -280,6 +280,10 @@ from .api.stats_api import router as stats_router
 
 app.include_router(stats_router)
 
+# Transcription endpoint
+from .api.transcribe_api import router as transcribe_router
+app.include_router(transcribe_router)
+
 log = structlog.get_logger()
 
 

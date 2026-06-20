@@ -38,7 +38,7 @@ class EmbeddedWorker:
                 self._client = WorkerClient(
                     self._url,
                     worker_id="_embedded",
-                    runtimes=["wasm"],
+                    runtimes=["wasm", "python"],
                     sandbox=self._sandbox,
                 )
                 await self._client.connect()

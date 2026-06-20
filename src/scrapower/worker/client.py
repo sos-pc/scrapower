@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import uuid
 
 import aiohttp
@@ -204,7 +205,10 @@ class WorkerClient:
                 task["payload"]["executable_hash"],
                 task["payload"]["input_hash"],
             )
-            output, output_hash = await self._run_sandbox(executable, input_data, task.get("assignment_token", ""))
+            output, output_hash = await self._run_sandbox(
+                executable, input_data, task.get('assignment_token', ''),
+                runtime=task.get('runtime', 'wasm')
+            )
             status, exit_code, stderr = "success", 0, ""
         except Exception as e:
             output_hash = ""
@@ -222,10 +226,43 @@ class WorkerClient:
                 input_data = await r.read()
         return executable, input_data
 
-    async def _run_sandbox(self, executable: bytes, input_data: bytes, assignment_token: str = "") -> tuple[bytes, str]:
+    async def _run_sandbox(
+        self, executable: bytes, input_data: bytes, assignment_token: str = "", runtime: str = "wasm"
+    ) -> tuple[bytes, str]:
         """Execute in the configured sandbox, return (output, output_hash)."""
         http_url = self._url.replace("ws://", "http://").replace("/worker/ws", "")
-        result = await self._sandbox.execute(executable, input_data)
+
+# Python runtime: execute script in thread pool (non-blocking)
+        if runtime == "python":
+            import asyncio, subprocess as sp, tempfile, pathlib
+            loop = asyncio.get_running_loop()
+            with tempfile.TemporaryDirectory() as tmp:
+                script = pathlib.Path(tmp) / "script.py"
+                script.write_bytes(executable)
+                try:
+                    proc = await loop.run_in_executor(None, lambda: sp.run(["python3", str(script)], input=input_data, capture_output=True, timeout=600))
+                    if proc.returncode != 0:
+                        err = proc.stderr.decode()[:4096]
+                        result = {"output_bytes": err.encode(), "output_hash": hashlib.sha256(err.encode()).hexdigest(), "exit_code": proc.returncode}
+                    else:
+                        out = proc.stdout
+                        try:
+                            result = json.loads(out.decode())
+                            if "output_bytes" in result and isinstance(result["output_bytes"], str):
+                                try:
+                                    result["output_bytes"] = bytes.fromhex(result["output_bytes"])
+                                except ValueError:
+                                    result["output_bytes"] = result["output_bytes"].encode()
+                        except (json.JSONDecodeError, UnicodeDecodeError):
+                            result = {"output_bytes": out, "output_hash": hashlib.sha256(out).hexdigest(), "exit_code": 0}
+                except sp.TimeoutExpired:
+                    result = {"output_bytes": b"timeout", "output_hash": hashlib.sha256(b"timeout").hexdigest(), "exit_code": -1}
+                except Exception as e:
+                    err = str(e).encode()
+                    result = {"output_bytes": err, "output_hash": hashlib.sha256(err).hexdigest(), "exit_code": -1}
+        else:
+            sbox = self._sandboxes.get(runtime, self._sandbox)
+            result = await sbox.execute(executable, input_data)
         output: bytes = result.get("output_bytes") or result.get("output_hash", "ok").encode()
         async with aiohttp.ClientSession() as session:
             token_param = f"?assignment_token={assignment_token}" if assignment_token else ""

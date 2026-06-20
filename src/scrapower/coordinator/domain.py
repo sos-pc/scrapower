@@ -30,6 +30,7 @@ class TaskService:
         executable_hash: str,
         input_hash: str,
         gpu_required: bool = False,
+        deadline_ms: int = 60000,
     ) -> Task:
         """Submit a new task. Returns the created Task."""
         return await self._tm.create(
@@ -39,6 +40,7 @@ class TaskService:
             executable_hash=executable_hash,
             input_hash=input_hash,
             gpu_required=gpu_required,
+            deadline_ms=deadline_ms,
         )
 
     async def assign(self, task_id: str, worker_id: str) -> tuple[bool, str]:
@@ -63,8 +65,9 @@ class TaskService:
         """Create a challenge record for double-execution verification."""
         return await self._tm.create_challenge(task_id, token_a, token_b)
 
-    async def requeue_stale(self, timeout_sec: float = 120) -> int:
+    async def requeue_stale(self, timeout_sec: float = 300) -> int:
         """Re-queue ASSIGNED tasks that haven't completed in time.
+        Uses 5 min default (generous for Python tasks with deps installation).
         Returns number of tasks requeued."""
         import time
 

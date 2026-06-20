@@ -6,9 +6,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir aiohttp wasmtime
+RUN pip install --no-cache-dir aiohttp wasmtime faster-whisper yt-dlp
 
 # Copy worker code (files are at the repo root in HF Spaces layout)
+# Pre-download Whisper tiny model (makes first task fast)
+RUN python -c "from faster_whisper import WhisperModel; WhisperModel('tiny', download_root='/tmp/whisper-models')"
+
 COPY worker/ /app/worker/
 COPY app.py /app/app.py
 

@@ -94,7 +94,7 @@ class Scheduler:
             # Best worker: external first, idle first, high reputation first.
             worker = compatible[0]
             if worker.worker_id == "_embedded":
-                continue  # Skip embedded — only for trusted/system tasks
+                continue  # Skip embedded � only for trusted/system tasks — only for trusted/system tasks
 
             # Determine if this task should be challenged (double-executed)
             should_challenge = False
