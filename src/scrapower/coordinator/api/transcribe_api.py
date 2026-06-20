@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 router = APIRouter(prefix="/transcribe", tags=["transcribe"])
 
 # Hardcoded hash of whisper_runner.py (pre-computed, updated when script changes)
-WHISPER_RUNNER_HASH = "b8d37f00601ead48ed5cb2087ab34ecf1527aa7fda3a0f2072c511b518d5746f"
+WHISPER_RUNNER_HASH = "47c68686bf35d424da938a5a7e4fab72b1b1f9bfcfd24c43692c8ad70d00f9b1"
 
 
 @router.post("")
