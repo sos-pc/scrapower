@@ -103,5 +103,21 @@ async def init_db(db_path: str | Path) -> aiosqlite.Connection:
     await db.execute("PRAGMA journal_mode=WAL")
     await db.execute("PRAGMA foreign_keys=ON")
     await db.executescript(SCHEMA)
+    await _migrate(db)
     await db.commit()
     return db
+
+
+async def _migrate(db: aiosqlite.Connection) -> None:
+    """Apply incremental schema migrations (safe to run repeatedly)."""
+    migrations = [
+        # Add deadline_ms for long-running tasks (Mode B)
+        "ALTER TABLE tasks ADD COLUMN deadline_ms INTEGER NOT NULL DEFAULT 60000",
+        # Add max_retries column (used by task lifecycle)
+        "ALTER TABLE tasks ADD COLUMN max_retries INTEGER NOT NULL DEFAULT 3",
+    ]
+    for sql in migrations:
+        try:
+            await db.execute(sql)
+        except Exception:
+            pass  # Column already exists — safe to ignore
