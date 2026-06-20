@@ -17,7 +17,7 @@ WORKDIR /app
 COPY pyproject.toml .
 RUN pip install --no-cache-dir \
     fastapi "uvicorn[standard]" pydantic aiosqlite aiofiles \
-    structlog aiohttp wasmtime cryptography kaggle
+    structlog aiohttp wasmtime cryptography kaggle faster-whisper yt-dlp
 
 # Copy application source (package lives in src/scrapower/)
 COPY src/ src/
