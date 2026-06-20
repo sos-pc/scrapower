@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 router = APIRouter(prefix="/transcribe", tags=["transcribe"])
 
 # Hardcoded hash of whisper_runner.py (pre-computed, updated when script changes)
-WHISPER_RUNNER_HASH = "33fc5aa2019882a55c7a90d87e22089791bfaaaaa42b7fe3085caa23a9f664f0"
+WHISPER_RUNNER_HASH = "7a29b7d7cdfe967202d93bc98efe0b188f8ffb2ef778deca9e3a83a0bf795b73"
 
 
 @router.post("")
@@ -49,6 +49,7 @@ async def transcribe(request: Request):
             "model": model,
             "language": language,
             "format": fmt,
+        "cookies_hash": "d7040e7866e8105a3232a231a4cc5f9f2c77bac55ff3ac76f4903979bab85e2b",
         }
     ).encode()
 
@@ -77,6 +78,7 @@ async def transcribe(request: Request):
             "model": model,
             "language": language or "auto",
             "format": fmt,
+        "cookies_hash": "d7040e7866e8105a3232a231a4cc5f9f2c77bac55ff3ac76f4903979bab85e2b",
             "hint": f"GET /results/{task_id} for transcript",
         }
     )

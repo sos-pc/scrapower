@@ -67,17 +67,28 @@ class TaskService:
 
     async def requeue_stale(self, timeout_sec: float = 300) -> int:
         """Re-queue ASSIGNED tasks that haven't completed in time.
-        Uses 5 min default (generous for Python tasks with deps installation).
+
+        Uses the task's own deadline_ms when it's longer than the default
+        (e.g. Whisper transcription can take 10+ min).  Falls back to
+        timeout_sec (default 300s) for backward compat.
+
         Returns number of tasks requeued."""
         import time
 
         now = time.time()
         cursor = await self._tm._db.execute(
-            "SELECT id FROM tasks WHERE state = ? AND assigned_at < ?",
-            (TaskState.ASSIGNED, str(now - timeout_sec)),
+            "SELECT id, deadline_ms, assigned_at FROM tasks WHERE state = ?",
+            (TaskState.ASSIGNED,),
         )
         count = 0
         async for row in cursor:
+            assigned_at = float(row["assigned_at"] or 0)
+            task_deadline_s = max(
+                timeout_sec,
+                (row["deadline_ms"] or 60000) / 1000.0,
+            )
+            if now - assigned_at < task_deadline_s:
+                continue  # Still within the task's own deadline
             await self._tm.transition(row["id"], TaskState.TIMEOUT)
             count += 1
         return count

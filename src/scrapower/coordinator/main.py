@@ -103,6 +103,11 @@ async def lifespan(app: FastAPI):
     router_mod.session_manager = manager
     zombie_task = asyncio.create_task(manager.zombie_watchdog())
 
+    # Configure Mode B HTTP pull rate limit
+    from .worker_gateway.http_handler import configure_rate_limit
+
+    configure_rate_limit(config.pull_rate_limit_per_ip)
+
     # Task manager and scheduler
     task_manager = TaskManager(db)
     app.state.task_manager = task_manager
@@ -154,10 +159,12 @@ async def lifespan(app: FastAPI):
     if kaggle_accounts:
         from .harvester.kaggle import KaggleHarvester
 
-        coordinator_ws = f"wss://scrapower.talos-int.com/worker/ws"
+        coordinator_url = os.environ.get(
+            "SCRAPOWER_COORDINATOR_URL", "https://scrapower.talos-int.com"
+        )
         kaggle_harvester = KaggleHarvester(
             accounts=kaggle_accounts,
-            coordinator_url=coordinator_ws,
+            coordinator_url=coordinator_url,
             api_key=os.environ.get("SCRAPOWER_API_KEY", ""),
         )
         kaggle_task = asyncio.create_task(kaggle_harvester.run())
@@ -282,6 +289,7 @@ app.include_router(stats_router)
 
 # Transcription endpoint
 from .api.transcribe_api import router as transcribe_router
+
 app.include_router(transcribe_router)
 
 log = structlog.get_logger()

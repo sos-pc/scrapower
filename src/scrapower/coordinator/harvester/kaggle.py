@@ -1,7 +1,6 @@
-"""Kaggle Harvester — auto-start GPU workers when tasks are waiting.
+"""Kaggle Harvester — auto-start workers when ANY tasks are waiting.
 
-Uses kaggle CLI to create/run kernels with GPU on demand.
-Monitors task queue and connected workers every TICK_SEC.
+Uses kaggle CLI to create/run kernels on demand.
 Supports multiple accounts via KAGGLE_ACCOUNTS env var.
 """
 
@@ -29,7 +28,7 @@ class KaggleHarvester:
         api_key: str = "",
         notebook_template: str | None = None,
     ):
-        self._accounts = accounts  # [{"username": "...", "token": "..."}]
+        self._accounts = accounts
         self._coordinator_url = coordinator_url
         self._api_key = api_key
         self._notebook_template = notebook_template or self._find_notebook()
@@ -60,44 +59,25 @@ class KaggleHarvester:
     async def _tick(self):
         if time.time() - self._last_start < COOLDOWN_SEC:
             return
-        if self._gpu_worker_connected():
+        queued = await self._count_queued_tasks()
+        log.debug("harvester tick: queued=%d", queued)
+        if queued == 0:
             return
-
-        gpu_tasks = await self._count_gpu_tasks()
-        if gpu_tasks == 0:
-            return
-
+        log.info("harvester: %d queued tasks, starting kernel", queued)
         await self._start_kernel()
 
-    async def _count_gpu_tasks(self) -> int:
+    async def _count_queued_tasks(self) -> int:
         try:
             import scrapower.coordinator.worker_gateway.router as rmod
 
             tm = getattr(rmod, "task_manager", None)
             if tm is None:
                 return 0
-            cursor = await tm._db.execute(
-                "SELECT COUNT(*) as n FROM tasks WHERE gpu_required = 1 AND state = 'queued'"
-            )
+            cursor = await tm._db.execute("SELECT COUNT(*) as n FROM tasks WHERE state = 'queued'")
             row = await cursor.fetchone()
             return row["n"] if row else 0
         except Exception:
             return 0
-
-    def _gpu_worker_connected(self) -> bool:
-        try:
-            import scrapower.coordinator.worker_gateway.router as rmod
-
-            sm = getattr(rmod, "session_manager", None)
-            if sm is None:
-                return False
-            for s in sm.active_sessions:
-                caps = s.capabilities or {}
-                if caps.get("resources", {}).get("gpu", {}).get("supported"):
-                    return True
-            return False
-        except Exception:
-            return False
 
     async def _start_kernel(self):
         account = self._next_account()
@@ -119,10 +99,18 @@ class KaggleHarvester:
             src = cell.get("source", "")
             if isinstance(src, list):
                 src = "".join(src)
-            src = src.replace(
-                'COORDINATOR_URL = "wss://scrapower.talos-int.com/worker/ws"',
-                f'COORDINATOR_URL = "{self._coordinator_url}"',
-            )
+            # Replace coordinator URL in the notebook template.
+            # Mode B uses HTTP (not WebSocket), e.g. https://scrapower.talos-int.com
+            for pat in (
+                "https://scrapower.talos-int.com",
+                "wss://scrapower.talos-int.com/worker/ws",
+            ):
+                if pat in src:
+                    src = src.replace(
+                        f'COORDINATOR_URL = "{pat}"',
+                        f'COORDINATOR_URL = "{self._coordinator_url}"',
+                    )
+                    break
             src = src.replace('API_KEY = ""', f'API_KEY = "{self._api_key}"')
             cell["source"] = src
 

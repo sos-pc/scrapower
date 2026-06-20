@@ -16,10 +16,7 @@ from .sandbox import Sandbox
 
 
 class WorkerClient:
-    """Worker that connects to a Scrapower coordinator via WebSocket.
-
-    Handles handshake, heartbeat, task reception, execution, and result submission.
-    """
+    """Worker that connects to a Scrapower coordinator via WebSocket."""
 
     def __init__(
         self,
@@ -28,12 +25,14 @@ class WorkerClient:
         auth_token: str | None = None,
         runtimes: list[str] | None = None,
         sandbox: Sandbox | None = None,
+        sandboxes: dict[str, Sandbox] | None = None,
     ):
         self._url = coordinator_url
         self._worker_id = worker_id or f"worker-{uuid.uuid4().hex[:8]}"
         self._auth_token = auth_token
         self._runtimes = runtimes or ["wasm"]
         self._sandbox: Sandbox = sandbox or _default_sandbox()
+        self._sandboxes: dict[str, Sandbox] = sandboxes or {}
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._session_id: str | None = None
         self._running = False
@@ -43,38 +42,27 @@ class WorkerClient:
     def session_id(self) -> str | None:
         return self._session_id
 
-    # ── Connection lifecycle ──────────────────────────────
-
     async def connect(self):
-        """Open WebSocket, complete handshake, send capabilities."""
         self._session = aiohttp.ClientSession()
         self._ws = await self._session.ws_connect(self._url)
-
         await self._send_hello()
         await self._receive_session()
         await self._send_capabilities()
 
     async def disconnect(self):
-        """Send bye and close the WebSocket cleanly."""
         self._running = False
         if self._ws and not self._ws.closed:
             await self._ws.send_json(
-                {
-                    "type": "bye",
-                    "session_id": self._session_id,
-                    "reason": "user_disconnect",
-                }
+                {"type": "bye", "session_id": self._session_id, "reason": "user_disconnect"}
             )
             await self._ws.close()
         if self._session:
             await self._session.close()
 
     async def run(self):
-        """Main loop: heartbeat + receive messages."""
         self._running = True
         await self.connect()
         next_hb = asyncio.get_event_loop().time() + self._heartbeat_interval
-
         try:
             while self._running and self._ws and not self._ws.closed:
                 now = asyncio.get_event_loop().time()
@@ -92,7 +80,7 @@ class WorkerClient:
             self._running = False
             await self.disconnect()
 
-    # ── Protocol messages (outgoing) ──────────────────────
+    # ── Protocol messages ──────────────────────────────────
 
     async def _send_hello(self):
         auth = {"method": "none"}
@@ -153,9 +141,7 @@ class WorkerClient:
             }
         )
 
-    async def _send_result(
-        self, task_id: str, token: str, status: str, output_hash: str, exit_code: int, stderr: str
-    ):
+    async def _send_result(self, task_id, token, status, output_hash, exit_code, stderr):
         assert self._ws is not None
         await self._ws.send_json(
             {
@@ -176,7 +162,7 @@ class WorkerClient:
             }
         )
 
-    # ── Message handling ──────────────────────────────────
+    # ── Message handling ────────────────────────────────────
 
     async def _handle_message(self, msg: dict):
         msg_type = msg.get("type", "")
@@ -195,29 +181,27 @@ class WorkerClient:
                 )
             await self._execute_task(msg["task"])
 
-    # ── Task execution ────────────────────────────────────
+    # ── Task execution ──────────────────────────────────────
 
     async def _execute_task(self, task: dict):
-        """Download blobs, execute in sandbox, upload result, submit."""
         token = task.get("assignment_token", "")
         try:
             executable, input_data = await self._download_blobs(
-                task["payload"]["executable_hash"],
-                task["payload"]["input_hash"],
+                task["payload"]["executable_hash"], task["payload"]["input_hash"]
             )
             output, output_hash = await self._run_sandbox(
-                executable, input_data, task.get('assignment_token', ''),
-                runtime=task.get('runtime', 'wasm')
+                executable,
+                input_data,
+                task.get("assignment_token", ""),
+                runtime=task.get("runtime", "wasm"),
             )
             status, exit_code, stderr = "success", 0, ""
         except Exception as e:
             output_hash = ""
             status, exit_code, stderr = "error", 1, str(e)[:4096]
-
         await self._send_result(task["id"], token, status, output_hash, exit_code, stderr)
 
-    async def _download_blobs(self, exec_hash: str, input_hash: str) -> tuple[bytes, bytes]:
-        """Download executable and input blobs from the coordinator."""
+    async def _download_blobs(self, exec_hash, input_hash):
         http_url = self._url.replace("ws://", "http://").replace("/worker/ws", "")
         async with aiohttp.ClientSession() as session:
             async with session.get(f"{http_url}/blobs/{exec_hash}") as r:
@@ -226,24 +210,36 @@ class WorkerClient:
                 input_data = await r.read()
         return executable, input_data
 
-    async def _run_sandbox(
-        self, executable: bytes, input_data: bytes, assignment_token: str = "", runtime: str = "wasm"
-    ) -> tuple[bytes, str]:
-        """Execute in the configured sandbox, return (output, output_hash)."""
+    async def _run_sandbox(self, executable, input_data, assignment_token="", runtime="wasm"):
         http_url = self._url.replace("ws://", "http://").replace("/worker/ws", "")
 
-# Python runtime: execute script in thread pool (non-blocking)
         if runtime == "python":
-            import asyncio, subprocess as sp, tempfile, pathlib
-            loop = asyncio.get_running_loop()
+            import asyncio as aio
+            import pathlib
+            import subprocess as sp
+            import tempfile
+
+            loop = aio.get_running_loop()
             with tempfile.TemporaryDirectory() as tmp:
                 script = pathlib.Path(tmp) / "script.py"
                 script.write_bytes(executable)
                 try:
-                    proc = await loop.run_in_executor(None, lambda: sp.run(["python3", str(script)], input=input_data, capture_output=True, timeout=600))
+                    proc = await loop.run_in_executor(
+                        None,
+                        lambda: sp.run(
+                            ["python3", str(script)],
+                            input=input_data,
+                            capture_output=True,
+                            timeout=600,
+                        ),
+                    )
                     if proc.returncode != 0:
                         err = proc.stderr.decode()[:4096]
-                        result = {"output_bytes": err.encode(), "output_hash": hashlib.sha256(err.encode()).hexdigest(), "exit_code": proc.returncode}
+                        result = {
+                            "output_bytes": err.encode(),
+                            "output_hash": hashlib.sha256(err.encode()).hexdigest(),
+                            "exit_code": proc.returncode,
+                        }
                     else:
                         out = proc.stdout
                         try:
@@ -254,25 +250,35 @@ class WorkerClient:
                                 except ValueError:
                                     result["output_bytes"] = result["output_bytes"].encode()
                         except (json.JSONDecodeError, UnicodeDecodeError):
-                            result = {"output_bytes": out, "output_hash": hashlib.sha256(out).hexdigest(), "exit_code": 0}
+                            result = {
+                                "output_bytes": out,
+                                "output_hash": hashlib.sha256(out).hexdigest(),
+                                "exit_code": 0,
+                            }
                 except sp.TimeoutExpired:
-                    result = {"output_bytes": b"timeout", "output_hash": hashlib.sha256(b"timeout").hexdigest(), "exit_code": -1}
+                    result = {
+                        "output_bytes": b"timeout",
+                        "output_hash": hashlib.sha256(b"timeout").hexdigest(),
+                        "exit_code": -1,
+                    }
                 except Exception as e:
                     err = str(e).encode()
-                    result = {"output_bytes": err, "output_hash": hashlib.sha256(err).hexdigest(), "exit_code": -1}
+                    result = {
+                        "output_bytes": err,
+                        "output_hash": hashlib.sha256(err).hexdigest(),
+                        "exit_code": -1,
+                    }
         else:
             sbox = self._sandboxes.get(runtime, self._sandbox)
             result = await sbox.execute(executable, input_data)
-        output: bytes = result.get("output_bytes") or result.get("output_hash", "ok").encode()
+
+        output = result.get("output_bytes") or result.get("output_hash", "ok").encode()
         async with aiohttp.ClientSession() as session:
             token_param = f"?assignment_token={assignment_token}" if assignment_token else ""
             async with session.put(f"{http_url}/blobs{token_param}", data=output) as r:
                 upload_resp = await r.json()
                 output_hash = upload_resp.get("hash", hashlib.sha256(output).hexdigest())
         return output, output_hash
-
-
-# ── Default sandbox (mock, overridable) ─────────────────────
 
 
 def _default_sandbox() -> Sandbox:
