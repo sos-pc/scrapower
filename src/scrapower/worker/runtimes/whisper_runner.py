@@ -99,30 +99,40 @@ def _fmt(sec):
 
 
 def main():
-    _ensure_deps()
-    config = json.loads(sys.argv[1] if len(sys.argv) > 1 else sys.stdin.read())
-    url = config.get("url", "")
-    model_name = config.get("model", "large-v3")
-    language = config.get("language") or None
-    fmt = config.get("format", "json")
-    cookies_hash = config.get("cookies_hash", "")
-    with tempfile.TemporaryDirectory() as tmp:
-        workdir = Path(tmp)
-        cookies_path = None
-        if cookies_hash:
-            cookies_path = str(workdir / "cookies.txt")
-            urllib.request.urlretrieve(
-                f"https://scrapower.talos-int.com/blobs/{cookies_hash}", cookies_path
-            )
-        print(f"Downloading: {url}", file=sys.stderr)
-        audio_path = _download_audio(url, workdir, cookies_path)
-        print(f"Transcribing: {model_name}", file=sys.stderr)
-        start = time.time()
-        transcript = _transcribe(audio_path, model_name, language, fmt)
-        print(f"Done in {time.time() - start:.1f}s", file=sys.stderr)
-    output = transcript.encode("utf-8")
-    output_hash = hashlib.sha256(output).hexdigest()
-    print(json.dumps({"output_bytes": output.hex(), "output_hash": output_hash}))
+    try:
+        _ensure_deps()
+        config = json.loads(sys.argv[1] if len(sys.argv) > 1 else sys.stdin.read())
+        url = config.get("url", "")
+        model_name = config.get("model", "large-v3")
+        language = config.get("language") or None
+        fmt = config.get("format", "json")
+        cookies_hash = config.get("cookies_hash", "")
+        with tempfile.TemporaryDirectory() as tmp:
+            workdir = Path(tmp)
+            cookies_path = None
+            if cookies_hash:
+                cookies_path = str(workdir / "cookies.txt")
+                urllib.request.urlretrieve(
+                    f"https://scrapower.talos-int.com/blobs/{cookies_hash}", cookies_path
+                )
+            print(f"Downloading: {url}", file=sys.stderr)
+            audio_path = _download_audio(url, workdir, cookies_path)
+            print(f"Transcribing: {model_name}", file=sys.stderr)
+            start = time.time()
+            transcript = _transcribe(audio_path, model_name, language, fmt)
+            print(f"Done in {time.time() - start:.1f}s", file=sys.stderr)
+        output = transcript.encode("utf-8")
+        output_hash = hashlib.sha256(output).hexdigest()
+        print(json.dumps({"output_bytes": output.hex(), "output_hash": output_hash}))
+    except Exception as e:
+        err = f"{type(e).__name__}: {e}"
+        print(err, file=sys.stderr)
+        output = err.encode("utf-8")
+        output_hash = hashlib.sha256(output).hexdigest()
+        # Return error as output so coordinator can see it
+        print(
+            json.dumps({"output_bytes": output.hex(), "output_hash": output_hash, "exit_code": 1})
+        )
 
 
 if __name__ == "__main__":

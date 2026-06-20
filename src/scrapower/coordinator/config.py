@@ -41,7 +41,7 @@ class Config:
     # Security
     enforce_segregation: bool = False
     max_anonymous_workers: int = 100
-    pull_rate_limit_per_ip: int = 12  # per minute
+    pull_rate_limit_per_ip: int = 30  # per minute
 
     # Keepalive
     keepalive_enabled: bool = True
