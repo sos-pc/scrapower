@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from fastapi import APIRouter, Request, WebSocket
 
 from .http_handler import pull, submit
 from .session import SessionManager
 from .ws_handler import handle_ws
+
+if TYPE_CHECKING:
+    from ..reputation import ReputationService
 
 router = APIRouter()
 
@@ -14,12 +19,13 @@ router = APIRouter()
 session_manager: SessionManager | None = None
 task_manager = None  # set by coordinator lifespan
 task_service = None  # type: ignore[assignment]
+reputation_service: "ReputationService | None" = None
 
 
 @router.websocket("/worker/ws")
 async def worker_ws(ws: WebSocket):
     """Mode A: Persistent WebSocket connection."""
-    await handle_ws(ws, session_manager, task_service)  # type: ignore[arg-type]
+    await handle_ws(ws, session_manager, task_service, reputation_service)  # type: ignore[arg-type]
 
 
 @router.post("/worker/pull")

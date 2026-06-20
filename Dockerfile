@@ -17,10 +17,11 @@ WORKDIR /app
 COPY pyproject.toml .
 RUN pip install --no-cache-dir \
     fastapi "uvicorn[standard]" pydantic aiosqlite aiofiles \
-    structlog aiohttp wasmtime cryptography
+    structlog aiohttp wasmtime cryptography kaggle
 
 # Copy application source (package lives in src/scrapower/)
 COPY src/ src/
+COPY deploy/ deploy/
 
 # Copy built browser worker from Stage 1
 COPY --from=builder /build/dist/worker.js src/scrapower/coordinator/static/worker.js
@@ -36,6 +37,8 @@ EXPOSE 8777
 
 ENV SCRAPOWER_HOST=0.0.0.0
 ENV PYTHONUNBUFFERED=1
+ENV HOME=/app
+ENV KAGGLE_CONFIG_DIR=/app/.kaggle
 ENV PYTHONPATH=/app/src
 
 CMD ["python", "-m", "scrapower.coordinator.main"]

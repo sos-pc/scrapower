@@ -28,9 +28,14 @@ def create_client_router(require_auth: Callable | None = None) -> APIRouter:
             )
 
     def _check_owner(task, request: Request) -> None:
-        """Verify the requester owns this task (inter-client isolation)."""
+        """Verify the requester owns this task (inter-client isolation).
+
+        Every client — including the default "anonymous" — can only access
+        their own tasks.  Omitting X-Client-ID defaults to "anonymous",
+        which only owns tasks submitted without an explicit client_id.
+        """
         client_id = _get_client_id(request)
-        if task and task.client_id != client_id and client_id != "anonymous":
+        if task and task.client_id != client_id:
             raise HTTPException(
                 status_code=403,
                 detail={"error": "FORBIDDEN", "hint": f"Task belongs to {task.client_id}"},

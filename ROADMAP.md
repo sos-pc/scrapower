@@ -42,21 +42,29 @@
 
 ## 🔜 Phase 4 — Fiabilité & Capacités (v0.4)
 
-- [ ] **Réputation workers** — score basé sur challenges matched/mismatched, blacklist automatique
-- [ ] **Challenge adaptatif** — nouveau worker = 100% challengé, fiable = 1%, suspect = 50%
+- [x] **Réputation workers** — score basé sur challenges matched/mismatched, blacklist automatique
+- [x] **Challenge adaptatif** — nouveau worker = 100% challengé, fiable = 1%, suspect = 50%
+- [x] **Isolation client** — bypass `anonymous` corrigé, `_check_owner` strict
+- [x] **Auth worker** — token vérifié contre `SCRAPOWER_API_KEY`, comparaison constant-time (`hmac.compare_digest`)
+- [x] **Correction `total_changes`** — remplacé par `cursor.rowcount` pour la détection de race condition
 - [ ] **Dashboard temps réel** — WebSocket push des stats, workers live, challenges
 - [ ] **Web Crypto** — signatures Ed25519 côté worker, preuves d'exécution
 - [ ] **Multi-tenant** — isolation client_id, quotas, priorités par client
 - [ ] **SIMD WASM** — calcul vectoriel CPU
 - [ ] **Vanity Hash Finder** — démonstrateur de recherche distribuée (SHA-256 brute force)
+- [ ] **Mode `redundant`** — double-exécution à 100% (optionnel, documenté) — standard BOINC/SETI@home
 
 ---
 
-## 🔜 Phase 5 — Scale & Monétisation (v0.5)
+## 🔜 Phase 5 — Scale & Compute Unifié (v0.5)
 
+- [ ] **Runtime LLM** — llama.cpp/WebLLM sur workers GPU, modèles GGUF dans blob store
+- [ ] **Runtime Docker** — tâches `{"runtime": "docker", "image_hash": "..."}`
+- [ ] **Mode FaaS** — endpoint `/faas/{func_hash}` → exécute WASM et renvoie la réponse HTTP
 - [ ] **Google Cloud Run Harvester** — workers 4 GB RAM, 60 min
-- [ ] **Hugging Face Spaces** — workers GPU gratuits (16 GB, T4)
-- [ ] **Golem Network** — brancher Scrapower comme provider sur le marketplace (rémunéré en GLM)
+- [x] **HuggingFace Spaces** — worker Docker 16 GB RAM CPU, always-on, zéro coût
+- [ ] **Modal** — worker GPU A100 (crédits $30/mois)
+- [ ] **Kaggle Notebook** — worker GPU T4 30h/semaine (opt-in manuel)
 - [ ] **Observabilité** — Prometheus, logs JSON, alertes
 - [ ] **Vérification ZK** — preuves à divulgation nulle (pas de redondance, vérification O(1))
 - [ ] **SDK Python** — `pip install scrapower`, soumission de tâches en 3 lignes
@@ -69,7 +77,11 @@
 - [ ] Fédération de coordinateurs
 - [ ] Compute-to-earn mobile
 - [ ] Intégration IPFS — stockage décentralisé des blobs
-- [ ] Token ERC-20 — rémunération on-chain des workers
+- [ ] Mode VPS/K8s simulé — déploiement Docker persistant sur workers dédiés (Oracle ARM)
+
+> **Note :** Golem Network et token ERC-20 retirés de la roadmap.
+> Golem = distraction avant v1.0 (VM non-WASM, friction token).
+> La valeur de Scrapower est la friction zéro, pas la tokenomie.
 
 ---
 

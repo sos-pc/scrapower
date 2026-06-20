@@ -10,11 +10,7 @@ router = APIRouter(prefix="/stats", tags=["stats"])
 
 @router.get("")
 async def get_stats(request: Request):
-    """Return infrastructure capacity and health metrics.
-
-    Workers from the same IP are grouped as a single machine to avoid
-    double-counting CPU/RAM/GPU from multiple browser tabs.
-    """
+    """Return infrastructure capacity and health metrics."""
     import scrapower.coordinator.worker_gateway.router as router_mod
 
     sm = getattr(router_mod, "session_manager", None)
@@ -29,17 +25,14 @@ async def get_stats(request: Request):
         ip = s.peer_ip if hasattr(s, "peer_ip") and s.peer_ip else "unknown"
         by_ip.setdefault(ip, []).append(s)
 
-    # Aggregate by type
     by_type: dict[str, dict] = {}
     total_machines = 0
     total_cpu = 0
     total_ram_mb = 0
     total_gpu = 0
-    total_tasks = 0
-    total_completed = 0
+    gpu_worker_connected = False
 
     for ip, ip_sessions in by_ip.items():
-        # For a single machine: use max values, not sum
         max_cpu = 0
         max_ram = 0
         has_gpu = False
@@ -58,9 +51,9 @@ async def get_stats(request: Request):
             max_ram = max(max_ram, ram)
             if gpu:
                 has_gpu = True
+                gpu_worker_connected = True
             tab_count += 1
 
-            # Determine primary type
             if wid.startswith("browser-"):
                 wtype = "browser"
             elif wid.startswith("gh-"):
@@ -86,6 +79,7 @@ async def get_stats(request: Request):
 
     # Individual worker details
     worker_list = []
+    total_tasks = 0
     for s in sessions:
         caps = s.capabilities or {}
         resources = caps.get("resources", {})
@@ -101,16 +95,30 @@ async def get_stats(request: Request):
         )
         total_tasks += s.tasks_in_progress
 
-    # Get completed task count from DB
+    # DB queries
     db = request.app.state.db if hasattr(request.app.state, "db") else None
+    total_completed = 0
+    gpu_tasks_queued = 0
     if db:
-        cursor = await db.execute("SELECT COUNT(*) as n FROM tasks WHERE state = ?", ("validated",))
+        cursor = await db.execute("SELECT COUNT(*) as n FROM tasks WHERE state = ?", ("completed",))
         row = await cursor.fetchone()
         if row:
             total_completed = row["n"]
+        # Also count old "validated" state for backward compat
+        cursor = await db.execute("SELECT COUNT(*) as n FROM tasks WHERE state = ?", ("validated",))
+        row = await cursor.fetchone()
+        if row:
+            total_completed += row["n"]
+        # GPU tasks waiting in queue
+        cursor = await db.execute(
+            "SELECT COUNT(*) as n FROM tasks WHERE gpu_required = 1 AND state = 'queued'"
+        )
+        row = await cursor.fetchone()
+        if row:
+            gpu_tasks_queued = row["n"]
 
     n_workers = max(len(sessions), 1)
-    est_tps = n_workers / 5.0  # conservative: 1 task every 5s per worker
+    est_tps = n_workers / 5.0
 
     return JSONResponse(
         {
@@ -139,6 +147,11 @@ async def get_stats(request: Request):
             },
             "active_tasks": total_tasks,
             "completed_tasks": total_completed,
+            "gpu": {
+                "gpu_worker_connected": gpu_worker_connected,
+                "gpu_tasks_queued": gpu_tasks_queued,
+                "needs_worker": gpu_tasks_queued > 0 and not gpu_worker_connected,
+            },
             "workers": worker_list,
         }
     )

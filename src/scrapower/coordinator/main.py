@@ -6,6 +6,7 @@ Start with: python -m scrapower.coordinator.main
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -66,6 +67,7 @@ async def lifespan(app: FastAPI):
 
     # Crypto: Fernet with per-deployment salt from SQLite
     from .crypto_utils import init_fernet
+
     init_fernet(config.db_path)
     log.info("fernet initialized")
 
@@ -105,6 +107,13 @@ async def lifespan(app: FastAPI):
     task_manager = TaskManager(db)
     app.state.task_manager = task_manager
     router_mod.task_manager = task_manager  # type: ignore[assignment]
+
+    # Reputation service (tracks worker trust based on challenge results)
+    from .reputation import ReputationService
+
+    reputation_service = ReputationService(db)
+    router_mod.reputation_service = reputation_service  # type: ignore[assignment]
+
     task_service = TaskService(task_manager)
     app.state.task_service = task_service
     router_mod.task_service = task_service  # type: ignore[assignment]
@@ -118,6 +127,7 @@ async def lifespan(app: FastAPI):
         tick_sec=config.scheduler_tick_sec,
         enforce_segregation=config.enforce_segregation,
         verification_mode=config.default_verification_mode,
+        reputation_service=reputation_service,
     )
     sched_task = asyncio.create_task(scheduler.run())
 
@@ -133,14 +143,37 @@ async def lifespan(app: FastAPI):
     # Start GC background task
     gc_task = asyncio.create_task(_gc_loop(config, db))
 
+    # Kaggle GPU harvester (auto-start kernels when GPU tasks are waiting)
+    kaggle_accounts_raw = os.environ.get("KAGGLE_ACCOUNTS", "")
+    kaggle_accounts = []
+    if kaggle_accounts_raw:
+        try:
+            kaggle_accounts = json.loads(kaggle_accounts_raw)
+        except json.JSONDecodeError:
+            log.warning("kaggle_accounts: invalid JSON, skipping harvester")
+    if kaggle_accounts:
+        from .harvester.kaggle import KaggleHarvester
+
+        coordinator_ws = f"wss://scrapower.talos-int.com/worker/ws"
+        kaggle_harvester = KaggleHarvester(
+            accounts=kaggle_accounts,
+            coordinator_url=coordinator_ws,
+            api_key=os.environ.get("SCRAPOWER_API_KEY", ""),
+        )
+        kaggle_task = asyncio.create_task(kaggle_harvester.run())
+        log.info("kaggle harvester started", accounts=len(kaggle_accounts))
+    else:
+        kaggle_task = None
+        kaggle_harvester = None
+
     try:
         yield
     finally:
-        for t in (gc_task, zombie_task, sched_task):
+        for t in (gc_task, zombie_task, sched_task, kaggle_task):
             t.cancel()
         if embed_task is not None:
             embed_task.cancel()
-        for t in (gc_task, zombie_task, sched_task):
+        for t in (gc_task, zombie_task, sched_task, kaggle_task):
             try:
                 await t
             except asyncio.CancelledError:
@@ -165,6 +198,7 @@ async def _verify_assignment_token(db, token: str) -> bool:
     )
     row = await cursor.fetchone()
     return row is not None
+
 
 async def _purge_orphaned_assignments(db, log) -> int:
     """Reset ASSIGNED tasks back to QUEUED at startup â€” they're orphaned after restart."""
@@ -212,6 +246,7 @@ app = FastAPI(
 
 # CORS — allows cross-origin embed on any website
 from .cors_middleware import CORSMiddleware
+
 app.add_middleware(CORSMiddleware)
 
 app.include_router(worker_router)
@@ -308,11 +343,13 @@ async def check_blob(hash_hex: str):
 async def embed_page(request: Request):
     """Serve the embeddable worker page (iframe-compatible)."""
     from fastapi.responses import FileResponse
+
     embed_path = Path(__file__).parent / "static" / "embed.html"
     resp = FileResponse(embed_path)
     # No X-Frame-Options = allow framing from any origin
     # CSP frame-ancestors is the modern equivalent (set via Caddy)
     return resp
+
 
 @app.get("/")
 async def homepage():

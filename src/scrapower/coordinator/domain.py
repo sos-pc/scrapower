@@ -59,6 +59,10 @@ class TaskService:
     async def get_queued(self, limit: int = 100) -> list[Task]:
         return await self._tm.get_queued(limit)
 
+    async def create_challenge(self, task_id: str, token_a: str, token_b: str) -> None:
+        """Create a challenge record for double-execution verification."""
+        return await self._tm.create_challenge(task_id, token_a, token_b)
+
     async def requeue_stale(self, timeout_sec: float = 120) -> int:
         """Re-queue ASSIGNED tasks that haven't completed in time.
         Returns number of tasks requeued."""
@@ -87,11 +91,30 @@ class SchedulingPolicy:
     def __init__(self, enforce_segregation: bool = False):
         self._enforce_segregation = enforce_segregation
 
-    def match(self, task: Task, workers: list[WorkerSession]) -> list[WorkerSession]:
-        """Return compatible workers sorted by preference (best first)."""
+    def match(
+        self,
+        task: Task,
+        workers: list[WorkerSession],
+        reputations: dict[str, float] | None = None,
+    ) -> list[WorkerSession]:
+        """Return compatible workers sorted by preference (best first).
+
+        Args:
+            task: The task to match.
+            workers: Available workers.
+            reputations: Optional {worker_id: score} dict (0.0=blacklisted, 1.0=trusted).
+                         Workers with score <= 0.0 are excluded.
+        """
+        if reputations is None:
+            reputations = {}
+
         compatible = []
         for w in workers:
             if not w.capabilities:
+                continue
+
+            # Blacklist check (reputation score <= 0 means blacklisted)
+            if reputations.get(w.worker_id, 0.5) <= 0.0:
                 continue
 
             # Segregation rule
@@ -119,9 +142,15 @@ class SchedulingPolicy:
 
             compatible.append(w)
 
-        # Shuffle for fairness, then sort by load (idle first)
+        # Shuffle for fairness, then sort by load & reputation (idle + trusted first)
         import random
 
         random.shuffle(compatible)
-        compatible.sort(key=lambda w: (1 if w.worker_id == "_embedded" else 0, w.tasks_in_progress))
+        compatible.sort(
+            key=lambda w: (
+                1 if w.worker_id == "_embedded" else 0,
+                w.tasks_in_progress,
+                -reputations.get(w.worker_id, 0.5),  # higher reputation = lower sort key
+            )
+        )
         return compatible

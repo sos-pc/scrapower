@@ -2,6 +2,8 @@
 
 Runs as a background loop. Pushes task_assign directly to worker WebSockets.
 Supports challenge verification: double-executes random tasks to detect lies.
+Challenge rate is now adaptive: new/untrusted workers get higher rates,
+trusted workers get minimum sampling.
 """
 
 from __future__ import annotations
@@ -9,15 +11,19 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+from typing import TYPE_CHECKING
 
 from .domain import SchedulingPolicy, TaskService
 from .protocol import TaskAssign, TaskPayload, to_dict
 from .worker_gateway.session import SessionManager
 
+if TYPE_CHECKING:
+    from .reputation import ReputationService
+
 log = logging.getLogger(__name__)
 
-# Chance of double-execution when verification_mode = "challenge"
-CHALLENGE_RATE = 0.10
+# Default challenge rate when reputation service is unavailable
+DEFAULT_CHALLENGE_RATE = 0.10
 
 
 class Scheduler:
@@ -30,12 +36,14 @@ class Scheduler:
         tick_sec: float = 5.0,
         enforce_segregation: bool = False,
         verification_mode: str = "trust",
+        reputation_service: "ReputationService | None" = None,
     ):
         self._tasks = task_service
         self._sm = session_manager
         self._tick = tick_sec
         self._verification = verification_mode
         self._policy = SchedulingPolicy(enforce_segregation=enforce_segregation)
+        self._reputation = reputation_service
         self._running = False
 
     async def run(self):
@@ -59,27 +67,48 @@ class Scheduler:
         if not workers:
             return
 
-        log.info("active workers: %d, queued tasks: %d", len(workers), len(tasks))
+        # Pre-load reputation scores for all active workers
+        reputations: dict[str, float] = {}
+        if self._reputation:
+            for w in workers:
+                try:
+                    rep = await self._reputation.get(w.worker_id)
+                    reputations[w.worker_id] = rep.score
+                except Exception:
+                    reputations[w.worker_id] = 0.5  # neutral fallback
+
+        log.info(
+            "active workers: %d, queued tasks: %d",
+            len(workers),
+            len(tasks),
+        )
 
         for task in tasks:
             if task.is_terminal:
                 continue
 
-            compatible = self._policy.match(task, workers)
+            compatible = self._policy.match(task, workers, reputations)
             if not compatible:
                 continue
 
-            # Best worker: external first, idle first. Skip embedded for untrusted tasks.
+            # Best worker: external first, idle first, high reputation first.
             worker = compatible[0]
             if worker.worker_id == "_embedded":
                 continue  # Skip embedded — only for trusted/system tasks
 
             # Determine if this task should be challenged (double-executed)
-            should_challenge = (
-                self._verification == "challenge"
-                and random.random() < CHALLENGE_RATE
-                and len(compatible) >= 2  # need at least 2 workers
-            )
+            should_challenge = False
+            challenge_probability = DEFAULT_CHALLENGE_RATE
+
+            if self._verification == "challenge" and len(compatible) >= 2:
+                if self._reputation:
+                    try:
+                        challenge_probability = await self._reputation.challenge_rate(
+                            worker.worker_id
+                        )
+                    except Exception:
+                        challenge_probability = DEFAULT_CHALLENGE_RATE
+                should_challenge = random.random() < challenge_probability
 
             if should_challenge:
                 worker_b = compatible[1]
@@ -118,7 +147,9 @@ class Scheduler:
                 await worker.ws.send_json(to_dict(msg))
             except Exception:
                 log.warning(
-                    "failed to push task to worker", task_id=task.id, worker_id=worker.worker_id
+                    "failed to push task to worker",
+                    task_id=task.id,
+                    worker_id=worker.worker_id,
                 )
 
     async def _assign_challenged(self, task, worker_a, worker_b):
@@ -129,10 +160,6 @@ class Scheduler:
             await self._assign_single(task, worker_b)  # fallback: single assign
             return
 
-        # Assign to worker B (second assignment — we need a separate mechanism)
-        # Since assign() transitions QUEUED→ASSIGNED atomically, the second call
-        # would fail because the task is no longer QUEUED.
-        # Instead, we create a "challenge" record that worker B can claim.
         worker_a.tasks_in_progress += 1
         worker_b.tasks_in_progress += 1
 
@@ -159,7 +186,10 @@ class Scheduler:
             assignment_token=token_a,
             deadline_ms=task.deadline_ms,
             gpu_required=task.gpu_required,
-            payload={"executable_hash": task.executable_hash, "input_hash": task.input_hash},
+            payload={
+                "executable_hash": task.executable_hash,
+                "input_hash": task.input_hash,
+            },
         )
         if worker_a.ws:
             try:
@@ -175,7 +205,10 @@ class Scheduler:
             assignment_token=token_b,
             deadline_ms=task.deadline_ms,
             gpu_required=task.gpu_required,
-            payload={"executable_hash": task.executable_hash, "input_hash": task.input_hash},
+            payload={
+                "executable_hash": task.executable_hash,
+                "input_hash": task.input_hash,
+            },
         )
         if worker_b.ws:
             try:

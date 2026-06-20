@@ -28,6 +28,7 @@ async def handle_ws(
     ws: WebSocket,
     sessions: SessionManager,
     task_service=None,
+    reputation_service=None,
 ):
     """Handle a single WebSocket connection from a worker."""
     await ws.accept()
@@ -131,6 +132,14 @@ async def handle_ws(
                     peer_ip=client_ip,
                     auth_level=_auth_level(msg),
                 )
+
+                # Register worker in reputation system (lazy upsert)
+                if reputation_service:
+                    try:
+                        await reputation_service._upsert_worker(session.worker_id)
+                    except Exception:
+                        pass
+
                 log.info(
                     "worker connected: %s (session=%s auth=%d)",
                     session.worker_id,
@@ -186,6 +195,26 @@ async def handle_ws(
                         resolved = await task_service._tm.resolve_challenge(
                             msg["task_id"], token, output_hash
                         )
+
+                        # Update worker reputation based on challenge result
+                        if reputation_service:
+                            try:
+                                cursor = await task_service._tm._db.execute(
+                                    "SELECT status FROM challenges WHERE task_id = ?"
+                                    " AND status != 'pending' ORDER BY id DESC LIMIT 1",
+                                    (msg["task_id"],),
+                                )
+                                row = await cursor.fetchone()
+                                if row:
+                                    if row["status"] == "matched":
+                                        await reputation_service.record_matched(session.worker_id)
+                                    elif row["status"] == "mismatched":
+                                        await reputation_service.record_mismatched(
+                                            session.worker_id
+                                        )
+                            except Exception:
+                                pass
+
                         if resolved:
                             await task_service.complete(msg["task_id"], output_hash, token)
 
@@ -258,19 +287,20 @@ def _auth_level(msg: dict) -> int:
     method = auth.get("method", "none")
 
     if method == "token":
-        # Verify token against SCRAPOWER_API_KEY
+        # Verify token against SCRAPOWER_API_KEY (constant-time comparison)
         import hashlib
+        import hmac
         import os
 
         api_key = os.environ.get("SCRAPOWER_API_KEY", "")
         token = auth.get("value", "")
         if api_key and token:
-            if (
-                hashlib.sha256(token.encode()).hexdigest()
-                == hashlib.sha256(api_key.encode()).hexdigest()
+            if hmac.compare_digest(
+                hashlib.sha256(token.encode()).hexdigest(),
+                hashlib.sha256(api_key.encode()).hexdigest(),
             ):
                 return 1
-        # Token present but invalid → stay anonymous (don't grant auth_level)
+        # Token missing, API key not configured, or token invalid → stay anonymous
         return 0
 
     if method == "signed_nonce":
