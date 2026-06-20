@@ -61,7 +61,7 @@ def _download_audio(url: str, workdir: Path) -> Path:
             "-o",
             output_template,
             "--no-playlist",
-            "--no-warnings",
+            "--js-runtimes node --no-warnings",
             url,
         ],
         check=True,

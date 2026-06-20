@@ -69,13 +69,6 @@ class Scheduler:
 
         # Pre-load reputation scores for all active workers
         reputations: dict[str, float] = {}
-        if self._reputation:
-            for w in workers:
-                try:
-                    rep = await self._reputation.get(w.worker_id)
-                    reputations[w.worker_id] = rep.score
-                except Exception:
-                    reputations[w.worker_id] = 0.5  # neutral fallback
 
         log.info(
             "active workers: %d, queued tasks: %d",
