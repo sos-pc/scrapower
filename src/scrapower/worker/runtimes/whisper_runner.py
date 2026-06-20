@@ -43,33 +43,32 @@ def _ensure_deps():
 
 
 def _download_audio(url: str, workdir: Path) -> Path:
-    """Download audio-only from a URL using yt-dlp.
+    """Download audio from a URL (direct or via yt-dlp)."""
+    # Direct audio/video file extensions — just download
+    direct_exts = (".wav", ".mp3", ".m4a", ".ogg", ".flac", ".opus", ".aac", ".weba")
+    if any(url.lower().endswith(ext) for ext in direct_exts):
+        import urllib.request
+        fname = url.split("/")[-1].split("?")[0] or "audio" + (
+            "." + url.split(".")[-1].split("?")[0] if "." in url.split("/")[-1] else ".mp3"
+        )
+        dest = workdir / fname
+        urllib.request.urlretrieve(url, str(dest))
+        return dest
 
-    Returns path to the audio file (mp3 or m4a).
-    """
+    # Platform URLs (YouTube, etc.) — use yt-dlp
     output_template = str(workdir / "%(id)s.%(ext)s")
     subprocess.run(
         [
-            sys.executable,
-            "-m",
-            "yt_dlp",
-            "-x",  # extract audio
-            "--audio-format",
-            "mp3",  # prefer mp3
-            "--audio-quality",
-            "0",  # best quality
-            "-o",
-            output_template,
+            sys.executable, "-m", "yt_dlp",
+            "-x", "--audio-format", "mp3", "--audio-quality", "0",
+            "-o", output_template,
             "--no-playlist",
             "--js-runtimes", "node",
             "--no-warnings",
             url,
         ],
-        check=True,
-        capture_output=True,
-        timeout=600,  # 10 min max for download
+        check=True, capture_output=True, timeout=600,
     )
-    # Find the downloaded audio file
     for f in workdir.iterdir():
         if f.suffix in (".mp3", ".m4a", ".opus", ".webm"):
             return f
