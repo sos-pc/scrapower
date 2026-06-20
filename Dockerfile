@@ -15,14 +15,14 @@ WORKDIR /app
 
 # System deps for yt-dlp (ffmpeg + nodejs for YouTube JS extraction)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl ca-certificates ffmpeg nodejs npm \
+    curl ca-certificates ffmpeg nodejs npm deno \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy and install Python dependencies
 COPY pyproject.toml .
 RUN pip install --no-cache-dir \
     fastapi "uvicorn[standard]" pydantic aiosqlite aiofiles \
-    structlog aiohttp wasmtime cryptography kaggle faster-whisper yt-dlp
+    structlog aiohttp wasmtime cryptography kaggle faster-whisper yt-dlp yt-dlp-ejs
 
 # Copy application source (package lives in src/scrapower/)
 COPY src/ src/

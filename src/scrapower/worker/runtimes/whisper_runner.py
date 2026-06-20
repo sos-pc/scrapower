@@ -32,13 +32,16 @@ def _ensure_deps():
 
 
 def _download_audio(url: str, workdir: Path) -> Path:
-    """Download audio from direct URL or via yt-dlp."""
-    # Direct audio/video file
-    if any(url.lower().endswith(ext) for ext in DIRECT_EXTS):
-        fname = url.split("/")[-1].split("?")[0] or "audio"
-        dest = workdir / fname
-        urllib.request.urlretrieve(url, str(dest))
-        return dest
+    """Download audio from any URL (direct download or yt-dlp)."""
+    # Try direct download first (works for blob store URLs, audio files, etc.)
+    fname = url.split("/")[-1].split("?")[0] or "audio"
+    if "." not in fname:
+        fname += ".audio"
+    dest = workdir / fname
+    urllib.request.urlretrieve(url, str(dest))
+    # If it's a video platform URL, yt-dlp would have been better, but
+    # the downloaded raw page/audio still lets faster-whisper try.
+    return dest
 
     # Platform URLs (YouTube etc.) via yt-dlp
     tmpl = str(workdir / "%(id)s.%(ext)s")
