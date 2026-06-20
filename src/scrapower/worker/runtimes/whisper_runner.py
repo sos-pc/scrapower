@@ -46,8 +46,6 @@ def _download_audio(url, workdir, cookies_path=None):
         "-o",
         tmpl,
         "--no-playlist",
-        "--js-runtimes",
-        "node",
         "--no-warnings",
     ]
     if cookies_path:
