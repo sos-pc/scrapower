@@ -17,7 +17,7 @@ services:
       - .env
     read_only: true
     tmpfs:
-      - /tmp:noexec,nosuid,size=64M
+      - /tmp:noexec,nosuid,size=512M
     security_opt:
       - no-new-privileges:true
     cap_drop:
