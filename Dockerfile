@@ -30,6 +30,9 @@ RUN pip install --no-cache-dir \
 COPY src/ src/
 COPY deploy/ deploy/
 
+# Patch kagglesdk bug: TimeDeltaSerializer crashes on "0s" values
+RUN python3 /app/deploy/patch_kagglesdk.py /usr/local/lib/python3.12/site-packages/kagglesdk/kaggle_object.py
+
 # Copy built browser worker from Stage 1
 COPY --from=builder /build/dist/worker.js src/scrapower/coordinator/static/worker.js
 COPY --from=builder /build/dist/sandbox_worker.js src/scrapower/coordinator/static/sandbox_worker.js
