@@ -103,7 +103,9 @@ def main():
         config = json.loads(sys.argv[1] if len(sys.argv) > 1 else sys.stdin.read())
         url = config.get("url", "")
         audio_hash = config.get("audio_hash", "")
-        coordinator_url = config.get("coordinator_url", "https://scrapower.talos-int.com")
+        coordinator_url = config.get("coordinator_url") or os.environ.get(
+            "SCRAPOWER_COORDINATOR_URL", "https://scrapower.talos-int.com"
+        )
         model_name = config.get("model", "large-v3")
         language = config.get("language") or None
         fmt = config.get("format", "json")

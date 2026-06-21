@@ -71,6 +71,37 @@ async def lifespan(app: FastAPI):
     init_fernet(config.db_path)
     log.info("fernet initialized")
 
+    # Seed blob store with whisper_runner.py so tasks can reference it
+    from pathlib import Path as _Path
+
+    from .blob_store import store_blob as _store_blob
+
+    whisper_path = _Path(__file__).parent.parent / "worker" / "runtimes" / "whisper_runner.py"
+    if whisper_path.exists():
+        whisper_hash = await _store_blob(db, config.blob_dir, whisper_path.read_bytes())
+        log.info("whisper runner seeded", hash=whisper_hash[:12])
+    else:
+        log.warning("whisper runner not found at %s", whisper_path)
+
+    # VPN pre-flight check
+    vpn_proxy = os.environ.get("SCRAPOWER_VPN_PROXY", "")
+    if vpn_proxy:
+        import aiohttp
+
+        try:
+            async with aiohttp.ClientSession() as s:
+                proxy_url = vpn_proxy.replace("socks5://", "http://")  # for testing
+                async with s.get(
+                    "https://ifconfig.me", proxy=vpn_proxy, timeout=aiohttp.ClientTimeout(total=10)
+                ) as r:
+                    if r.status == 200:
+                        vpn_ip = (await r.text()).strip()
+                        log.info("vpn check ok", vpn_ip=vpn_ip)
+                    else:
+                        log.warning("vpn check failed: HTTP %d", r.status)
+        except Exception as e:
+            log.warning("vpn check failed: %s (YouTube downloads may not work)", str(e)[:100])
+
     # ── OAuth configuration ──────────────────────────────────────
     oauth_client_id = os.environ.get("SCRAPOWER_GITHUB_CLIENT_ID", "")
     oauth_client_secret = os.environ.get("SCRAPOWER_GITHUB_CLIENT_SECRET", "")

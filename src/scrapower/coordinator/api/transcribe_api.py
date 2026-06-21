@@ -18,7 +18,23 @@ from fastapi.responses import JSONResponse
 
 router = APIRouter(prefix="/transcribe", tags=["transcribe"])
 
-WHISPER_RUNNER_HASH = "9995a0e410d23ad3c05f3f74909cd38d490863b76d274f9580a9e9d0dc7e7c3f"
+# Whisper runner hash — computed at startup from the deployed file
+WHISPER_RUNNER_PATH = (
+    Path(__file__).parent.parent.parent.parent / "worker" / "runtimes" / "whisper_runner.py"
+)
+
+
+def _compute_whisper_hash() -> str:
+    """Compute SHA-256 hash of the deployed whisper_runner.py."""
+    import hashlib
+
+    if WHISPER_RUNNER_PATH.exists():
+        return hashlib.sha256(WHISPER_RUNNER_PATH.read_bytes()).hexdigest()
+    # Fallback: hash of empty (will fail at runtime but won't crash at import)
+    return hashlib.sha256(b"").hexdigest()
+
+
+WHISPER_RUNNER_HASH = _compute_whisper_hash()
 
 log = logging.getLogger(__name__)
 
@@ -105,10 +121,11 @@ async def _prepare_whisper_input(
 
     import json as _json
 
+    coordinator_url = os.environ.get("SCRAPOWER_COORDINATOR_URL", "https://scrapower.talos-int.com")
     input_bytes = _json.dumps(
         {
             "audio_hash": audio_hash,
-            "coordinator_url": "https://scrapower.talos-int.com",
+            "coordinator_url": coordinator_url,
             "model": model,
             "language": language,
             "format": fmt,
