@@ -48,7 +48,12 @@ def _download_audio(url, workdir, cookies_path=None):
     if cookies_path:
         args += ["--cookies", cookies_path]
     args.append(url)
-    subprocess.run(args, check=True, capture_output=True, timeout=600)
+    try:
+        subprocess.run(args, check=True, capture_output=True, timeout=600)
+    except subprocess.CalledProcessError as e:
+        raise Exception(
+            f"yt-dlp failed (rc={e.returncode}): {e.stderr.decode()[-500:] if e.stderr else 'no stderr'}"
+        )
     for f in workdir.iterdir():
         if f.suffix in (".m4a", ".opus", ".webm", ".mp3"):
             return f
