@@ -129,17 +129,17 @@ async def run_gc(
     ttl_days: int = 7,
     checkpoint_ttl_days: int = 30,
 ) -> int:
-    """Garbage-collect blobs older than their TTL. Returns number deleted.
+    """Garbage-collect blobs with ref_count=0 older than their TTL.
 
-    Checkpoints (is_checkpoint=1) use checkpoint_ttl_days.
-    Regular blobs use ttl_days.
+    Only deletes blobs that are NOT referenced by any task (ref_count=0)
+    AND have passed their age threshold.
     """
     deleted = 0
 
-    # Checkpoint blobs
+    # Checkpoint blobs (ref_count=0, older than checkpoint_ttl_days)
     cursor = await db.execute(
         """SELECT hash FROM blobs
-           WHERE is_checkpoint = 1
+           WHERE is_checkpoint = 1 AND ref_count = 0
              AND datetime(created_at, '+' || ? || ' days') < datetime('now')""",
         (checkpoint_ttl_days,),
     )
@@ -152,15 +152,15 @@ async def run_gc(
         deleted += 1
     await db.execute(
         """DELETE FROM blobs
-           WHERE is_checkpoint = 1
+           WHERE is_checkpoint = 1 AND ref_count = 0
              AND datetime(created_at, '+' || ? || ' days') < datetime('now')""",
         (checkpoint_ttl_days,),
     )
 
-    # Regular blobs
+    # Regular blobs (ref_count=0, older than ttl_days)
     cursor = await db.execute(
         """SELECT hash FROM blobs
-           WHERE is_checkpoint = 0
+           WHERE is_checkpoint = 0 AND ref_count = 0
              AND datetime(created_at, '+' || ? || ' days') < datetime('now')""",
         (ttl_days,),
     )
@@ -173,7 +173,7 @@ async def run_gc(
         deleted += 1
     await db.execute(
         """DELETE FROM blobs
-           WHERE is_checkpoint = 0
+           WHERE is_checkpoint = 0 AND ref_count = 0
              AND datetime(created_at, '+' || ? || ' days') < datetime('now')""",
         (ttl_days,),
     )

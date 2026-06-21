@@ -31,6 +31,7 @@ class TaskService:
         input_hash: str,
         gpu_required: bool = False,
         deadline_ms: int = 60000,
+        initial_state: TaskState = TaskState.QUEUED,
     ) -> Task:
         """Submit a new task. Returns the created Task."""
         return await self._tm.create(
@@ -41,7 +42,42 @@ class TaskService:
             input_hash=input_hash,
             gpu_required=gpu_required,
             deadline_ms=deadline_ms,
+            initial_state=initial_state,
         )
+
+    async def set_state(self, task_id: str, new_state: TaskState) -> bool:
+        """Transition a task to a new state (e.g. PENDING → DOWNLOADING)."""
+        return await self._tm.transition(task_id, new_state)
+
+    async def set_queued(self, task_id: str, input_hash: str) -> bool:
+        """Set a PENDING task to QUEUED with its audio input hash."""
+        task = await self.get(task_id)
+        if not task or task.state != TaskState.PENDING:
+            return False
+        # Update input_hash and transition to QUEUED
+        import time
+
+        await self._tm._db.execute(
+            "UPDATE tasks SET input_hash = ?, updated_at = ? WHERE id = ?",
+            (input_hash, str(time.time()), task_id),
+        )
+        await self._tm._db.execute(
+            "UPDATE blobs SET ref_count = ref_count + 1 WHERE hash = ?", (input_hash,)
+        )
+        await self._tm._db.commit()
+        return await self._tm.transition(task_id, TaskState.QUEUED)
+
+    async def mark_failed(self, task_id: str, reason: str = "") -> bool:
+        """Mark a task as FAILED with an error message."""
+        import time as _time
+
+        now = _time.time()
+        await self._tm._db.execute(
+            "UPDATE tasks SET output_hash = ?, updated_at = ? WHERE id = ?",
+            (reason, str(now), task_id),
+        )
+        await self._tm._db.commit()
+        return await self._tm.transition(task_id, TaskState.FAILED)
 
     async def assign(self, task_id: str, worker_id: str) -> tuple[bool, str]:
         """Try to assign a task to a worker. Returns (success, token)."""
@@ -92,6 +128,49 @@ class TaskService:
             await self._tm.transition(row["id"], TaskState.TIMEOUT)
             count += 1
         return count
+
+    async def cleanup_expired(
+        self, completed_ttl_sec: float = 86400, pending_ttl_sec: float = 3600
+    ) -> int:
+        """Delete expired tasks and release their blob references.
+
+        - COMPLETED/FAILED/CANCELLED > completed_ttl_sec → deleted, blob refs released
+        - PENDING > pending_ttl_sec → marked FAILED (download lost after restart)
+
+        Returns number of tasks cleaned up."""
+        import time as _time
+
+        now = _time.time()
+        cleaned = 0
+
+        # Terminal tasks older than TTL → delete, release blob refs
+        cursor = await self._tm._db.execute(
+            """SELECT id, executable_hash, input_hash, output_hash FROM tasks
+               WHERE state IN ('completed', 'failed', 'cancelled')
+                 AND updated_at < ?""",
+            (str(now - completed_ttl_sec),),
+        )
+        async for row in cursor:
+            for h in (row["executable_hash"], row["input_hash"], row["output_hash"]):
+                if h:
+                    await self._tm._db.execute(
+                        "UPDATE blobs SET ref_count = MAX(0, ref_count - 1) WHERE hash = ?", (h,)
+                    )
+            await self._tm._db.execute("DELETE FROM tasks WHERE id = ?", (row["id"],))
+            cleaned += 1
+
+        # PENDING tasks stuck > pending_ttl_sec → FAILED
+        cursor = await self._tm._db.execute(
+            """UPDATE tasks SET state = 'failed',
+                   output_hash = 'download lost after coordinator restart',
+                   updated_at = ?
+               WHERE state = 'pending' AND created_at < ?""",
+            (str(now), str(now - pending_ttl_sec)),
+        )
+        cleaned += cursor.rowcount
+
+        await self._tm._db.commit()
+        return cleaned
 
 
 class SchedulingPolicy:

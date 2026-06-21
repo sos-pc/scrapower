@@ -148,6 +148,9 @@ async def lifespan(app: FastAPI):
     # Start GC background task
     gc_task = asyncio.create_task(_gc_loop(config, db))
 
+    # Start cleanup loop (release expired tasks, free blob refs)
+    cleanup_task = asyncio.create_task(_cleanup_loop(task_service, log))
+
     # Kaggle GPU harvester (auto-start kernels when GPU tasks are waiting)
     kaggle_accounts_raw = os.environ.get("KAGGLE_ACCOUNTS", "")
     kaggle_accounts = []
@@ -176,11 +179,11 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        for t in (gc_task, zombie_task, sched_task, kaggle_task):
+        for t in (gc_task, zombie_task, sched_task, kaggle_task, cleanup_task):
             t.cancel()
         if embed_task is not None:
             embed_task.cancel()
-        for t in (gc_task, zombie_task, sched_task, kaggle_task):
+        for t in (gc_task, zombie_task, sched_task, kaggle_task, cleanup_task):
             try:
                 await t
             except asyncio.CancelledError:
@@ -240,6 +243,18 @@ async def _gc_loop(config: Config, db) -> None:
                 log.info("gc completed", deleted_blobs=deleted)
         except Exception:
             log.exception("gc failed")
+
+
+async def _cleanup_loop(task_service, log) -> None:
+    """Release expired tasks and their blob references every 5 minutes."""
+    while True:
+        await asyncio.sleep(300)
+        try:
+            cleaned = await task_service.cleanup_expired()
+            if cleaned:
+                log.info("cleanup completed", cleaned_tasks=cleaned)
+        except Exception:
+            log.exception("cleanup failed")
 
 
 # ──────────────────────────────────────────────────────────────

@@ -1,31 +1,41 @@
-"""Transcription API — submit video URLs for distributed Whisper transcription."""
+"""Transcription API — submit video URLs for distributed Whisper transcription.
+
+Audio download happens async on the coordinator (which has real internet),
+then the task is queued for workers that don't need external network access.
+"""
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import tempfile
 import uuid
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 router = APIRouter(prefix="/transcribe", tags=["transcribe"])
 
-# Hardcoded hash of whisper_runner.py (pre-computed, updated when script changes)
-WHISPER_RUNNER_HASH = "71c70d6c243e30a9e1c2f046011bd0a0f7935090915cb5edae84c91d0fa01781"
+WHISPER_RUNNER_HASH = "51cda979f6e95e8e04fa80d3dcabd140937570c4464430c97702ef807edcd858"
+
+log = logging.getLogger(__name__)
+
+# Limit concurrent yt-dlp downloads to avoid saturating Oracle bandwidth
+_download_sem = asyncio.Semaphore(2)
 
 
 @router.post("")
 async def transcribe(request: Request):
-    """Submit a video for transcription.
+    """Submit a video for transcription. Returns immediately.
 
     Body:
       { "url": "https://youtube.com/watch?v=...",
-        "model": "large-v3",       // optional, default large-v3
-        "language": "fr",          // optional, auto-detect if omitted
-        "format": "srt" }          // optional: srt, txt, json (default json)
+        "model": "tiny",
+        "language": "fr",
+        "format": "srt" }
 
-    Returns:
-      { "task_id": "...", "status": "queued" }
-
+    The audio is downloaded asynchronously on the coordinator side.
     Poll GET /results/{task_id} for the transcript.
     """
     body = await request.json()
@@ -41,48 +51,145 @@ async def transcribe(request: Request):
     task_service = request.app.state.task_service
     task_id = uuid.uuid4().hex
 
-    # Input is the config JSON
-    import json as _json
-
-    input_bytes = _json.dumps(
-        {
-            "url": url,
-            "model": model,
-            "language": language,
-            "format": fmt,
-            "cookies_hash": cookies_hash,
-        }
-    ).encode()
-
-    # Upload input to blob store
-    from ..blob_store import store_blob
-
-    config = request.app.state.config
-    db = request.app.state.db
-    input_hash = await store_blob(db, config.blob_dir, input_bytes)
-
-    # Submit task
+    # Create task in PENDING state (audio not downloaded yet)
     await task_service.submit(
         task_id=task_id,
         client_id="anonymous",
         runtime="python",
         executable_hash=WHISPER_RUNNER_HASH,
-        input_hash=input_hash,
-        gpu_required=False,
-        deadline_ms=600000,  # 10 min for Whisper
+        input_hash="",  # placeholder, will be set after download
+        gpu_required=True,
+        deadline_ms=900000,
+        initial_state="pending",
+    )
+
+    # Launch background download
+    db = request.app.state.db
+    config = request.app.state.config
+    asyncio.create_task(
+        _download_and_queue(
+            task_id=task_id,
+            url=url,
+            model=model,
+            language=language,
+            fmt=fmt,
+            cookies_hash=cookies_hash,
+            task_service=task_service,
+            db=db,
+            blob_dir=config.blob_dir,
+        )
     )
 
     return JSONResponse(
         {
             "task_id": task_id,
-            "status": "queued",
+            "status": "pending",
             "model": model,
             "language": language or "auto",
             "format": fmt,
-            "cookies_hash": cookies_hash or None,
             "hint": f"GET /results/{task_id} for transcript",
         }
     )
+
+
+async def _download_and_queue(
+    task_id: str,
+    url: str,
+    model: str,
+    language: str | None,
+    fmt: str,
+    cookies_hash: str,
+    task_service,
+    db,
+    blob_dir: str,
+):
+    """Background task: download audio, store blob, queue task."""
+    try:
+        await task_service.set_state(task_id, "downloading")
+
+        audio_bytes = await _download_audio(url, cookies_hash, db, blob_dir)
+
+        from ..blob_store import store_blob
+
+        audio_hash = await store_blob(db, blob_dir, audio_bytes)
+
+        # Build input config for the worker
+        import json as _json
+
+        input_bytes = _json.dumps(
+            {
+                "audio_hash": audio_hash,
+                "coordinator_url": "https://scrapower.talos-int.com",
+                "model": model,
+                "language": language,
+                "format": fmt,
+            }
+        ).encode()
+
+        input_hash = await store_blob(db, blob_dir, input_bytes)
+
+        # Set the real input hash and mark QUEUED
+        await task_service.set_queued(task_id, input_hash)
+        log.info("transcribe: audio downloaded, task %s queued", task_id[:12])
+
+    except Exception as e:
+        log.error("transcribe: download failed for %s: %s", task_id[:12], str(e)[:200])
+        await task_service.mark_failed(task_id, str(e)[:4096])
+
+
+async def _download_audio(url: str, cookies_hash: str, db, blob_dir: str) -> bytes:
+    """Download audio from a video URL using yt-dlp. Returns MP3 bytes."""
+    async with _download_sem:
+        from ..blob_store import get_blob
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workdir = Path(tmp)
+
+            # Write cookies if provided
+            cookies_path = None
+            if cookies_hash:
+                cookies_path = str(workdir / "cookies.txt")
+                cookies_bytes = await get_blob(db, blob_dir, cookies_hash)
+                if cookies_bytes:
+                    Path(cookies_path).write_bytes(cookies_bytes)
+
+            tmpl = str(workdir / "%(id)s.%(ext)s")
+            args = [
+                "yt-dlp",
+                "-x",
+                "--audio-format",
+                "mp3",
+                "--audio-quality",
+                "0",
+                "-o",
+                tmpl,
+                "--no-playlist",
+                "--no-warnings",
+            ]
+            if cookies_path:
+                args += ["--cookies", cookies_path]
+            args.append(url)
+
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
+            except asyncio.TimeoutError:
+                proc.kill()
+                raise Exception("yt-dlp timed out after 300s")
+
+            if proc.returncode != 0:
+                err = stderr.decode()[:1000] if stderr else "unknown error"
+                raise Exception(f"yt-dlp failed: {err}")
+
+            for f in workdir.iterdir():
+                if f.suffix in (".mp3", ".m4a", ".opus", ".webm", ".wav"):
+                    return f.read_bytes()
+
+            raise Exception("No audio file found after yt-dlp download")
 
 
 @router.get("/models")

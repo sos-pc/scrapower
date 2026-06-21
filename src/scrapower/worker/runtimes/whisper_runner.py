@@ -101,6 +101,8 @@ def main():
         _ensure_deps()
         config = json.loads(sys.argv[1] if len(sys.argv) > 1 else sys.stdin.read())
         url = config.get("url", "")
+        audio_hash = config.get("audio_hash", "")
+        coordinator_url = config.get("coordinator_url", "https://scrapower.talos-int.com")
         model_name = config.get("model", "large-v3")
         language = config.get("language") or None
         fmt = config.get("format", "json")
@@ -110,11 +112,18 @@ def main():
             cookies_path = None
             if cookies_hash:
                 cookies_path = str(workdir / "cookies.txt")
-                urllib.request.urlretrieve(
-                    f"https://scrapower.talos-int.com/blobs/{cookies_hash}", cookies_path
-                )
-            print(f"Downloading: {url}", file=sys.stderr)
-            audio_path = _download_audio(url, workdir, cookies_path)
+                urllib.request.urlretrieve(f"{coordinator_url}/blobs/{cookies_hash}", cookies_path)
+            # Mode B: receive audio as blob (no internet needed on worker)
+            if audio_hash:
+                audio_path = workdir / "audio.mp3"
+                print(f"Downloading audio blob: {audio_hash[:12]}...", file=sys.stderr)
+                urllib.request.urlretrieve(f"{coordinator_url}/blobs/{audio_hash}", str(audio_path))
+            elif url:
+                # Legacy: direct URL download (requires internet on worker)
+                print(f"Downloading: {url}", file=sys.stderr)
+                audio_path = _download_audio(url, workdir, cookies_path)
+            else:
+                raise ValueError("Neither audio_hash nor url provided")
             print(f"Transcribing: {model_name}", file=sys.stderr)
             start = time.time()
             transcript = _transcribe(audio_path, model_name, language, fmt)
@@ -127,7 +136,6 @@ def main():
         print(err, file=sys.stderr)
         output = err.encode("utf-8")
         output_hash = hashlib.sha256(output).hexdigest()
-        # Return error as output so coordinator can see it
         print(
             json.dumps({"output_bytes": output.hex(), "output_hash": output_hash, "exit_code": 1})
         )

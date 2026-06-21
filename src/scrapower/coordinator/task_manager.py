@@ -16,10 +16,11 @@ import aiosqlite
 
 
 class TaskState(str, Enum):
-    PENDING = "pending"
+    PENDING = "pending"  # created, waiting for audio download
+    DOWNLOADING = "downloading"  # yt-dlp in progress
     QUEUED = "queued"
     ASSIGNED = "assigned"
-    COMPLETED = "completed"  # renamed from VALIDATED (trust-based, not verified)
+    COMPLETED = "completed"
     FAILED = "failed"
     TIMEOUT = "timeout"
     CANCELLED = "cancelled"
@@ -33,18 +34,24 @@ class TaskState(str, Enum):
 
 
 VALID_TRANSITIONS: dict[TaskState, set[TaskState]] = {
-    TaskState.PENDING: {TaskState.QUEUED, TaskState.CANCELLED},
+    TaskState.PENDING: {
+        TaskState.DOWNLOADING,
+        TaskState.QUEUED,
+        TaskState.FAILED,
+        TaskState.CANCELLED,
+    },
+    TaskState.DOWNLOADING: {TaskState.QUEUED, TaskState.FAILED},
     TaskState.QUEUED: {TaskState.ASSIGNED, TaskState.CANCELLED},
     TaskState.ASSIGNED: {
-        TaskState.COMPLETED,  # worker completed successfully
+        TaskState.COMPLETED,
         TaskState.TIMEOUT,
         TaskState.FAILED,
         TaskState.CANCELLED,
     },
-    TaskState.TIMEOUT: {TaskState.QUEUED, TaskState.FAILED},  # requeue if retries remain
-    TaskState.COMPLETED: set(),  # terminal (result submitted, not verified)
-    TaskState.FAILED: set(),  # terminal
-    TaskState.CANCELLED: set(),  # terminal
+    TaskState.TIMEOUT: {TaskState.QUEUED, TaskState.FAILED},
+    TaskState.COMPLETED: set(),
+    TaskState.FAILED: set(),
+    TaskState.CANCELLED: set(),
 }
 
 
@@ -97,12 +104,13 @@ class TaskManager:
         max_retries: int = 3,
         deadline_ms: int = 60000,
         gpu_required: bool = False,
+        initial_state: TaskState = TaskState.QUEUED,
     ) -> Task:
         now = time.time()
         task = Task(
             id=task_id,
             client_id=client_id,
-            state=TaskState.QUEUED,  # directly queued
+            state=initial_state,
             runtime=runtime,
             executable_hash=executable_hash,
             input_hash=input_hash,
@@ -130,6 +138,12 @@ class TaskManager:
                 task.updated_at,
             ),
         )
+        # Increment blob ref_counts so GC doesn't delete them
+        for h in (executable_hash, input_hash):
+            if h:
+                await self._db.execute(
+                    "UPDATE blobs SET ref_count = ref_count + 1 WHERE hash = ?", (h,)
+                )
         await self._db.commit()
         return task
 
@@ -255,7 +269,7 @@ class TaskManager:
         # Always verify token (reject if missing or mismatched)
         if not assignment_token:
             return False
-        cursor = cursor = await self._db.execute(
+        cursor = await self._db.execute(
             "SELECT current_assignment_token FROM tasks WHERE id = ?",
             (task_id,),
         )
@@ -267,6 +281,11 @@ class TaskManager:
             "UPDATE tasks SET output_hash = ?, updated_at = ? WHERE id = ?",
             (output_hash, str(now), task_id),
         )
+        # Increment output blob ref_count so GC doesn't delete it
+        if output_hash:
+            await self._db.execute(
+                "UPDATE blobs SET ref_count = ref_count + 1 WHERE hash = ?", (output_hash,)
+            )
         await self._db.commit()
         return await self.transition(task_id, TaskState.COMPLETED)
 
@@ -278,7 +297,9 @@ class TaskManager:
         )
         await self._db.commit()
 
-    async def resolve_challenge(self, task_id: str, assignment_token: str, output_hash: str) -> bool:
+    async def resolve_challenge(
+        self, task_id: str, assignment_token: str, output_hash: str
+    ) -> bool:
         """Handle a challenge result. Returns True if challenge passed and task should complete."""
         cursor = await self._db.execute(
             "SELECT * FROM challenges WHERE task_id = ? AND status = 'pending'",
@@ -297,9 +318,7 @@ class TaskManager:
         await self._db.commit()
 
         # Check if both results are in
-        cursor = await self._db.execute(
-            "SELECT * FROM challenges WHERE task_id = ?", (task_id,)
-        )
+        cursor = await self._db.execute("SELECT * FROM challenges WHERE task_id = ?", (task_id,))
         row = await cursor.fetchone()
         if row and row["result_a"] and row["result_b"]:
             if row["result_a"] == row["result_b"]:
@@ -317,4 +336,3 @@ class TaskManager:
                 await self._db.commit()
                 return False  # Mismatch — task should be re-challenged
         return False  # Waiting for second result
-
