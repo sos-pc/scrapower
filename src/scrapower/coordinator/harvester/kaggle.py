@@ -36,6 +36,7 @@ class KaggleHarvester:
         self._round = 0
         self._last_start: float = 0
         self._current_cooldown: float = COOLDOWN_SEC
+        self._last_cleanup: float = 0
 
     @staticmethod
     def _find_notebook() -> str:
@@ -58,6 +59,9 @@ class KaggleHarvester:
         self._running = False
 
     async def _tick(self):
+        # Cleanup old kernels every 5 minutes
+        await self._cleanup_old_kernels()
+
         if time.time() - self._last_start < self._current_cooldown:
             return
         queued = await self._count_queued_tasks()
@@ -85,6 +89,66 @@ class KaggleHarvester:
             return row["n"] if row else 0
         except Exception:
             return 0
+
+    async def _cleanup_old_kernels(self):
+        """Delete old completed kernels to keep Kaggle account clean."""
+        now = time.time()
+        if now - self._last_cleanup < 300:
+            return
+        self._last_cleanup = now
+
+        for account in self._accounts:
+            try:
+                env = os.environ.copy()
+                env["KAGGLE_API_TOKEN"] = account["token"]
+                proc = await asyncio.create_subprocess_exec(
+                    KAGGLE_BIN,
+                    "kernels",
+                    "list",
+                    "-m",
+                    "--csv",
+                    "--page-size",
+                    "30",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=env,
+                )
+                stdout, _ = await proc.communicate()
+                if proc.returncode != 0:
+                    continue
+                for line in stdout.decode().strip().split("\n")[1:]:
+                    parts = line.split(",")
+                    if len(parts) < 2:
+                        continue
+                    ref = parts[0]
+                    if "scrapower-auto" not in ref:
+                        continue
+                    sproc = await asyncio.create_subprocess_exec(
+                        KAGGLE_BIN,
+                        "kernels",
+                        "status",
+                        ref,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        env=env,
+                    )
+                    sout, _ = await sproc.communicate()
+                    if "COMPLETE" in sout.decode() or "ERROR" in sout.decode():
+                        dproc = await asyncio.create_subprocess_exec(
+                            KAGGLE_BIN,
+                            "kernels",
+                            "delete",
+                            ref,
+                            "--yes",
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE,
+                            env=env,
+                        )
+                        await dproc.communicate()
+                        if dproc.returncode == 0:
+                            log.debug("harvester cleanup: deleted %s", ref)
+            except Exception:
+                pass
 
     async def _start_kernel(self):
         account = self._next_account()
