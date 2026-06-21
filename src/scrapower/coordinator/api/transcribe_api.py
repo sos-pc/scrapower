@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse
 
 router = APIRouter(prefix="/transcribe", tags=["transcribe"])
 
-WHISPER_RUNNER_HASH = "51cda979f6e95e8e04fa80d3dcabd140937570c4464430c97702ef807edcd858"
+WHISPER_RUNNER_HASH = "9995a0e410d23ad3c05f3f74909cd38d490863b76d274f9580a9e9d0dc7e7c3f"
 
 log = logging.getLogger(__name__)
 
@@ -44,7 +44,7 @@ async def transcribe(request: Request):
     if not url:
         raise HTTPException(400, {"error": "url is required"})
 
-    model = body.get("model", "large-v3")
+    model = body.get("model", "turbo")
     language = body.get("language") or None
     fmt = body.get("format", "json")
     cookies_hash = body.get("cookies_hash") or os.environ.get("SCRAPOWER_YT_COOKIES_HASH", "")
@@ -201,8 +201,15 @@ async def list_models():
                 {"name": "tiny", "size_mb": 75, "speed": "fastest", "accuracy": "lowest"},
                 {"name": "base", "size_mb": 145, "speed": "fast", "accuracy": "low"},
                 {"name": "small", "size_mb": 488, "speed": "medium", "accuracy": "medium"},
-                {"name": "medium", "size_mb": 1536, "speed": "slow", "accuracy": "high"},
-                {"name": "large-v3", "size_mb": 3100, "speed": "slowest", "accuracy": "highest"},
+                {"name": "medium", "size_mb": 1536, "speed": "slow", "accuracy": "good"},
+                {
+                    "name": "turbo",
+                    "size_mb": 1600,
+                    "speed": "fast",
+                    "accuracy": "excellent",
+                    "recommended": True,
+                },
+                {"name": "large-v3", "size_mb": 3100, "speed": "slowest", "accuracy": "best"},
             ],
         }
     )

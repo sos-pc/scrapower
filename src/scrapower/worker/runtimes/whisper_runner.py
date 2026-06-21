@@ -59,13 +59,14 @@ def _download_audio(url, workdir, cookies_path=None):
 
 
 def _transcribe(audio_path, model_name, language, fmt):
-    from faster_whisper import WhisperModel
+    from faster_whisper import BatchedInferencePipeline, WhisperModel
 
     model = WhisperModel(
         model_name, device="cuda", compute_type="float16", download_root=str(MODEL_CACHE)
     )
-    segments, info = model.transcribe(
-        str(audio_path), language=language, beam_size=5, vad_filter=True
+    batched = BatchedInferencePipeline(model=model)
+    segments, info = batched.transcribe(
+        str(audio_path), language=language, batch_size=8, beam_size=5, vad_filter=True
     )
     if fmt == "srt":
         lines = []
