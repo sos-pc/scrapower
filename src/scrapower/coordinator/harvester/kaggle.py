@@ -16,7 +16,7 @@ import time
 log = logging.getLogger(__name__)
 
 TICK_SEC = 30
-COOLDOWN_SEC = 120
+COOLDOWN_SEC = 300  # Kaggle API rate limit is aggressive
 KAGGLE_BIN = "kaggle"
 
 
@@ -35,6 +35,7 @@ class KaggleHarvester:
         self._running = False
         self._round = 0
         self._last_start: float = 0
+        self._current_cooldown: float = COOLDOWN_SEC
 
     @staticmethod
     def _find_notebook() -> str:
@@ -57,14 +58,19 @@ class KaggleHarvester:
         self._running = False
 
     async def _tick(self):
-        if time.time() - self._last_start < COOLDOWN_SEC:
+        if time.time() - self._last_start < self._current_cooldown:
             return
         queued = await self._count_queued_tasks()
         log.debug("harvester tick: queued=%d", queued)
         if queued == 0:
             return
         log.info("harvester: %d queued tasks, starting kernel", queued)
-        await self._start_kernel()
+        success = await self._start_kernel()
+        if not success:
+            # Backoff on failure (rate limit, etc.)
+            self._current_cooldown = min(self._current_cooldown * 2, 1800)  # max 30 min
+        else:
+            self._current_cooldown = COOLDOWN_SEC  # reset
 
     async def _count_queued_tasks(self) -> int:
         try:
@@ -154,8 +160,10 @@ class KaggleHarvester:
             if proc.returncode == 0:
                 self._last_start = time.time()
                 log.info("kaggle kernel started: %s (account=%s)", kernel_id, username)
+                return True
             else:
                 log.error("kaggle push failed (account=%s): %s", username, stderr.decode()[:200])
+                return False
 
     def _next_account(self) -> dict | None:
         if not self._accounts:
