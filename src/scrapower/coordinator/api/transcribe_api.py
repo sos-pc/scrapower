@@ -209,6 +209,36 @@ async def _download_audio(url: str, cookies_hash: str, db, blob_dir: str) -> byt
             raise Exception("No audio file found after yt-dlp download")
 
 
+@router.post("/update-cookies")
+async def update_cookies(request: Request):
+    """Update YouTube cookies hash at runtime (no restart needed).
+
+    Body: { "hash": "sha256hex..." }
+
+    The cookies blob must already exist in the blob store (uploaded via PUT /blobs).
+    This endpoint only updates the env var so new tasks use the fresh cookies.
+    """
+    body = await request.json()
+    new_hash = body.get("hash", "")
+    if not new_hash or len(new_hash) != 64:
+        raise HTTPException(400, {"error": "Valid 64-char SHA-256 hash required"})
+
+    # Verify the blob exists
+    db = request.app.state.db
+    config = request.app.state.config
+    from ..blob_store import blob_exists
+
+    if not await blob_exists(db, config.blob_dir, new_hash):
+        raise HTTPException(404, {"error": "Blob not found in store. Upload via PUT /blobs first."})
+
+    os.environ["SCRAPOWER_YT_COOKIES_HASH"] = new_hash
+    log.info("cookies hash updated to %s", new_hash[:12])
+
+    return JSONResponse(
+        {"status": "ok", "hash": new_hash, "hint": "New tasks will use these cookies."}
+    )
+
+
 @router.get("/models")
 async def list_models():
     """List available Whisper models."""
