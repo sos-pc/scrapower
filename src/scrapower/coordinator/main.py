@@ -83,28 +83,35 @@ async def lifespan(app: FastAPI):
     else:
         log.warning("whisper runner not found at %s", whisper_path)
 
-    # VPN pre-flight check
+    # VPN pre-flight check (retry � VPN container may still be booting)
     vpn_proxy = os.environ.get("SCRAPOWER_VPN_PROXY", "")
     if vpn_proxy:
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "curl",
-                "-s",
-                "--socks5",
-                "127.0.0.1:1080",
-                "--max-time",
-                "5",
-                "https://ifconfig.me",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=8)
-            if proc.returncode == 0:
-                log.info("vpn check ok", vpn_ip=stdout.decode().strip())
-            else:
-                log.warning("vpn check failed: curl rc=%d", proc.returncode)
-        except Exception as e:
-            log.warning("vpn check failed: %s (YouTube downloads may not work)", str(e)[:100])
+        for attempt in range(5):
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "curl",
+                    "-s",
+                    "--socks5",
+                    "127.0.0.1:1080",
+                    "--max-time",
+                    "5",
+                    "https://ifconfig.me",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=8)
+                if proc.returncode == 0:
+                    log.info("vpn check ok", vpn_ip=stdout.decode().strip())
+                    break
+                elif attempt < 4:
+                    await asyncio.sleep(2)
+                else:
+                    log.warning("vpn check failed after 5 attempts (curl rc=%d)", proc.returncode)
+            except Exception as e:
+                if attempt < 4:
+                    await asyncio.sleep(2)
+                else:
+                    log.warning("vpn check failed: %s", str(e)[:100])
 
     # ── OAuth configuration ──────────────────────────────────────
     oauth_client_id = os.environ.get("SCRAPOWER_GITHUB_CLIENT_ID", "")
