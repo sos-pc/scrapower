@@ -68,14 +68,27 @@ class KaggleHarvester:
         log.debug("harvester tick: queued=%d", queued)
         if queued == 0:
             return
-        log.info("harvester: %d queued tasks, starting kernel", queued)
+
+        # Check GPU quota before starting a kernel
+        quota = await self._get_quota()
+        if quota is not None and quota["remaining_h"] < 0.1:
+            log.warning(
+                "harvester: GPU quota exhausted (%.2fh remaining), not starting kernel",
+                quota["remaining_h"],
+            )
+            return
+
+        log.info(
+            "harvester: %d queued tasks, starting kernel (GPU quota: %.1fh)",
+            queued,
+            quota["remaining_h"] if quota else 0,
+        )
         success = await self._start_kernel()
-        self._last_start = time.time()  # always update to prevent immediate retry
+        self._last_start = time.time()
         if not success:
-            # Backoff on failure (rate limit, etc.)
-            self._current_cooldown = min(self._current_cooldown * 2, 1800)  # max 30 min
+            self._current_cooldown = min(self._current_cooldown * 2, 1800)
         else:
-            self._current_cooldown = COOLDOWN_SEC  # reset
+            self._current_cooldown = COOLDOWN_SEC
 
     async def _count_queued_tasks(self) -> int:
         try:
@@ -89,6 +102,38 @@ class KaggleHarvester:
             return row["n"] if row else 0
         except Exception:
             return 0
+
+    async def _get_quota(self) -> dict | None:
+        """Get GPU quota for the next account (peek, don't consume)."""
+        if not self._accounts:
+            return None
+        account = self._accounts[self._round % len(self._accounts)]
+        try:
+            env = os.environ.copy()
+            env["KAGGLE_API_TOKEN"] = account["token"]
+            proc = await asyncio.create_subprocess_exec(
+                "kaggle",
+                "quota",
+                "--csv",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
+            if proc.returncode != 0:
+                return None
+            for line in stdout.decode().strip().split("\n")[1:]:
+                parts = line.split(",")
+                if len(parts) >= 4 and parts[0] == "GPU":
+                    return {
+                        "username": account["username"],
+                        "used_h": float(parts[1].rstrip("h")),
+                        "remaining_h": float(parts[2].rstrip("h")),
+                        "total_h": float(parts[3].rstrip("h")),
+                    }
+        except Exception:
+            pass
+        return None
 
     async def _cleanup_old_kernels(self):
         """Delete dead/orphaned kernels.

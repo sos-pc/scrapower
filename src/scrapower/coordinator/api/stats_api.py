@@ -2,10 +2,63 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
+import os
+
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 router = APIRouter(prefix="/stats", tags=["stats"])
+log = logging.getLogger(__name__)
+
+
+async def _get_kaggle_quota(accounts_json: str) -> list[dict]:
+    """Fetch GPU quota for each Kaggle account. Returns list of {username, used_h, remaining_h, total_h}."""
+    if not accounts_json:
+        return []
+    try:
+        accounts = json.loads(accounts_json)
+    except json.JSONDecodeError:
+        return []
+
+    results = []
+    for account in accounts:
+        try:
+            env = os.environ.copy()
+            env["KAGGLE_API_TOKEN"] = account["token"]
+            proc = await asyncio.create_subprocess_exec(
+                "kaggle",
+                "quota",
+                "--csv",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
+            if proc.returncode != 0:
+                continue
+            # Parse CSV: resource,used,remaining,total,refreshAt
+            lines = stdout.decode().strip().split("\n")
+            for line in lines[1:]:  # skip header
+                parts = line.split(",")
+                if len(parts) < 4 or parts[0] != "GPU":
+                    continue
+                used = parts[1].rstrip("h")
+                remaining = parts[2].rstrip("h")
+                total = parts[3].rstrip("h")
+                results.append(
+                    {
+                        "username": account["username"],
+                        "used_h": float(used),
+                        "remaining_h": float(remaining),
+                        "total_h": float(total),
+                    }
+                )
+        except Exception:
+            pass
+    return results
 
 
 @router.get("")
@@ -152,6 +205,7 @@ async def get_stats(request: Request):
                 "gpu_tasks_queued": gpu_tasks_queued,
                 "needs_worker": gpu_tasks_queued > 0 and not gpu_worker_connected,
             },
+            "kaggle_quota": await _get_kaggle_quota(os.environ.get("KAGGLE_ACCOUNTS", "")),
             "workers": worker_list,
         }
     )
