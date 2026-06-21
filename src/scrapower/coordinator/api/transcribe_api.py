@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse
 router = APIRouter(prefix="/transcribe", tags=["transcribe"])
 
 WHISPER_RUNNER_HASH = "51cda979f6e95e8e04fa80d3dcabd140937570c4464430c97702ef807edcd858"
+DEFAULT_COOKIES_HASH = "3cf8cda94d2f84fa073e5bec5dd1f94b85375a61a230ee770d449c0224bbf282"
 
 log = logging.getLogger(__name__)
 
@@ -47,7 +48,7 @@ async def transcribe(request: Request):
     model = body.get("model", "large-v3")
     language = body.get("language") or None
     fmt = body.get("format", "json")
-    cookies_hash = body.get("cookies_hash", "") or ""
+    cookies_hash = body.get("cookies_hash") or DEFAULT_COOKIES_HASH
 
     task_service = request.app.state.task_service
     task_id = uuid.uuid4().hex
