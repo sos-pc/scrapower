@@ -43,6 +43,9 @@ class Config:
     max_anonymous_workers: int = 100
     pull_rate_limit_per_ip: int = 30  # per minute
 
+    # Mode A (WebSocket push) — can be disabled when Mode B (HTTP pull) is primary
+    ws_assign_enabled: bool = True
+
     # Keepalive
     keepalive_enabled: bool = True
     keepalive_duration_sec: int = 2
@@ -68,6 +71,7 @@ class Config:
             "SCRAPOWER_BLOB_TTL_DAYS": ("blob_ttl_days", int),
             "SCRAPOWER_LOG_LEVEL": ("log_level", str),
             "SCRAPOWER_ENFORCE_SEGREGATION": ("enforce_segregation", bool),
+            "SCRAPOWER_WS_ASSIGN_ENABLED": ("ws_assign_enabled", bool),
         }
         for env_var, (attr, typ) in env_map.items():
             val = os.environ.get(env_var)

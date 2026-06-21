@@ -37,6 +37,7 @@ class Scheduler:
         enforce_segregation: bool = False,
         verification_mode: str = "trust",
         reputation_service: "ReputationService | None" = None,
+        ws_assign_enabled: bool = True,
     ):
         self._tasks = task_service
         self._sm = session_manager
@@ -44,6 +45,7 @@ class Scheduler:
         self._verification = verification_mode
         self._policy = SchedulingPolicy(enforce_segregation=enforce_segregation)
         self._reputation = reputation_service
+        self._ws_assign = ws_assign_enabled
         self._running = False
 
     async def run(self):
@@ -64,10 +66,7 @@ class Scheduler:
             return
 
         # Mode B workers pull via HTTP — WS push is secondary.
-        # Temporarily skip WS push when Mode B is primary (env toggle).
-        import os
-
-        if os.environ.get("SCRAPOWER_WS_ASSIGN", "1") == "0":
+        if not self._ws_assign:
             return
 
         workers = self._sm.active_sessions

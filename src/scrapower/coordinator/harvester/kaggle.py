@@ -15,8 +15,8 @@ import time
 
 log = logging.getLogger(__name__)
 
-TICK_SEC = 30
-COOLDOWN_SEC = 300  # Kaggle API rate limit is aggressive
+TICK_SEC = 15
+COOLDOWN_SEC = 60  # minimum seconds between kernel pushes per account
 KAGGLE_BIN = "kaggle"
 
 

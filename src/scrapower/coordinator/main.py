@@ -133,6 +133,7 @@ async def lifespan(app: FastAPI):
         enforce_segregation=config.enforce_segregation,
         verification_mode=config.default_verification_mode,
         reputation_service=reputation_service,
+        ws_assign_enabled=config.ws_assign_enabled,
     )
     sched_task = asyncio.create_task(scheduler.run())
 

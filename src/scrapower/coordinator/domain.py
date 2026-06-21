@@ -49,6 +49,30 @@ class TaskService:
         """Transition a task to a new state (e.g. PENDING → DOWNLOADING)."""
         return await self._tm.transition(task_id, new_state)
 
+    async def run_prepare(
+        self,
+        task_id: str,
+        prepare_fn,
+        log=None,
+    ) -> bool:
+        """Run a prepare function in background, managing PENDING→QUEUED lifecycle.
+
+        Calls prepare_fn() which must return an input_hash (str).
+        On success: PENDING → DOWNLOADING → QUEUED (with input_hash).
+        On failure: marks task FAILED with the exception message."""
+        try:
+            await self.set_state(task_id, TaskState.DOWNLOADING)
+            input_hash = await prepare_fn()
+            ok = await self.set_queued(task_id, input_hash)
+            if ok and log:
+                log.info("prepare: task %s queued", task_id[:12])
+            return ok
+        except Exception as e:
+            if log:
+                log.error("prepare: failed for %s: %s", task_id[:12], str(e)[:200])
+            await self.mark_failed(task_id, str(e)[:4096])
+            return False
+
     async def set_queued(self, task_id: str, input_hash: str) -> bool:
         """Set a PENDING/DOWNLOADING task to QUEUED with its audio input hash."""
         task = await self.get(task_id)

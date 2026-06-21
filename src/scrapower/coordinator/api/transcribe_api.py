@@ -19,7 +19,6 @@ from fastapi.responses import JSONResponse
 router = APIRouter(prefix="/transcribe", tags=["transcribe"])
 
 WHISPER_RUNNER_HASH = "51cda979f6e95e8e04fa80d3dcabd140937570c4464430c97702ef807edcd858"
-DEFAULT_COOKIES_HASH = "3cf8cda94d2f84fa073e5bec5dd1f94b85375a61a230ee770d449c0224bbf282"
 
 log = logging.getLogger(__name__)
 
@@ -48,7 +47,7 @@ async def transcribe(request: Request):
     model = body.get("model", "large-v3")
     language = body.get("language") or None
     fmt = body.get("format", "json")
-    cookies_hash = body.get("cookies_hash") or DEFAULT_COOKIES_HASH
+    cookies_hash = body.get("cookies_hash") or os.environ.get("SCRAPOWER_YT_COOKIES_HASH", "")
 
     task_service = request.app.state.task_service
     task_id = uuid.uuid4().hex
@@ -65,22 +64,16 @@ async def transcribe(request: Request):
         initial_state="pending",
     )
 
-    # Launch background download
+    # Launch background prepare (download audio → blob → queue)
     db = request.app.state.db
     config = request.app.state.config
-    asyncio.create_task(
-        _download_and_queue(
-            task_id=task_id,
-            url=url,
-            model=model,
-            language=language,
-            fmt=fmt,
-            cookies_hash=cookies_hash,
-            task_service=task_service,
-            db=db,
-            blob_dir=config.blob_dir,
+
+    async def _prepare():
+        return await _prepare_whisper_input(
+            url, model, language, fmt, cookies_hash, db, config.blob_dir
         )
-    )
+
+    asyncio.create_task(task_service.run_prepare(task_id, _prepare, log))
 
     return JSONResponse(
         {
@@ -94,49 +87,35 @@ async def transcribe(request: Request):
     )
 
 
-async def _download_and_queue(
-    task_id: str,
+async def _prepare_whisper_input(
     url: str,
     model: str,
     language: str | None,
     fmt: str,
     cookies_hash: str,
-    task_service,
     db,
     blob_dir: str,
-):
-    """Background task: download audio, store blob, queue task."""
-    try:
-        await task_service.set_state(task_id, "downloading")
+) -> str:
+    """Download YouTube audio, build input config, return input_hash."""
+    audio_bytes = await _download_audio(url, cookies_hash, db, blob_dir)
 
-        audio_bytes = await _download_audio(url, cookies_hash, db, blob_dir)
+    from ..blob_store import store_blob
 
-        from ..blob_store import store_blob
+    audio_hash = await store_blob(db, blob_dir, audio_bytes)
 
-        audio_hash = await store_blob(db, blob_dir, audio_bytes)
+    import json as _json
 
-        # Build input config for the worker
-        import json as _json
+    input_bytes = _json.dumps(
+        {
+            "audio_hash": audio_hash,
+            "coordinator_url": "https://scrapower.talos-int.com",
+            "model": model,
+            "language": language,
+            "format": fmt,
+        }
+    ).encode()
 
-        input_bytes = _json.dumps(
-            {
-                "audio_hash": audio_hash,
-                "coordinator_url": "https://scrapower.talos-int.com",
-                "model": model,
-                "language": language,
-                "format": fmt,
-            }
-        ).encode()
-
-        input_hash = await store_blob(db, blob_dir, input_bytes)
-
-        # Set the real input hash and mark QUEUED
-        await task_service.set_queued(task_id, input_hash)
-        log.info("transcribe: audio downloaded, task %s queued", task_id[:12])
-
-    except Exception as e:
-        log.error("transcribe: download failed for %s: %s", task_id[:12], str(e)[:200])
-        await task_service.mark_failed(task_id, str(e)[:4096])
+    return await store_blob(db, blob_dir, input_bytes)
 
 
 async def _download_audio(url: str, cookies_hash: str, db, blob_dir: str) -> bytes:
