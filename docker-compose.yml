@@ -29,8 +29,9 @@ services:
 
   vpn:
     build: ./deploy/vpn
-    network_mode: host
     restart: unless-stopped
+    ports:
+      - "127.0.0.1:1080:1080"
     cap_add:
       - NET_ADMIN
     devices:
