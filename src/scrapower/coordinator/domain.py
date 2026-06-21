@@ -54,24 +54,42 @@ class TaskService:
         task_id: str,
         prepare_fn,
         log=None,
+        max_retries: int = 2,
     ) -> bool:
         """Run a prepare function in background, managing PENDING→QUEUED lifecycle.
 
         Calls prepare_fn() which must return an input_hash (str).
+        Retries up to max_retries times on failure (e.g. transient yt-dlp errors).
         On success: PENDING → DOWNLOADING → QUEUED (with input_hash).
-        On failure: marks task FAILED with the exception message."""
-        try:
-            await self.set_state(task_id, TaskState.DOWNLOADING)
-            input_hash = await prepare_fn()
-            ok = await self.set_queued(task_id, input_hash)
-            if ok and log:
-                log.info("prepare: task %s queued", task_id[:12])
-            return ok
-        except Exception as e:
-            if log:
-                log.error("prepare: failed for %s: %s", task_id[:12], str(e)[:200])
-            await self.mark_failed(task_id, str(e)[:4096])
-            return False
+        On final failure: marks task FAILED with the exception message."""
+        last_error = None
+        for attempt in range(max_retries + 1):
+            try:
+                if attempt > 0 and log:
+                    log.info("prepare: retry %d/%d for %s", attempt, max_retries, task_id[:12])
+                await self.set_state(task_id, TaskState.DOWNLOADING)
+                input_hash = await prepare_fn()
+                ok = await self.set_queued(task_id, input_hash)
+                if ok and log:
+                    log.info("prepare: task %s queued", task_id[:12])
+                return ok
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries:
+                    await self._tm.transition(task_id, TaskState.PENDING)  # reset for retry
+                    import asyncio
+
+                    await asyncio.sleep(2**attempt)  # 0s, 2s, 4s...
+        # All retries exhausted
+        if log:
+            log.error(
+                "prepare: failed for %s after %d retries: %s",
+                task_id[:12],
+                max_retries,
+                str(last_error)[:200],
+            )
+        await self.mark_failed(task_id, str(last_error)[:4096])
+        return False
 
     async def set_queued(self, task_id: str, input_hash: str) -> bool:
         """Set a PENDING/DOWNLOADING task to QUEUED with its audio input hash."""

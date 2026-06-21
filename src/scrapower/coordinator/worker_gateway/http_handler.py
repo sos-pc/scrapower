@@ -24,6 +24,7 @@ import time
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
+from ..task_manager import TaskState
 from .session import SessionManager
 
 log = logging.getLogger(__name__)
@@ -227,6 +228,23 @@ async def submit(request: Request, sessions: SessionManager):
                 "task_id": task_id,
                 "accepted": False,
                 "reason": "challenge_pending",
+            }
+        )
+
+    # Reject empty/error results — mark TIMEOUT so they requeue (same as WS handler)
+    status = body.get("result", {}).get("execution_metadata", {}).get("exit_code", 0)
+    if not output_hash or status != 0:
+        log.warning(
+            "mode-b submit: empty/error result, marking TIMEOUT: task=%s",
+            task_id[:12],
+        )
+        await task_service._tm.transition(task_id, TaskState.TIMEOUT)
+        return JSONResponse(
+            {
+                "type": "submit_ack",
+                "task_id": task_id,
+                "accepted": False,
+                "reason": "error_result_will_retry",
             }
         )
 
