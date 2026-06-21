@@ -66,6 +66,7 @@ class KaggleHarvester:
             return
         log.info("harvester: %d queued tasks, starting kernel", queued)
         success = await self._start_kernel()
+        self._last_start = time.time()  # always update to prevent immediate retry
         if not success:
             # Backoff on failure (rate limit, etc.)
             self._current_cooldown = min(self._current_cooldown * 2, 1800)  # max 30 min
@@ -158,7 +159,6 @@ class KaggleHarvester:
             _, stderr = await proc.communicate()
 
             if proc.returncode == 0:
-                self._last_start = time.time()
                 log.info("kaggle kernel started: %s (account=%s)", kernel_id, username)
                 return True
             else:
