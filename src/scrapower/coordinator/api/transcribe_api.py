@@ -20,7 +20,7 @@ router = APIRouter(prefix="/transcribe", tags=["transcribe"])
 
 # Whisper runner hash — computed at startup from the deployed file
 WHISPER_RUNNER_PATH = (
-    Path(__file__).parent.parent.parent.parent / "worker" / "runtimes" / "whisper_runner.py"
+    Path(__file__).parent.parent.parent / "worker" / "runtimes" / "whisper_runner.py"
 )
 
 
