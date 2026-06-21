@@ -13,10 +13,14 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# System deps for yt-dlp (ffmpeg + nodejs for YouTube JS extraction)
+# System deps: ffmpeg (for yt-dlp) + deno (JS runtime for YouTube extraction)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl ca-certificates ffmpeg nodejs npm \
-    && rm -rf /var/lib/apt/lists/*
+    curl ca-certificates ffmpeg unzip \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL https://github.com/denoland/deno/releases/download/v2.3.9/deno-aarch64-unknown-linux-gnu.zip -o /tmp/deno.zip \
+    && unzip -q /tmp/deno.zip -d /usr/local/bin \
+    && rm /tmp/deno.zip \
+    && chmod +x /usr/local/bin/deno
 
 # Copy and install Python dependencies
 COPY pyproject.toml .
