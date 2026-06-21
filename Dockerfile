@@ -17,10 +17,8 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl ca-certificates ffmpeg unzip \
     && rm -rf /var/lib/apt/lists/* \
-    && curl -fsSL https://github.com/denoland/deno/releases/download/v2.3.9/deno-aarch64-unknown-linux-gnu.zip -o /tmp/deno.zip \
-    && unzip -q /tmp/deno.zip -d /usr/local/bin \
-    && rm /tmp/deno.zip \
-    && chmod +x /usr/local/bin/deno
+    && curl -fsSL https://deno.land/install.sh | sh \
+    && mv /root/.deno/bin/deno /usr/local/bin/deno
 
 # Copy and install Python dependencies
 COPY pyproject.toml .
