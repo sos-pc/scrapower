@@ -91,7 +91,12 @@ class KaggleHarvester:
             return 0
 
     async def _cleanup_old_kernels(self):
-        """Delete old completed kernels to keep Kaggle account clean."""
+        """Delete dead/orphaned kernels.
+
+        Handles:
+        - COMPLETE/ERROR: normal completion
+        - RUNNING > 1h: stuck (notebook has 5min idle timeout)
+        """
         now = time.time()
         if now - self._last_cleanup < 300:
             return
@@ -123,6 +128,7 @@ class KaggleHarvester:
                     ref = parts[0]
                     if "scrapower-auto" not in ref:
                         continue
+                    should_delete = False
                     sproc = await asyncio.create_subprocess_exec(
                         KAGGLE_BIN,
                         "kernels",
@@ -133,7 +139,27 @@ class KaggleHarvester:
                         env=env,
                     )
                     sout, _ = await sproc.communicate()
-                    if "COMPLETE" in sout.decode() or "ERROR" in sout.decode():
+                    status_str = sout.decode()
+                    if "COMPLETE" in status_str or "ERROR" in status_str:
+                        should_delete = True
+                    elif "RUNNING" in status_str:
+                        # RUNNING > 1h = stuck (notebook idle timeout is 5min)
+                        try:
+                            last_run = parts[3] if len(parts) > 3 else ""
+                            if last_run:
+                                from datetime import UTC, datetime
+
+                                run_dt = datetime.strptime(
+                                    last_run.strip(), "%Y-%m-%d %H:%M:%S.%f"
+                                ).replace(tzinfo=UTC)
+                                if (now - run_dt.timestamp()) > 3600:
+                                    should_delete = True
+                                    log.info(
+                                        "harvester: killing stuck kernel %s (running >1h)", ref
+                                    )
+                        except (ValueError, IndexError):
+                            pass
+                    if should_delete:
                         dproc = await asyncio.create_subprocess_exec(
                             KAGGLE_BIN,
                             "kernels",
@@ -146,7 +172,7 @@ class KaggleHarvester:
                         )
                         await dproc.communicate()
                         if dproc.returncode == 0:
-                            log.debug("harvester cleanup: deleted %s", ref)
+                            log.info("harvester cleanup: deleted %s", ref)
             except Exception:
                 pass
 
