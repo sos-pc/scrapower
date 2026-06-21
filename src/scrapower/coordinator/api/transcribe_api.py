@@ -138,7 +138,18 @@ async def _download_and_queue(
 
 
 async def _download_audio(url: str, cookies_hash: str, db, blob_dir: str) -> bytes:
-    """Download audio from a video URL using yt-dlp. Returns MP3 bytes."""
+    """Download audio from a URL. Uses yt-dlp for YouTube, direct for .wav/.mp3."""
+    import urllib.request
+
+    DIRECT_EXTS = (".wav", ".mp3", ".m4a", ".ogg", ".flac", ".opus", ".aac", ".weba")
+    is_direct = any(url.lower().endswith(e) for e in DIRECT_EXTS)
+
+    if is_direct:
+        with tempfile.NamedTemporaryFile(suffix=".audio", delete=False) as tmp:
+            urllib.request.urlretrieve(url, tmp.name)
+            data = Path(tmp.name).read_bytes()
+            Path(tmp.name).unlink()
+            return data
     async with _download_sem:
         from ..blob_store import get_blob
 
