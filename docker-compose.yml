@@ -1,4 +1,4 @@
-# docker-compose.yml — Scrapower coordinator
+# docker-compose.yml — Scrapower coordinator + VPN proxy
 # Deploy: docker compose up -d --build
 # Logs:   docker compose logs -f
 
@@ -12,9 +12,9 @@ services:
     environment:
       - SCRAPOWER_HOST=0.0.0.0
       - SCRAPOWER_DATA_DIR=/app/data
+      - SCRAPOWER_VPN_PROXY=socks5://127.0.0.1:1080
     env_file:
       - .env
-    # Security hardening
     read_only: true
     tmpfs:
       - /tmp:noexec,nosuid,size=64M
@@ -23,4 +23,18 @@ services:
     cap_drop:
       - ALL
     cap_add:
-      - NET_BIND_SERVICE # needed for port 8777 binding with host network
+      - NET_BIND_SERVICE
+    depends_on:
+      - vpn
+
+  vpn:
+    build: ./deploy/vpn
+    network_mode: host
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      - VPN_USER=${SCRAPOWER_VPN_USER:-}
+      - VPN_PASS=${SCRAPOWER_VPN_PASS:-}

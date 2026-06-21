@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import tempfile
 import uuid
 from pathlib import Path
@@ -176,7 +177,15 @@ async def _download_audio(url: str, cookies_hash: str, db, blob_dir: str) -> byt
                 tmpl,
                 "--no-playlist",
                 "--no-warnings",
+                "--extractor-retries",
+                "3",
+                "--retries",
+                "3",
             ]
+            # Route YouTube through VPN proxy to avoid datacenter IP ban
+            vpn_proxy = os.environ.get("SCRAPOWER_VPN_PROXY", "")
+            if vpn_proxy:
+                args += ["--proxy", vpn_proxy]
             if cookies_path:
                 args += ["--cookies", cookies_path]
             args.append(url)

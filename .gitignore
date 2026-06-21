@@ -31,3 +31,9 @@ Thumbs.db
 *.tmp
 .pytest_cache/
 projects/
+
+# VPN credentials & certs (deployed via SCP)
+deploy/vpn/auth.txt
+deploy/vpn/ca.crt
+deploy/vpn/client.crt
+deploy/vpn/client.key
