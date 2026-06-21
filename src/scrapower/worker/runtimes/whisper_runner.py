@@ -39,7 +39,7 @@ def _download_audio(url, workdir, cookies_path=None):
         "-m",
         "yt_dlp",
         "-f",
-        "bestaudio[ext=m4a]/bestaudio",
+        "bestaudio/best",
         "-o",
         tmpl,
         "--no-playlist",
