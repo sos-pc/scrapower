@@ -50,9 +50,9 @@ class TaskService:
         return await self._tm.transition(task_id, new_state)
 
     async def set_queued(self, task_id: str, input_hash: str) -> bool:
-        """Set a PENDING task to QUEUED with its audio input hash."""
+        """Set a PENDING/DOWNLOADING task to QUEUED with its audio input hash."""
         task = await self.get(task_id)
-        if not task or task.state != TaskState.PENDING:
+        if not task or task.state not in (TaskState.PENDING, TaskState.DOWNLOADING):
             return False
         # Update input_hash and transition to QUEUED
         import time
