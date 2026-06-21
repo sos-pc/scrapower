@@ -32,6 +32,9 @@
 - [ ] **Mode FaaS** — endpoint `/faas/{func_hash}` exécute WASM et renvoie réponse
 - [ ] **Observabilité** — Prometheus, logs JSON, alertes
 - [ ] **Multi-tenant** — isolation client_id, quotas, priorités
+- [ ] **OAuth YouTube** — tokens refresh automatiques, plus de cookies manuels
+- [ ] **Chunking audio** — découpage des fichiers longs en segments pour parallélisation
+- [ ] **Sauvegarde transcripts** — export automatique (fichier, Google Docs, etc.)
 - [ ] **Vérification challenge améliorée** — taux adaptatif, blacklist auto
 - [ ] **SDK Python** — `pip install scrapower`, soumission de tâches en 3 lignes
 
