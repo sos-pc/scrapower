@@ -112,19 +112,16 @@ async def _prepare_whisper_input(
     db,
     blob_dir: str,
 ) -> str:
-    """Download YouTube audio, build input config, return input_hash."""
-    audio_bytes = await _download_audio(url, cookies_hash, db, blob_dir)
+    """Build input config for worker. Worker downloads audio + runs whisper."""
+    import json as _json
 
     from ..blob_store import store_blob
-
-    audio_hash = await store_blob(db, blob_dir, audio_bytes)
-
-    import json as _json
 
     coordinator_url = os.environ.get("SCRAPOWER_COORDINATOR_URL", "https://scrapower.talos-int.com")
     input_bytes = _json.dumps(
         {
-            "audio_hash": audio_hash,
+            "url": url,
+            "cookies_hash": cookies_hash,
             "coordinator_url": coordinator_url,
             "model": model,
             "language": language,

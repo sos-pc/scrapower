@@ -38,11 +38,8 @@ def _download_audio(url, workdir, cookies_path=None):
         sys.executable,
         "-m",
         "yt_dlp",
-        "-x",
-        "--audio-format",
-        "mp3",
-        "--audio-quality",
-        "0",
+        "-f",
+        "bestaudio[ext=m4a]/bestaudio",
         "-o",
         tmpl,
         "--no-playlist",
@@ -53,7 +50,7 @@ def _download_audio(url, workdir, cookies_path=None):
     args.append(url)
     subprocess.run(args, check=True, capture_output=True, timeout=600)
     for f in workdir.iterdir():
-        if f.suffix in (".mp3", ".m4a", ".opus", ".webm"):
+        if f.suffix in (".m4a", ".opus", ".webm", ".mp3"):
             return f
     raise FileNotFoundError(f"No audio in {workdir}")
 
