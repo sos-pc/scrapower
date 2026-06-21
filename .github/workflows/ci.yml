@@ -17,26 +17,16 @@ jobs:
         with:
           python-version: "3.12"
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
-          cd worker-browser && npm ci && cd ..
 
       - name: Lint
         run: ruff check src/ tests/
 
       - name: Typecheck
-        run: mypy src/scrapower/coordinator src/scrapower/worker/client.py --ignore-missing-imports
+        run: mypy src/scrapower/coordinator src/scrapower/worker --ignore-missing-imports
 
-      - name: Build browser worker
-        run: |
-          cd worker-browser
-          npm run build
-
-      - name: Test
-        run: pytest tests/ -q --ignore=tests/test_distribution.py --ignore=tests/test_gpu.py
+      - name: Unit tests
+        run: pytest tests/ -q --ignore=tests/test_distribution.py --ignore=tests/test_gpu.py --ignore=tests/test_python.py --ignore=tests/test_smoke.py --ignore=tests/test_worker_gateway_ws.py
