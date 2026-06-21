@@ -86,19 +86,23 @@ async def lifespan(app: FastAPI):
     # VPN pre-flight check
     vpn_proxy = os.environ.get("SCRAPOWER_VPN_PROXY", "")
     if vpn_proxy:
-        import aiohttp
-
         try:
-            async with aiohttp.ClientSession() as s:
-                proxy_url = vpn_proxy.replace("socks5://", "http://")  # for testing
-                async with s.get(
-                    "https://ifconfig.me", proxy=vpn_proxy, timeout=aiohttp.ClientTimeout(total=10)
-                ) as r:
-                    if r.status == 200:
-                        vpn_ip = (await r.text()).strip()
-                        log.info("vpn check ok", vpn_ip=vpn_ip)
-                    else:
-                        log.warning("vpn check failed: HTTP %d", r.status)
+            proc = await asyncio.create_subprocess_exec(
+                "curl",
+                "-s",
+                "--socks5",
+                "127.0.0.1:1080",
+                "--max-time",
+                "5",
+                "https://ifconfig.me",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=8)
+            if proc.returncode == 0:
+                log.info("vpn check ok", vpn_ip=stdout.decode().strip())
+            else:
+                log.warning("vpn check failed: curl rc=%d", proc.returncode)
         except Exception as e:
             log.warning("vpn check failed: %s (YouTube downloads may not work)", str(e)[:100])
 
