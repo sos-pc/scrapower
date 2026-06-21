@@ -48,12 +48,22 @@ def _download_audio(url, workdir, cookies_path=None):
     if cookies_path:
         args += ["--cookies", cookies_path]
     args.append(url)
+    # Try with cookies first; if format error, retry without (public video)
     try:
         subprocess.run(args, check=True, capture_output=True, timeout=600)
     except subprocess.CalledProcessError as e:
-        raise Exception(
-            f"yt-dlp failed (rc={e.returncode}): {e.stderr.decode()[-500:] if e.stderr else 'no stderr'}"
-        )
+        stderr = e.stderr.decode()[-500:] if e.stderr else ""
+        if "Requested format is not available" in stderr and cookies_path:
+            # Retry without cookies (YouTube may reject datacenter cookies)
+            args_no_cookies = [a for a in args if a != "--cookies" and a != cookies_path]
+            try:
+                subprocess.run(args_no_cookies, check=True, capture_output=True, timeout=600)
+            except subprocess.CalledProcessError as e2:
+                raise Exception(
+                    f"yt-dlp failed (rc={e2.returncode}): {e2.stderr.decode()[-500:] if e2.stderr else 'no stderr'}"
+                )
+        else:
+            raise Exception(f"yt-dlp failed (rc={e.returncode}): {stderr}")
     for f in workdir.iterdir():
         if f.suffix in (".m4a", ".opus", ".webm", ".mp3"):
             return f
