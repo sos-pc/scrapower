@@ -33,7 +33,7 @@ class EphemeralHarvester:
         """Boucle principale. Tourne indéfiniment."""
         self._running = True
         names = ", ".join(type(p).__name__ for p in self._providers)
-        log.info("harvester: %d provider(s) — %s", len(self._providers), names)
+        log.info("harvester: %d provider(s) - %s", len(self._providers), names)
         while self._running:
             try:
                 await self._tick()

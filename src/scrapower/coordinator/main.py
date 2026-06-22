@@ -242,7 +242,7 @@ async def lifespan(app: FastAPI):
                 )
             )
         except ImportError:
-            log.warning("modal package not installed — skipping Modal provider")
+            log.warning("modal package not installed - skipping Modal provider")
 
     harvester_task: asyncio.Task | None = None
     if providers:
