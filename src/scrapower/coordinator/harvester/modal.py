@@ -91,16 +91,32 @@ class ModalHarvester(WorkerProvider):
             return False
 
     async def cleanup_stale(self) -> None:
-        """Termine les Sandboxes qui ne sont plus en cours d'exécution.
+        """Remove terminated sandboxes from local tracking list.
 
-        Modal facture à la seconde, donc on ne paie que le temps
-        d'exécution réel. Les Sandboxes s'auto-terminent après
-        idle_timeout — ici on nettoie juste la liste locale.
+        Modal Sandboxes auto-terminate after idle_timeout or when
+        the entrypoint exits. We periodically check which ones are
+        still running and remove dead ones from our list.
         """
-        # Modal Sandboxes auto-terminate after idle_timeout.
-        # We just track local state — no explicit cleanup needed.
-        # In future: call modal.Sandbox.list() to check status.
-        pass
+        if not self._sandbox_ids:
+            return
+        try:
+            import modal
+
+            app = await modal.App.lookup.aio("scrapower", create_if_missing=False)
+            alive = set()
+            for sb_info in modal.Sandbox.list(app_id=app.app_id):
+                alive.add(sb_info.object_id)
+            before = len(self._sandbox_ids)
+            self._sandbox_ids = [sid for sid in self._sandbox_ids if sid in alive]
+            removed = before - len(self._sandbox_ids)
+            if removed:
+                log.info(
+                    "modal cleanup: removed %d terminated sandboxes (remaining: %d)",
+                    removed,
+                    len(self._sandbox_ids),
+                )
+        except Exception:
+            pass  # Modal API might not be available; will retry next tick
 
     async def status(self) -> ProviderStatus:
         """Statut du provider Modal."""
