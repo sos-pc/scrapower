@@ -37,3 +37,4 @@ deploy/vpn/auth.txt
 deploy/vpn/ca.crt
 deploy/vpn/client.crt
 deploy/vpn/client.key
+deploy/vpn-wg/SCRAPOWER.conf
