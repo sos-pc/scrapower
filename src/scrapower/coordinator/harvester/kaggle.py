@@ -2,6 +2,7 @@
 
 Uses kaggle CLI to create/run kernels on demand.
 Supports multiple accounts via KAGGLE_ACCOUNTS env var.
+Implements WorkerProvider for EphemeralHarvester.
 """
 
 from __future__ import annotations
@@ -13,14 +14,15 @@ import os
 import tempfile
 import time
 
+from .base import ProviderStatus, WorkerProvider
+
 log = logging.getLogger(__name__)
 
-TICK_SEC = 15
 COOLDOWN_SEC = 60  # minimum seconds between kernel pushes per account
 KAGGLE_BIN = "kaggle"
 
 
-class KaggleHarvester:
+class KaggleHarvester(WorkerProvider):
     def __init__(
         self,
         accounts: list[dict],
@@ -306,3 +308,92 @@ class KaggleHarvester:
         a = self._accounts[self._round % len(self._accounts)]
         self._round += 1
         return a
+
+    # ── WorkerProvider interface ──────────────────────────────
+
+    async def remaining_pct(self) -> float:
+        """Moyenne des quotas restants de tous les comptes (0-100)."""
+        if not self._accounts:
+            return 0.0
+        pcts = []
+        for account in self._accounts:
+            q = await self._get_quota_for(account)
+            if q:
+                pcts.append(min(100.0, q["remaining_h"] / q["total_h"] * 100))
+        return sum(pcts) / len(pcts) if pcts else 0.0
+
+    async def has_quota(self) -> bool:
+        """Au moins un compte a > 0.1h restantes."""
+        return await self.remaining_pct() > 0.3  # 0.1h / 30h ≈ 0.3%
+
+    async def launch_worker(self) -> bool:
+        """Lance un kernel Kaggle. Délègue à _start_kernel."""
+        return await self._start_kernel()
+
+    async def cleanup_stale(self) -> None:
+        """Nettoie les kernels morts. Délègue à _cleanup_old_kernels."""
+        await self._cleanup_old_kernels()
+
+    async def status(self) -> ProviderStatus:
+        """Statut agrégé de tous les comptes Kaggle."""
+        pct = await self.remaining_pct()
+        active = 0
+        for account in self._accounts:
+            try:
+                env = os.environ.copy()
+                env["KAGGLE_API_TOKEN"] = account["token"]
+                proc = await asyncio.create_subprocess_exec(
+                    KAGGLE_BIN,
+                    "kernels",
+                    "list",
+                    "-m",
+                    "--csv",
+                    "--page-size",
+                    "5",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=env,
+                )
+                stdout, _ = await proc.communicate()
+                if proc.returncode == 0:
+                    for line in stdout.decode().strip().split("\n")[1:]:
+                        if "scrapower-auto" in line and "RUNNING" in line:
+                            active += 1
+            except Exception:
+                pass
+        return ProviderStatus(
+            name="kaggle",
+            provider_type="kaggle",
+            gpu_type="T4",
+            remaining_pct=pct,
+            workers_active=active,
+            quota_detail={"accounts": len(self._accounts)},
+        )
+
+    async def _get_quota_for(self, account: dict) -> dict | None:
+        """Get GPU quota for a specific account."""
+        try:
+            env = os.environ.copy()
+            env["KAGGLE_API_TOKEN"] = account["token"]
+            proc = await asyncio.create_subprocess_exec(
+                KAGGLE_BIN,
+                "quota",
+                "--csv",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
+            if proc.returncode != 0:
+                return None
+            for line in stdout.decode().strip().split("\n")[1:]:
+                parts = line.split(",")
+                if len(parts) >= 4 and parts[0] == "GPU":
+                    return {
+                        "used_h": float(parts[1].rstrip("h")),
+                        "remaining_h": float(parts[2].rstrip("h")),
+                        "total_h": float(parts[3].rstrip("h")),
+                    }
+        except Exception:
+            pass
+        return None

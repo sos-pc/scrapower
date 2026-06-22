@@ -199,39 +199,68 @@ async def lifespan(app: FastAPI):
     # Start cleanup loop (release expired tasks, free blob refs)
     cleanup_task = asyncio.create_task(_cleanup_loop(task_service, log))
 
-    # Kaggle GPU harvester (auto-start kernels when GPU tasks are waiting)
+    # Ephemeral harvester — manages all GPU worker providers (Kaggle, Modal, ...)
+    from .harvester.base import WorkerProvider
+    from .harvester.ephemeral import EphemeralHarvester
+
+    providers: list[WorkerProvider] = []
+    coordinator_url = os.environ.get("SCRAPOWER_COORDINATOR_URL", "https://scrapower.talos-int.com")
+    api_key = os.environ.get("SCRAPOWER_API_KEY", "")
+
+    # -- Kaggle provider(s) --
     kaggle_accounts_raw = os.environ.get("KAGGLE_ACCOUNTS", "")
-    kaggle_accounts = []
     if kaggle_accounts_raw:
         try:
             kaggle_accounts = json.loads(kaggle_accounts_raw)
-        except json.JSONDecodeError:
-            log.warning("kaggle_accounts: invalid JSON, skipping harvester")
-    if kaggle_accounts:
-        from .harvester.kaggle import KaggleHarvester
+            if kaggle_accounts:
+                from .harvester.kaggle import KaggleHarvester
 
-        coordinator_url = os.environ.get(
-            "SCRAPOWER_COORDINATOR_URL", "https://scrapower.talos-int.com"
-        )
-        kaggle_harvester = KaggleHarvester(
-            accounts=kaggle_accounts,
-            coordinator_url=coordinator_url,
-            api_key=os.environ.get("SCRAPOWER_API_KEY", ""),
-        )
-        kaggle_task = asyncio.create_task(kaggle_harvester.run())
-        log.info("kaggle harvester started", accounts=len(kaggle_accounts))
+                providers.append(
+                    KaggleHarvester(
+                        accounts=kaggle_accounts,
+                        coordinator_url=coordinator_url,
+                        api_key=api_key,
+                    )
+                )
+        except json.JSONDecodeError:
+            log.warning("kaggle_accounts: invalid JSON, skipping")
+
+    # -- Modal provider --
+    modal_token_id = os.environ.get("MODAL_TOKEN_ID", "")
+    modal_token_secret = os.environ.get("MODAL_TOKEN_SECRET", "")
+    if modal_token_id and modal_token_secret:
+        try:
+            from .harvester.modal import ModalHarvester
+
+            providers.append(
+                ModalHarvester(
+                    token_id=modal_token_id,
+                    token_secret=modal_token_secret,
+                    coordinator_url=coordinator_url,
+                    api_key=api_key,
+                    gpu_type=os.environ.get("MODAL_GPU_TYPE", "T4"),
+                )
+            )
+        except ImportError:
+            log.warning("modal package not installed — skipping Modal provider")
+
+    harvester_task: asyncio.Task | None = None
+    if providers:
+        harvester = EphemeralHarvester(providers)
+        harvester_task = asyncio.create_task(harvester.run())
+        log.info("harvester started", providers=len(providers))
     else:
-        kaggle_task = None
-        kaggle_harvester = None
+        log.info("no harvester providers configured")
+        harvester_task = None
 
     try:
         yield
     finally:
-        for t in (gc_task, zombie_task, sched_task, kaggle_task, cleanup_task):
+        for t in (gc_task, zombie_task, sched_task, harvester_task, cleanup_task):
             t.cancel()
         if embed_task is not None:
             embed_task.cancel()
-        for t in (gc_task, zombie_task, sched_task, kaggle_task, cleanup_task):
+        for t in (gc_task, zombie_task, sched_task, harvester_task, cleanup_task):
             try:
                 await t
             except asyncio.CancelledError:
