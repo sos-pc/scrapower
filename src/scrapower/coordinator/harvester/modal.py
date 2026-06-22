@@ -132,20 +132,22 @@ class ModalHarvester(WorkerProvider):
         os.environ.setdefault("MODAL_TOKEN_ID", self._token_id)
         os.environ.setdefault("MODAL_TOKEN_SECRET", self._token_secret)
 
-        app = modal.App.lookup("scrapower", create_if_missing=True)
+        app = await modal.App.lookup.aio("scrapower", create_if_missing=True)
 
         # Read worker script content
         worker_code = open(worker_path).read()
 
-        # Build image with dependencies
+        # Build image with dependencies + CUDA for GPU
+        # Use CUDA base image so faster-whisper can use the GPU
         image = (
-            modal.Image.debian_slim()
-            .apt_install("ffmpeg")  # pour whisper
+            modal.Image.from_registry("nvidia/cuda:12.4.0-runtime-ubuntu22.04", add_python="3.12")
+            .apt_install("ffmpeg")
             .pip_install("aiohttp", "faster-whisper", "yt-dlp", "yt-dlp-ejs")
+            .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
         )
 
         # Create sandbox with worker script as entrypoint
-        sb = modal.Sandbox.create(
+        sb = await modal.Sandbox.create.aio(
             "python",
             "-c",
             worker_code,
