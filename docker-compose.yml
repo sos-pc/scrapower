@@ -13,7 +13,7 @@ services:
       - SCRAPOWER_HOST=0.0.0.0
       - SCRAPOWER_DATA_DIR=/app/data
       - SCRAPOWER_VPN_PROXY=socks5://127.0.0.1:1080
-      - SCRAPOWER_WG_PROXY=socks5://127.0.0.1:1081
+      - SCRAPOWER_WG_PROXY=socks5://scrapower:${SCRAPOWER_WG_PASS}@127.0.0.1:1081
     env_file:
       - .env
     read_only: true
