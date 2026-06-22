@@ -1,4 +1,4 @@
-# docker-compose.yml — Scrapower coordinator + VPN proxy
+# docker-compose.yml — Scrapower coordinator + VPN proxies
 # Deploy: docker compose up -d --build
 # Logs:   docker compose logs -f
 
@@ -13,6 +13,7 @@ services:
       - SCRAPOWER_HOST=0.0.0.0
       - SCRAPOWER_DATA_DIR=/app/data
       - SCRAPOWER_VPN_PROXY=socks5://127.0.0.1:1080
+      - SCRAPOWER_WG_PROXY=socks5://${SCRAPOWER_WG_USER}:${SCRAPOWER_WG_PASS}@127.0.0.1:1081
     env_file:
       - .env
     read_only: true
@@ -26,6 +27,7 @@ services:
       - NET_BIND_SERVICE
     depends_on:
       - vpn
+      - vpn-wg
 
   vpn:
     build: ./deploy/vpn
@@ -39,3 +41,19 @@ services:
     environment:
       - VPN_USER=${SCRAPOWER_VPN_USER:-}
       - VPN_PASS=${SCRAPOWER_VPN_PASS:-}
+
+  vpn-wg:
+    build: ./deploy/vpn-wg
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:1081:1081" # coordinator (localhost)
+      - "1081:1081" # external workers (authenticated)
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - ./deploy/vpn-wg/SCRAPOWER.conf:/etc/wireguard/wg0.conf:ro
+    environment:
+      - SOCKS_USER=${SCRAPOWER_WG_USER:-}
+      - SOCKS_PASS=${SCRAPOWER_WG_PASS:-}

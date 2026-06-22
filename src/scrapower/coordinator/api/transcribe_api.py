@@ -173,10 +173,12 @@ async def _download_audio(url: str, cookies_hash: str, db, blob_dir: str) -> byt
                 "--retries",
                 "3",
             ]
-            # Route YouTube through VPN proxy to avoid datacenter IP ban
+            # Route YouTube through homelab WireGuard VPN (primary) or CyberGhost (fallback)
+            wg_proxy = os.environ.get("SCRAPOWER_WG_PROXY", "")
             vpn_proxy = os.environ.get("SCRAPOWER_VPN_PROXY", "")
-            if vpn_proxy:
-                args += ["--proxy", vpn_proxy]
+            proxy = wg_proxy or vpn_proxy
+            if proxy:
+                args += ["--proxy", proxy]
             if cookies_path:
                 args += ["--cookies", cookies_path]
             args.append(url)
@@ -375,9 +377,11 @@ async def _extract_playlist_urls(
                 Path(cookies_path).write_bytes(cookies_bytes)
 
         args = ["yt-dlp", "--flat-playlist", "-j", "--no-warnings"]
+        wg_proxy = os.environ.get("SCRAPOWER_WG_PROXY", "")
         vpn_proxy = os.environ.get("SCRAPOWER_VPN_PROXY", "")
-        if vpn_proxy:
-            args += ["--proxy", vpn_proxy]
+        proxy = wg_proxy or vpn_proxy
+        if proxy:
+            args += ["--proxy", proxy]
         if cookies_path:
             args += ["--cookies", cookies_path]
         args.append(playlist_url)

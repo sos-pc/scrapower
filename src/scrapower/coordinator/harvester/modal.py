@@ -188,6 +188,12 @@ class ModalHarvester(WorkerProvider):
                     {
                         "COORDINATOR_URL": self._coordinator_url,
                         "SCRAPOWER_API_KEY": self._api_key,
+                        "WG_PROXY": os.environ.get("SCRAPOWER_WG_PROXY", "").replace(
+                            "127.0.0.1",
+                            os.environ.get(
+                                "SCRAPOWER_COORDINATOR_URL", "scrapower.talos-int.com"
+                            ).replace("https://", ""),
+                        ),
                     }
                 )
             ],

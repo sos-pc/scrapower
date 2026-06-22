@@ -49,6 +49,9 @@ def _download_audio(url, workdir, cookies_path=None):
         "--no-playlist",
         "--no-warnings",
     ]
+    wg_proxy = os.environ.get("WG_PROXY", "")
+    if wg_proxy:
+        args += ["--proxy", wg_proxy]
     if cookies_path:
         args += ["--cookies", cookies_path]
     args.append(url)

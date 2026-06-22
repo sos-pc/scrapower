@@ -256,6 +256,9 @@ class KaggleHarvester(WorkerProvider):
                     )
                     break
             src = src.replace('API_KEY = ""', f'API_KEY = "{self._api_key}"')
+            wg_proxy = os.environ.get("SCRAPOWER_WG_PROXY", "")
+            if wg_proxy:
+                src = src.replace('WG_PROXY = ""', f'WG_PROXY = "{wg_proxy}"')
             cell["source"] = src
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -272,7 +275,7 @@ class KaggleHarvester(WorkerProvider):
                         "code_file": "notebook.ipynb",
                         "language": "python",
                         "kernel_type": "notebook",
-                        "is_private": False,
+                        "is_private": True,
                         "enable_gpu": True,
                         "enable_internet": True,
                         "machine_shape": "NvidiaTeslaT4",
