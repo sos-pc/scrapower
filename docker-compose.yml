@@ -45,6 +45,7 @@ services:
   vpn-wg:
     build: ./deploy/vpn-wg
     restart: unless-stopped
+    privileged: true # needed for WireGuard sysctl on Oracle kernel
     ports:
       - "1081:1081" # SOCKS5 proxy (authenticated, for coordinator + workers)
     cap_add:
