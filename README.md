@@ -1,12 +1,13 @@
 # Scrapower
 
 > **Agrégateur de calcul distribué** — exécute des tâches WASM et Python sur
-> des workers éphémères (Kaggle GPU, navigateurs, HuggingFace Spaces).
+> des workers éphémères (Kaggle GPU, Modal Sandbox, HuggingFace Spaces, navigateurs).
 
 ```
 POST /transcribe {url: "youtube..."}
-  → Coordinator (Oracle) → yt-dlp via VPN → blob audio
-  → Worker Kaggle T4 GPU → faster-whisper turbo → transcript
+  → Coordinator (Oracle) → Harvester (quota-based)
+  → Worker (Kaggle T4 ou Modal T4, choisi par % quota restant)
+  → faster-whisper turbo → transcript
 ```
 
 ## Quickstart
@@ -35,7 +36,7 @@ curl https://scrapower.talos-int.com/results/{task_id} -H "X-API-Key: $API_KEY"
 
 **Task lifecycle:** `PENDING → DOWNLOADING → QUEUED → ASSIGNED → COMPLETED`
 
-**Workers actifs :** Kaggle (T4 GPU, 30 GB RAM), HuggingFace Spaces, navigateurs (WASM/WebGPU).
+**Workers actifs :** Kaggle (3 comptes T4), Modal (2 comptes T4), HuggingFace Spaces, navigateurs (WASM/WebGPU).
 
 ## Stack
 
@@ -46,13 +47,14 @@ curl https://scrapower.talos-int.com/results/{task_id} -H "X-API-Key: $API_KEY"
 | VPN | OpenVPN + Dante SOCKS5 (CyberGhost) |
 | YouTube | yt-dlp + deno JS runtime |
 | Déploiement | Docker Compose, Oracle Cloud ARM |
-| Harvester | Kaggle CLI, round-robin 2 comptes |
+| Harvester | EphemeralHarvester (Kaggle CLI + Modal SDK), quota-based priority |
 
 ## Endpoints
 
 | Méthode | Chemin | Description |
 |---|---|---|
 | POST | `/transcribe` | Transcription YouTube → texte |
+| POST | `/transcribe/update-cookies` | MàJ cookies YouTube sans redémarrage |
 | GET | `/transcribe/models` | Modèles Whisper (tiny…large-v3) |
 | GET | `/results/{id}` | Résultat d'une tâche |
 | POST | `/tasks` | Tâche générique WASM/Python |
