@@ -86,8 +86,8 @@ class ModalHarvester(WorkerProvider):
             self._sandbox_ids.append(sb.object_id)
             log.info("modal sandbox created: %s (gpu=%s)", sb.object_id, self._gpu_type)
             return True
-        except Exception:
-            log.exception("modal sandbox creation failed")
+        except Exception as e:
+            log.error("modal sandbox creation failed: %s", str(e)[:200])
             return False
 
     async def cleanup_stale(self) -> None:
@@ -104,7 +104,7 @@ class ModalHarvester(WorkerProvider):
 
             app = await modal.App.lookup.aio("scrapower", create_if_missing=False)
             alive = set()
-            for sb_info in modal.Sandbox.list(app_id=app.app_id):
+            async for sb_info in modal.Sandbox.list.aio(app_id=app.app_id):
                 alive.add(sb_info.object_id)
             before = len(self._sandbox_ids)
             self._sandbox_ids = [sid for sid in self._sandbox_ids if sid in alive]
