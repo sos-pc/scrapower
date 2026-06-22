@@ -161,9 +161,14 @@ async def lifespan(app: FastAPI):
     reputation_service = ReputationService(db)
     router_mod.reputation_service = reputation_service  # type: ignore[assignment]
 
-    task_service = TaskService(task_manager)
+    task_service = TaskService(task_manager, db, config)
     app.state.task_service = task_service
     router_mod.task_service = task_service  # type: ignore[assignment]
+
+    # Register fallback handlers for tasks that may need coordinator-side prep
+    from .api.transcribe_api import WHISPER_RUNNER_HASH, prepare_audio_fallback
+
+    task_service.register_fallback(WHISPER_RUNNER_HASH, prepare_audio_fallback)
 
     # Purge orphaned assignments at startup (workers disconnected during restart)
     await _purge_orphaned_assignments(db, log)

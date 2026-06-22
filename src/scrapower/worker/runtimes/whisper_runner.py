@@ -16,6 +16,10 @@ MODEL_CACHE = Path(os.environ.get("WHISPER_MODEL_DIR", "/tmp/whisper-models"))
 DIRECT_EXTS = (".wav", ".mp3", ".m4a", ".ogg", ".flac", ".opus", ".aac", ".weba")
 
 
+class DownloadError(Exception):
+    """Audio download failed — signals coordinator to prepare fallback."""
+
+
 def _ensure_deps():
     for pkg in ["faster-whisper", "yt-dlp"]:
         try:
@@ -59,11 +63,11 @@ def _download_audio(url, workdir, cookies_path=None):
             try:
                 subprocess.run(args_no_cookies, check=True, capture_output=True, timeout=600)
             except subprocess.CalledProcessError as e2:
-                raise Exception(
+                raise DownloadError(
                     f"yt-dlp failed (rc={e2.returncode}): {e2.stderr.decode()[-500:] if e2.stderr else 'no stderr'}"
                 )
         else:
-            raise Exception(f"yt-dlp failed (rc={e.returncode}): {stderr}")
+            raise DownloadError(f"yt-dlp failed (rc={e.returncode}): {stderr}")
     for f in workdir.iterdir():
         if f.suffix in (".m4a", ".opus", ".webm", ".mp3"):
             return f
@@ -145,7 +149,17 @@ def main():
             print(f"Done in {time.time() - start:.1f}s", file=sys.stderr)
         output = transcript.encode("utf-8")
         output_hash = hashlib.sha256(output).hexdigest()
-        print(json.dumps({"output_bytes": output.hex(), "output_hash": output_hash}))
+        print(
+            json.dumps({"output_bytes": output.hex(), "output_hash": output_hash, "exit_code": 0})
+        )
+    except DownloadError as e:
+        err = f"DownloadError: {e}"
+        print(err, file=sys.stderr)
+        output = err.encode("utf-8")
+        output_hash = hashlib.sha256(output).hexdigest()
+        print(
+            json.dumps({"output_bytes": output.hex(), "output_hash": output_hash, "exit_code": 2})
+        )
     except Exception as e:
         err = f"{type(e).__name__}: {e}"
         print(err, file=sys.stderr)

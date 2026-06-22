@@ -162,11 +162,8 @@ async def _download_audio(url: str, cookies_hash: str, db, blob_dir: str) -> byt
             tmpl = str(workdir / "%(id)s.%(ext)s")
             args = [
                 "yt-dlp",
-                "-x",
-                "--audio-format",
-                "mp3",
-                "--audio-quality",
-                "0",
+                "-f",
+                "bestaudio/best",
                 "-o",
                 tmpl,
                 "--no-playlist",
@@ -200,10 +197,66 @@ async def _download_audio(url: str, cookies_hash: str, db, blob_dir: str) -> byt
                 raise Exception(f"yt-dlp failed: {err}")
 
             for f in workdir.iterdir():
-                if f.suffix in (".mp3", ".m4a", ".opus", ".webm", ".wav"):
+                if f.suffix in (".m4a", ".opus", ".webm", ".mp3", ".wav"):
                     return f.read_bytes()
 
             raise Exception("No audio file found after yt-dlp download")
+
+
+async def prepare_audio_fallback(task, db, config):
+    """Fallback: download audio on coordinator and update task input.
+
+    Called by TaskService.trigger_fallback() when a worker returns
+    exit_code=2 (DOWNLOAD_FAILED). Downloads audio via VPN, stores as
+    blob, and updates the task's input_hash so any worker can complete it.
+    """
+    import json as _json
+
+    from ..blob_store import get_blob, store_blob
+
+    log = logging.getLogger(__name__)
+
+    # 1. Parse current input to extract URL and cookies_hash
+    input_data = await get_blob(db, config.blob_dir, task.input_hash)
+    if not input_data:
+        raise Exception(f"Input blob not found: {task.input_hash[:12]}")
+    config_in = _json.loads(input_data.decode())
+    url = config_in.get("url", "")
+    cookies_hash = config_in.get("cookies_hash", "")
+    if not url:
+        raise Exception("No URL in task input — cannot prepare fallback")
+
+    log.info("fallback: downloading audio for %s", task.id[:12])
+
+    # 2. Download audio via coordinator (VPN + native format, no ffmpeg)
+    audio_bytes = await _download_audio(url, cookies_hash, db, config.blob_dir)
+
+    # 3. Store audio as blob
+    audio_hash = await store_blob(db, config.blob_dir, audio_bytes)
+    log.info("fallback: audio stored hash=%s", audio_hash[:12])
+
+    # 4. Create new input JSON with audio_hash (no url — worker uses Mode A)
+    coordinator_url = os.environ.get("SCRAPOWER_COORDINATOR_URL", "https://scrapower.talos-int.com")
+    new_input = _json.dumps(
+        {
+            "audio_hash": audio_hash,
+            "coordinator_url": coordinator_url,
+            "model": config_in.get("model", "turbo"),
+            "language": config_in.get("language"),
+            "format": config_in.get("format", "json"),
+        }
+    ).encode()
+
+    # 5. Store new input and update task
+    new_input_hash = await store_blob(db, config.blob_dir, new_input)
+    import time
+
+    await db.execute(
+        "UPDATE tasks SET input_hash = ?, updated_at = ? WHERE id = ?",
+        (new_input_hash, str(time.time()), task.id),
+    )
+    await db.commit()
+    log.info("fallback: task %s updated with audio_hash=%s", task.id[:12], audio_hash[:12])
 
 
 @router.post("/update-cookies")

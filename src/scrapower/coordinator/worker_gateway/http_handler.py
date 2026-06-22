@@ -234,9 +234,16 @@ async def submit(request: Request, sessions: SessionManager):
     # Reject empty/error results — mark TIMEOUT so they requeue (same as WS handler)
     status = body.get("result", {}).get("execution_metadata", {}).get("exit_code", 0)
     if not output_hash or status != 0:
+        # exit_code 2 = DOWNLOAD_FAILED: trigger fallback before requeue
+        if status == 2 and task_service:
+            try:
+                await task_service.trigger_fallback(task_id)
+            except Exception:
+                log.exception("fallback failed for %s", task_id[:12])
         log.warning(
-            "mode-b submit: empty/error result, marking TIMEOUT: task=%s",
+            "mode-b submit: empty/error result, marking TIMEOUT: task=%s exit_code=%s",
             task_id[:12],
+            status,
         )
         await task_service._tm.transition(task_id, TaskState.TIMEOUT)
         return JSONResponse(
