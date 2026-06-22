@@ -49,6 +49,9 @@ services:
       - "1081:1081" # SOCKS5 proxy (authenticated, for coordinator + workers)
     cap_add:
       - NET_ADMIN
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1
+      - net.ipv6.conf.all.disable_ipv6=0
     devices:
       - /dev/net/tun:/dev/net/tun
     volumes:
