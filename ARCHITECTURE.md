@@ -63,22 +63,32 @@ PENDING → DOWNLOADING → QUEUED → ASSIGNED → COMPLETED
 
 ```
 1. POST /transcribe {url, model} → task PENDING
-2. Background: input config stored as blob (instant, no download)
-3. Task → QUEUED
-4. Harvester detects queued task → launches worker (Kaggle or Modal, chosen by quota %)
+2. Coordinator checks worker capabilities:
+   ├─ Workers with ip_reputation=residential → Mode B (worker DL, 0 CPU Oracle)
+   └─ All workers ip_reputation=datacenter → Mode A (pre-DL, fallback)
+3. Input stored as blob, task → QUEUED
+4. Harvester detects queued task → launches worker (chosen by quota %)
 5. Worker pulls task (POST /worker/pull)
 6. Worker downloads executable + input blobs
-7. Mode B: worker tries yt-dlp download from YouTube
-   ├─ SUCCESS → whisper → submit (exit_code=0) → COMPLETED
-   └─ FAIL (exit_code=2) → coordinator fallback:
-        ├─ yt-dlp via VPN → audio blob (native format, no ffmpeg)
-        ├─ input updated with audio_hash
-        └─ requeue → worker retries Mode A (blob download)
-8. Worker downloads audio blob → whisper on GPU → submit → COMPLETED
+7. Mode B: worker runs yt-dlp via homelab WireGuard VPN
+   → IP résidentielle → YouTube sert le contenu → whisper
+8. Mode A: worker downloads audio blob from coordinator
+   → whisper on GPU → submit → COMPLETED
 9. Client polls GET /results/{task_id} → transcript
 ```
 
-This universal flow minimizes coordinator CPU: the fast path (Mode B) uses zero Oracle resources. The fallback (Mode A) kicks in only when workers can't download directly.
+### Decision flow (coordinator `_prepare_whisper_input`)
+
+```
+Any active worker has ip_reputation != "datacenter" ?
+  YES → store {url, cookies_hash} (Mode B, worker DL)
+  NO  → download audio via homelab VPN/CyberGhost
+         store {audio_hash} (Mode A, worker reads blob)
+```
+
+This eliminates the wasteful fallback cycle observed in testing: every task going
+through Mode B failure → fallback → Mode A retry. The coordinator knows ahead of time
+whether workers can download directly.
 
 ## Harvester (EphemeralHarvester)
 
@@ -124,13 +134,47 @@ Each provider implements:
 - Round-robin across accounts via `_next_account()`
 - Budget tracking: local counter (seconds × $/sec rate)
 
-## VPN (CyberGhost)
+## VPN
 
-A dedicated Docker container runs OpenVPN + SOCKS5 proxy. Used only for coordinator-side fallback downloads (Mode A).
+### Homelab WireGuard (primary)
 
-YouTube blocks datacenter IPs. The VPN provides a clean exit IP. Only YouTube requests are routed through the proxy: `yt-dlp --proxy socks5://127.0.0.1:1080`.
+A WireGuard server on the homelab provides a residential IP exit node for all workers:
 
-Cookies are exported from a private browser window (as per yt-dlp docs), uploaded to the blob store, and made available to workers that need them.
+```
+┌──────────────────────────────────────────────────────┐
+│  HOMELAB (IP résidentielle)                          │
+│  ┌──────────────────────┐                            │
+│  │ WireGuard server     │                            │
+│  │ Port UDP 51820       │                            │
+│  └──────────┬───────────┘                            │
+└─────────────┼────────────────────────────────────────┘
+              │
+    ┌─────────┼─────────┬──────────────┐
+    ▼         ▼         ▼              ▼
+┌───────┐ ┌───────┐ ┌───────┐    ┌───────────┐
+│ Modal │ │ Kaggle│ │Coord. │    │ Browser   │
+│Sandbox│ │Kernel │ │Oracle │    │ (futur)   │
+│ wg0   │ │ wg0   │ │ wg0   │    │           │
+└───────┘ └───────┘ └───────┘    └───────────┘
+
+Tous les workers → yt-dlp → homelab:51820 → YouTube
+IP résidentielle → pas de blocage anti-bot
+```
+
+**Avantages** :
+- IP résidentielle = pas de blocage YouTube/Cloudflare
+- Gratuit (juste la connexion internet existante)
+- Utilisable par tous les workers, pas seulement Oracle
+- WireGuard = intégré au kernel, ultra-léger
+- DuckDNS pour IP dynamique
+
+### CyberGhost (fallback)
+
+Docker container OpenVPN + SOCKS5. Utilisé uniquement si le homelab est down ou
+pour le coordinateur Oracle en secours.
+
+YouTube blocks datacenter IPs. The VPN provides a clean exit IP. Only YouTube
+requests are routed through the proxy: `yt-dlp --proxy socks5://127.0.0.1:1080`.
 
 ## Blob Store
 
@@ -172,8 +216,22 @@ Workers declare their capabilities on connection/pull:
     "gpu": {"supported": true, "type": "cuda", "model": "T4", "vram_mb": 16384}
   },
   "lifecycle": {"mode": "ephemeral", "max_lifetime_sec": 21600},
-  "network": {"connectivity": "outgoing_only"}
+  "network": {
+    "connectivity": "outgoing_only",
+    "ip_reputation": "residential"  // "residential" | "vpn" | "datacenter"
+  }
 }
 ```
 
-Matching: `gpu_required=true` tasks are only assigned to workers with `gpu.supported=true`. More granular GPU matching (model, VRAM) is planned for v0.6.
+**`ip_reputation`** is a generic, task-agnostic signal. It tells the coordinator
+whether outbound requests from this worker are likely to be blocked by anti-bot
+systems (YouTube, Cloudflare, etc.).
+
+| Value | Source IP | YouTube | Web scraping | Use case |
+|-------|-----------|---------|-------------|----------|
+| `residential` | Homelab VPN | ✅ Passe | ✅ Passe | Mode B (worker DL) |
+| `vpn` | CyberGhost | ⚠️ Variable | ⚠️ Variable | Fallback |
+| `datacenter` | Modal, Kaggle | ❌ Bloqué | ❌ Bloqué | Mode A (pré-DL) |
+
+This replaces the earlier task-specific `can_download_youtube` — it applies to
+any future task type (scraping, API calls, dataset downloads).
