@@ -226,16 +226,26 @@ async def lifespan(app: FastAPI):
             log.warning("kaggle_accounts: invalid JSON, skipping")
 
     # -- Modal provider --
-    modal_token_id = os.environ.get("MODAL_TOKEN_ID", "")
-    modal_token_secret = os.environ.get("MODAL_TOKEN_SECRET", "")
-    if modal_token_id and modal_token_secret:
+    modal_accounts_raw = os.environ.get("MODAL_ACCOUNTS", "")
+    modal_accounts = []
+    if modal_accounts_raw:
+        try:
+            modal_accounts = json.loads(modal_accounts_raw)
+        except json.JSONDecodeError:
+            log.warning("modal_accounts: invalid JSON")
+    if not modal_accounts:
+        # Fallback: single account via MODAL_TOKEN_ID + MODAL_TOKEN_SECRET
+        mid = os.environ.get("MODAL_TOKEN_ID", "")
+        msec = os.environ.get("MODAL_TOKEN_SECRET", "")
+        if mid and msec:
+            modal_accounts = [{"token_id": mid, "token_secret": msec}]
+    if modal_accounts:
         try:
             from .harvester.modal import ModalHarvester
 
             providers.append(
                 ModalHarvester(
-                    token_id=modal_token_id,
-                    token_secret=modal_token_secret,
+                    accounts=modal_accounts,
                     coordinator_url=coordinator_url,
                     api_key=api_key,
                     gpu_type=os.environ.get("MODAL_GPU_TYPE", "T4"),

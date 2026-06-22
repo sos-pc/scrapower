@@ -1,7 +1,9 @@
 """Modal Harvester — auto-start Sandbox workers on Modal GPU.
 
 Uses modal.Sandbox.create() to provision ephemeral workers.
-Authentication via MODAL_TOKEN_ID + MODAL_TOKEN_SECRET env vars.
+Supports multiple accounts via MODAL_ACCOUNTS env var.
+Authentication via MODAL_TOKEN_ID/MODAL_TOKEN_SECRET (single account)
+or MODAL_ACCOUNTS JSON array for multi-account.
 """
 
 from __future__ import annotations
@@ -21,27 +23,27 @@ GPU_VRAM_MB = 16384
 SANDBOX_TIMEOUT = 6 * 3600  # 6h max per sandbox
 IDLE_TIMEOUT = 120  # 2 min idle → auto-terminate (saves credits)
 WORKER_SCRIPT = "deploy/modal/worker.py"
+BUDGET_MONTHLY_USD = 30.0  # Modal Starter free credits per account
 
 
 class ModalHarvester(WorkerProvider):
-    """Provisionne des Sandboxes Modal avec GPU."""
+    """Provisionne des Sandboxes Modal avec GPU. Supporte le multi-comptes."""
 
     def __init__(
         self,
-        token_id: str,
-        token_secret: str,
+        accounts: list[dict],
         coordinator_url: str = "https://scrapower.talos-int.com",
         api_key: str = "",
-        budget_monthly_usd: float = 30.0,
+        budget_monthly_usd: float = BUDGET_MONTHLY_USD,
         gpu_type: str = GPU_TYPE,
     ):
-        self._token_id = token_id
-        self._token_secret = token_secret
+        self._accounts = accounts  # list of {token_id, token_secret, [label]}
         self._coordinator_url = coordinator_url
         self._api_key = api_key
         self._gpu_type = gpu_type
         self._budget_monthly = budget_monthly_usd
         self._last_start: float = 0
+        self._round = 0
         self._total_seconds_used: float = 0
         self._sandbox_ids: list[str] = []
         self._running = False
@@ -56,10 +58,13 @@ class ModalHarvester(WorkerProvider):
     # ── WorkerProvider interface ──────────────────────────────
 
     async def remaining_pct(self) -> float:
-        """Budget restant en pourcentage du budget mensuel."""
+        """Budget restant moyen sur tous les comptes (0-100)."""
+        if not self._accounts:
+            return 0.0
         used_usd = self._total_seconds_used * self._cost_per_sec
-        remaining = max(0, self._budget_monthly - used_usd)
-        return remaining / self._budget_monthly * 100
+        remaining = max(0, self._budget_monthly * len(self._accounts) - used_usd)
+        total = self._budget_monthly * len(self._accounts)
+        return remaining / total * 100 if total > 0 else 0.0
 
     async def has_quota(self) -> bool:
         """Budget restant > 1%."""
@@ -109,6 +114,7 @@ class ModalHarvester(WorkerProvider):
             remaining_pct=pct,
             workers_active=len(self._sandbox_ids),
             quota_detail={
+                "accounts": len(self._accounts),
                 "budget_monthly_usd": self._budget_monthly,
                 "cost_per_hour": self._cost_per_sec * 3600,
                 "seconds_used": self._total_seconds_used,
@@ -116,6 +122,11 @@ class ModalHarvester(WorkerProvider):
         )
 
     # ── Internal ──────────────────────────────────────────────
+
+    def _next_account(self) -> dict:
+        a = self._accounts[self._round % len(self._accounts)]
+        self._round += 1
+        return a
 
     @staticmethod
     def _find_worker_script() -> str:
@@ -128,9 +139,9 @@ class ModalHarvester(WorkerProvider):
         """Create a Modal Sandbox running the worker script."""
         import modal
 
-        # Set auth from env vars (already configured via modal setup or env)
-        os.environ.setdefault("MODAL_TOKEN_ID", self._token_id)
-        os.environ.setdefault("MODAL_TOKEN_SECRET", self._token_secret)
+        account = self._next_account()
+        os.environ["MODAL_TOKEN_ID"] = account["token_id"]
+        os.environ["MODAL_TOKEN_SECRET"] = account["token_secret"]
 
         app = await modal.App.lookup.aio("scrapower", create_if_missing=True)
 
