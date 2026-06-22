@@ -51,7 +51,7 @@ except Exception:
 
 RAM_MB = 30720
 CPU_CORES = 4
-IDLE_TIMEOUT_SEC = int(os.environ.get("IDLE_TIMEOUT_SEC", 300))
+IDLE_TIMEOUT_SEC = int(os.environ.get("IDLE_TIMEOUT_SEC", 120))
 POLL_INTERVAL_SEC = 3
 TOTAL_COMPLETED = 0
 last_task_time = time.time()

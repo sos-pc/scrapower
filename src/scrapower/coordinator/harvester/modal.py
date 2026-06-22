@@ -19,7 +19,7 @@ COOLDOWN_SEC = 120  # minimum seconds between sandbox creations
 GPU_TYPE = "T4"  # default GPU — $0.59/h on Modal Starter
 GPU_VRAM_MB = 16384
 SANDBOX_TIMEOUT = 6 * 3600  # 6h max per sandbox
-IDLE_TIMEOUT = 300  # 5 min idle → auto-terminate
+IDLE_TIMEOUT = 120  # 2 min idle → auto-terminate (saves credits)
 WORKER_SCRIPT = "deploy/modal/worker.py"
 
 
@@ -155,6 +155,7 @@ class ModalHarvester(WorkerProvider):
             image=image,
             gpu=self._gpu_type,
             timeout=SANDBOX_TIMEOUT,
+            idle_timeout=IDLE_TIMEOUT,
             cpu=4,
             memory=30720,  # 30 GB RAM
             secrets=[
