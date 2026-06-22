@@ -18,6 +18,7 @@ from .base import ProviderStatus, WorkerProvider
 log = logging.getLogger(__name__)
 
 COOLDOWN_SEC = 120  # minimum seconds between sandbox creations
+MAX_CONCURRENT = 3  # max simultaneous sandboxes per provider
 GPU_TYPE = "T4"  # default GPU — $0.59/h on Modal Starter
 GPU_VRAM_MB = 16384
 SANDBOX_TIMEOUT = 6 * 3600  # 6h max per sandbox
@@ -71,14 +72,11 @@ class ModalHarvester(WorkerProvider):
         return await self.remaining_pct() > 1.0
 
     async def launch_worker(self) -> bool:
-        """Crée un Sandbox Modal avec GPU T4.
-
-        Le Sandbox exécute deploy/modal/worker.py qui se connecte
-        au coordinateur en Mode B (HTTP pull), traite des tâches,
-        et s'arrête après idle_timeout.
-        """
-        # Rate-limit sandbox creation
+        """Crée un Sandbox Modal avec GPU T4."""
+        # Rate-limit + max concurrent
         if time.time() - self._last_start < COOLDOWN_SEC:
+            return False
+        if len(self._sandbox_ids) >= MAX_CONCURRENT:
             return False
 
         try:

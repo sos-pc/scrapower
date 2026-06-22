@@ -289,6 +289,137 @@ async def update_cookies(request: Request):
     )
 
 
+@router.post("/batch")
+async def batch_transcribe(request: Request):
+    """Submit a YouTube playlist/channel for batch transcription.
+
+    Body:
+      { "url": "https://youtube.com/playlist?list=...",
+        "model": "turbo", "language": "fr",
+        "max_videos": 10 }
+
+    Extracts video URLs via yt-dlp --flat-playlist (no download),
+    creates one task per video, returns all task IDs.
+    """
+    body = await request.json()
+    playlist_url = body.get("url", "")
+    if not playlist_url:
+        raise HTTPException(400, {"error": "url is required"})
+
+    model = body.get("model", "turbo")
+    language = body.get("language") or None
+    fmt = body.get("format", "json")
+    max_videos = min(body.get("max_videos", 10), 50)
+    cookies_hash = body.get("cookies_hash") or os.environ.get("SCRAPOWER_YT_COOKIES_HASH", "")
+
+    task_service = request.app.state.task_service
+    db = request.app.state.db
+    config = request.app.state.config
+
+    # 1. Extract video URLs (flat, no download)
+    videos = await _extract_playlist_urls(playlist_url, cookies_hash, db, config.blob_dir)
+    if not videos:
+        raise HTTPException(400, {"error": "No videos found in playlist"})
+
+    videos = videos[:max_videos]
+
+    # 2. Create a task per video
+    tasks = []
+    for v in videos:
+        task_id = uuid.uuid4().hex
+        await task_service.submit(
+            task_id=task_id,
+            client_id="anonymous",
+            runtime="python",
+            executable_hash=WHISPER_RUNNER_HASH,
+            input_hash="",
+            gpu_required=True,
+            deadline_ms=900000,
+            initial_state="pending",
+        )
+
+        async def _prepare(url=v["url"]):
+            return await _prepare_whisper_input(
+                url, model, language, fmt, cookies_hash, db, config.blob_dir
+            )
+
+        asyncio.create_task(task_service.run_prepare(task_id, _prepare, log))
+        tasks.append({"task_id": task_id, "url": v["url"], "title": v.get("title", "")})
+
+    return JSONResponse(
+        {
+            "batch_id": uuid.uuid4().hex[:12],
+            "video_count": len(tasks),
+            "model": model,
+            "language": language or "auto",
+            "tasks": tasks,
+        }
+    )
+
+
+async def _extract_playlist_urls(
+    playlist_url: str, cookies_hash: str, db, blob_dir: str
+) -> list[dict]:
+    """Extract video URLs from a playlist/channel via yt-dlp --flat-playlist."""
+    import json as _json
+
+    from ..blob_store import get_blob
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workdir = Path(tmp)
+        cookies_path = None
+        if cookies_hash:
+            cookies_path = str(workdir / "cookies.txt")
+            cookies_bytes = await get_blob(db, blob_dir, cookies_hash)
+            if cookies_bytes:
+                Path(cookies_path).write_bytes(cookies_bytes)
+
+        args = ["yt-dlp", "--flat-playlist", "-j", "--no-warnings"]
+        vpn_proxy = os.environ.get("SCRAPOWER_VPN_PROXY", "")
+        if vpn_proxy:
+            args += ["--proxy", vpn_proxy]
+        if cookies_path:
+            args += ["--cookies", cookies_path]
+        args.append(playlist_url)
+
+        proc = await asyncio.create_subprocess_exec(
+            *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
+        except asyncio.TimeoutError:
+            proc.kill()
+            raise HTTPException(500, {"error": "Playlist extraction timed out"})
+
+        if proc.returncode != 0:
+            err = stderr.decode()[:500] if stderr else "unknown"
+            raise HTTPException(400, {"error": f"yt-dlp: {err}"})
+
+        videos = []
+        for line in stdout.decode().strip().split("\n"):
+            if not line:
+                continue
+            try:
+                info = _json.loads(line)
+                vid_url = (
+                    info.get("url")
+                    or info.get("webpage_url")
+                    or f"https://youtube.com/watch?v={info.get('id', '')}"
+                )
+                if vid_url:
+                    videos.append(
+                        {
+                            "url": vid_url,
+                            "title": info.get("title", ""),
+                            "duration": info.get("duration", 0),
+                        }
+                    )
+            except _json.JSONDecodeError:
+                pass
+
+    return videos
+
+
 @router.get("/models")
 async def list_models():
     """List available Whisper models."""

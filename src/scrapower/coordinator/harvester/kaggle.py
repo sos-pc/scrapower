@@ -328,15 +328,18 @@ class KaggleHarvester(WorkerProvider):
 
     async def launch_worker(self) -> bool:
         """Lance un kernel Kaggle. Délègue à _start_kernel."""
+        # Don't exceed max concurrent kernels
+        active = await self._count_active_kernels()
+        if active >= 3:
+            return False
         return await self._start_kernel()
 
     async def cleanup_stale(self) -> None:
         """Nettoie les kernels morts. Délègue à _cleanup_old_kernels."""
         await self._cleanup_old_kernels()
 
-    async def status(self) -> ProviderStatus:
-        """Statut agrégé de tous les comptes Kaggle."""
-        pct = await self.remaining_pct()
+    async def _count_active_kernels(self) -> int:
+        """Count RUNNING scrapower-auto kernels across all accounts."""
         active = 0
         for account in self._accounts:
             try:
@@ -361,6 +364,12 @@ class KaggleHarvester(WorkerProvider):
                             active += 1
             except Exception:
                 pass
+        return active
+
+    async def status(self) -> ProviderStatus:
+        """Statut agrégé de tous les comptes Kaggle."""
+        pct = await self.remaining_pct()
+        active = await self._count_active_kernels()
         return ProviderStatus(
             name="kaggle",
             provider_type="kaggle",
