@@ -24,37 +24,41 @@ import time
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
+from ..security import verify_api_key
 from ..task_manager import TaskState
 from .session import SessionManager
 
 log = logging.getLogger(__name__)
 
 # ── Rate limiting ──────────────────────────────────────────────
-# Per-IP sliding window: max N pulls per minute (configurable via
-# pull_rate_limit_per_ip in config.toml / Config dataclass).
+# Per-key sliding window. Authenticated workers (header X-API-Key)
+# get 30 pulls/min; anonymous workers get 6/min (survival mode
+# for workers deployed before auth was required).
 _RATE_WINDOW: dict[str, list[float]] = {}
-_RATE_LIMIT = 12  # pulls per minute per IP (default, overridden at startup)
+_RATE_AUTH_LIMIT = 30  # pulls/min for authenticated workers
+_RATE_ANON_LIMIT = 6  # pulls/min for anonymous (survival)
 _RATE_WINDOW_SEC = 60
 
 
 def configure_rate_limit(max_per_minute: int = 12) -> None:
-    """Set the global pull rate limit (called from coordinator lifespan)."""
-    global _RATE_LIMIT
-    _RATE_LIMIT = max_per_minute
+    """No-op — rate limits are now dual-mode (auth/anon).
+
+    Kept for backward compat with main.py lifespan.
+    Configurable limits can be added back via _RATE_AUTH_LIMIT / _RATE_ANON_LIMIT globals.
+    """
 
 
-def _check_pull_rate(ip: str) -> bool:
-    """Return True if this IP is under the rate limit."""
+def _check_pull_rate(key: str, max_per_minute: int) -> bool:
+    """Return True if this key is under the rate limit."""
     now = time.time()
-    window = _RATE_WINDOW.get(ip, [])
-    # Prune expired entries
+    window = _RATE_WINDOW.get(key, [])
     cutoff = now - _RATE_WINDOW_SEC
     window = [t for t in window if t > cutoff]
-    _RATE_WINDOW[ip] = window
-    # Purge stale IPs from the dict (lazy, every 100 checks)
-    if len(_RATE_WINDOW) > 1000:
+    _RATE_WINDOW[key] = window
+    # Purge stale entries lazily
+    if len(_RATE_WINDOW) > 5000:
         _RATE_WINDOW.clear()
-    if len(window) >= _RATE_LIMIT:
+    if len(window) >= max_per_minute:
         return False
     window.append(now)
     return True
@@ -111,17 +115,28 @@ async def pull(request: Request, sessions: SessionManager):
         )
 
     client_ip = request.client.host if request.client else "unknown"
-    if not _check_pull_rate(client_ip):
+    authenticated = verify_api_key(request)
+
+    # Rate limit: authenticated workers tracked by worker_id (generous),
+    # anonymous by IP (survival mode for old workers not yet sending API key).
+    if authenticated:
+        worker_id = body.get("worker_id", f"auth-{client_ip}")
+        rate_key = worker_id
+        rate_max = _RATE_AUTH_LIMIT
+    else:
+        worker_id = body.get("worker_id", f"anon-{client_ip}")
+        rate_key = client_ip
+        rate_max = _RATE_ANON_LIMIT
+
+    if not _check_pull_rate(rate_key, rate_max):
         return JSONResponse(
             {
                 "type": "error",
                 "code": "RATE_LIMITED",
-                "message": f"Max {_RATE_LIMIT} pulls/min per IP",
+                "message": f"Max {rate_max} pulls/min",
             },
             status_code=429,
         )
-
-    worker_id = body.get("worker_id", f"anon-{client_ip}")
     capabilities = body.get("capabilities", {})
 
     # Save any logs the worker sent along with the pull (heartbeat-style)

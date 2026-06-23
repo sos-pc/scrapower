@@ -145,7 +145,7 @@ class TaskService:
 
         now = _time.time()
         await self._tm._db.execute(
-            "UPDATE tasks SET output_hash = ?, updated_at = ? WHERE id = ?",
+            "UPDATE tasks SET error = ?, updated_at = ? WHERE id = ?",
             (reason, str(now), task_id),
         )
         await self._tm._db.commit()

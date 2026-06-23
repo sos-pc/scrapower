@@ -244,6 +244,7 @@ async def run_worker():
                         "capabilities": CAPABILITIES,
                         "logs": logs_chunk,
                     },
+                    headers={"X-API-Key": API_KEY},
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as r:
                     data = await r.json()

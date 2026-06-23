@@ -264,25 +264,39 @@ class KaggleHarvester(WorkerProvider):
     # ── WorkerProvider interface ──────────────────────────────
 
     async def remaining_pct(self) -> float:
-        """Moyenne des quotas restants de tous les comptes (0-100)."""
+        """Quota du MEILLEUR compte (pas la moyenne).
+
+        Le harvester doit savoir si au moins un compte peut lancer un worker.
+        Retourner la moyenne masquerait un compte épuisé derrière un compte plein.
+        """
         if not self._accounts:
             return 0.0
-        pcts = []
+        best = 0.0
         for account in self._accounts:
             q = await self._get_quota_for(account)
             if q:
-                pcts.append(min(100.0, q["remaining_h"] / q["total_h"] * 100))
-        return sum(pcts) / len(pcts) if pcts else 0.0
+                best = max(best, min(100.0, q["remaining_h"] / q["total_h"] * 100))
+        return best
 
     async def has_quota(self) -> bool:
         """Au moins un compte a > 0.1h restantes."""
         return await self.remaining_pct() > 0.3  # 0.1h / 30h ≈ 0.3%
 
     async def launch_worker(self) -> bool:
-        """Lance un kernel Kaggle. Utilise le tracking local (pas d'appel API)."""
-        if len(self._kernel_refs) >= 3:
+        """Lance un kernel Kaggle. Avec rate-limit et max concurrent."""
+        if time.time() - self._last_start < COOLDOWN_SEC:
+            log.debug(
+                "kaggle cooldown active (%.0fs remaining)",
+                COOLDOWN_SEC - (time.time() - self._last_start),
+            )
             return False
-        return await self._start_kernel() or False
+        if len(self._kernel_refs) >= 3:
+            log.debug("kaggle max concurrent reached (%d/3)", len(self._kernel_refs))
+            return False
+        ok = await self._start_kernel()
+        if ok:
+            self._last_start = time.time()
+        return ok
 
     async def cleanup_stale(self) -> None:
         """Nettoie les kernels morts + synchro du tracking local."""

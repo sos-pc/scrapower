@@ -16,7 +16,7 @@ from .base import ProviderStatus, WorkerProvider
 
 log = logging.getLogger(__name__)
 
-COOLDOWN_SEC = 120  # minimum seconds between sandbox creations
+COOLDOWN_SEC = 60  # minimum seconds between sandbox creations
 MAX_CONCURRENT = 3  # max simultaneous sandboxes per provider
 GPU_TYPE = "T4"  # default GPU — $0.59/h on Modal Starter
 GPU_VRAM_MB = 16384
@@ -47,7 +47,11 @@ class ModalHarvester(WorkerProvider):
         self._total_seconds_used: float = 0
         self._sandbox_ids: list[str] = []
         self._sandbox_tokens: dict[str, tuple[str, str]] = {}  # sb_id -> (token_id, token_secret)
+        self._sandbox_started: dict[str, float] = {}  # sb_id -> creation timestamp
         self._running = False
+        # Billing cache (refreshed from modal.billing API every 10 min)
+        self._billing_cost_cached: float = 0.0
+        self._billing_last_check: float = 0.0
         # GPU cost per second (from Modal pricing)
         self._cost_per_sec = {
             "T4": 0.000164,
@@ -59,13 +63,65 @@ class ModalHarvester(WorkerProvider):
     # ── WorkerProvider interface ──────────────────────────────
 
     async def remaining_pct(self) -> float:
-        """Budget restant moyen sur tous les comptes (0-100)."""
+        """Budget restant (0-100). Combine billing API + local tracking.
+
+        Calls modal.billing.workspace_billing_report (cached 10 min) for
+        confirmed spend, then adds local estimate for active/recent sandboxes
+        that haven't appeared in billing yet (API has collection delay).
+        """
         if not self._accounts:
             return 0.0
-        used_usd = self._total_seconds_used * self._cost_per_sec
-        remaining = max(0, self._budget_monthly * len(self._accounts) - used_usd)
-        total = self._budget_monthly * len(self._accounts)
-        return remaining / total * 100 if total > 0 else 0.0
+
+        # Refresh billing data from Modal API (cached 10 min)
+        now = time.time()
+        if now - self._billing_last_check > 600:
+            try:
+                import datetime
+
+                now_utc = datetime.datetime.now(datetime.timezone.utc)
+                start = now_utc - datetime.timedelta(days=30)
+                report = await self._billing_api_call(start, now_utc)
+                self._billing_cost_cached = sum(float(item.get("cost", 0)) for item in report)
+                self._billing_last_check = now
+                log.debug(
+                    "modal billing: $%.4f confirmed (cached 10 min)",
+                    self._billing_cost_cached,
+                )
+            except Exception:
+                pass  # billing API may not be available; keep cached value
+
+        # Per-account: return the BEST account's remaining budget.
+        # The harvester needs to know if ANY account can still launch.
+        # Using an average would mask an exhausted account behind a full one.
+        best_pct = 0.0
+        for account in self._accounts:
+            tid = account.get("token_id", "")
+            account_seconds = sum(
+                now - self._sandbox_started[sid]
+                for sid, (tok_id, _) in self._sandbox_tokens.items()
+                if tok_id == tid and sid in self._sandbox_started
+            )
+            account_used = account_seconds * self._cost_per_sec
+            pct = max(0, self._budget_monthly - account_used) / self._budget_monthly * 100
+            best_pct = max(best_pct, pct)
+        # Floor to billing API confirmed cost (prevents 100% after restart)
+        if best_pct > 0 and self._billing_cost_cached > 0:
+            total_budget = self._budget_monthly * len(self._accounts)
+            billed_pct = max(0, total_budget - self._billing_cost_cached) / total_budget * 100
+            best_pct = min(best_pct, billed_pct)
+        return best_pct
+
+    async def _billing_api_call(self, start, end) -> list[dict]:
+        """Call modal.billing API. Override per-account token first."""
+        import modal
+
+        account = self._accounts[self._round % len(self._accounts)] if self._accounts else {}
+        if account:
+            os.environ["MODAL_TOKEN_ID"] = account.get("token_id", "")
+            os.environ["MODAL_TOKEN_SECRET"] = account.get("token_secret", "")
+        return await modal.billing.workspace_billing_report.aio(
+            start=start, end=end, resolution="d"
+        )
 
     async def has_quota(self) -> bool:
         """Budget restant > 1%."""
@@ -75,8 +131,15 @@ class ModalHarvester(WorkerProvider):
         """Crée un Sandbox Modal avec GPU T4."""
         # Rate-limit + max concurrent
         if time.time() - self._last_start < COOLDOWN_SEC:
+            log.debug(
+                "modal cooldown active (%.0fs remaining)",
+                COOLDOWN_SEC - (time.time() - self._last_start),
+            )
             return False
         if len(self._sandbox_ids) >= MAX_CONCURRENT:
+            log.debug(
+                "modal max concurrent reached (%d/%d)", len(self._sandbox_ids), MAX_CONCURRENT
+            )
             return False
 
         try:
@@ -90,6 +153,7 @@ class ModalHarvester(WorkerProvider):
                 account["token_id"],
                 account["token_secret"],
             )
+            self._sandbox_started[sb.object_id] = time.time()
             log.info("modal sandbox created: %s (gpu=%s)", sb.object_id, self._gpu_type)
             return True
         except Exception as e:
@@ -128,6 +192,15 @@ class ModalHarvester(WorkerProvider):
                     continue  # token might be invalid or account deleted
 
             before = len(self._sandbox_ids)
+
+            # Charge confirmed runtime for sandboxes that have terminated
+            now = time.time()
+            removed_ids = [sid for sid in self._sandbox_ids if sid not in alive]
+            for sid in removed_ids:
+                if sid in self._sandbox_started:
+                    self._total_seconds_used += now - self._sandbox_started[sid]
+                    del self._sandbox_started[sid]
+
             self._sandbox_ids = [sid for sid in self._sandbox_ids if sid in alive]
             # Also clean up orphaned token entries
             for sid in list(self._sandbox_tokens):

@@ -72,6 +72,7 @@ class Task:
     runtime: str = "wasm"
     gpu_required: bool = False
     output_hash: str = ""
+    error: str = ""
     created_at: str = ""
     updated_at: str = ""
 
@@ -168,6 +169,7 @@ class TaskManager:
             input_hash=row["input_hash"] if "input_hash" in row.keys() else "",
             runtime=row["runtime"] if "runtime" in row.keys() else "wasm",
             output_hash=row["output_hash"] if "output_hash" in row.keys() else "",
+            error=row["error"] if "error" in row.keys() else "",
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
@@ -193,6 +195,7 @@ class TaskManager:
                     gpu_required=bool(row["gpu_required"])
                     if "gpu_required" in row.keys()
                     else False,
+                    error=row["error"] if "error" in row.keys() else "",
                     created_at=row["created_at"],
                     updated_at=row["updated_at"],
                 )

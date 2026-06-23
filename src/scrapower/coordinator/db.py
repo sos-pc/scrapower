@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     input_hash     TEXT DEFAULT '',
     runtime        TEXT DEFAULT 'wasm',
     gpu_required   INTEGER NOT NULL DEFAULT 0,
+    error          TEXT DEFAULT '',
     created_at     TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -115,6 +116,8 @@ async def _migrate(db: aiosqlite.Connection) -> None:
         "ALTER TABLE tasks ADD COLUMN deadline_ms INTEGER NOT NULL DEFAULT 60000",
         # Add max_retries column (used by task lifecycle)
         "ALTER TABLE tasks ADD COLUMN max_retries INTEGER NOT NULL DEFAULT 3",
+        # Add error column for task failure diagnostics
+        "ALTER TABLE tasks ADD COLUMN error TEXT DEFAULT ''",
     ]
     for sql in migrations:
         try:

@@ -54,6 +54,14 @@ class EphemeralHarvester:
             except Exception:
                 log.exception("harvester: failed to query %s", type(p).__name__)
 
+        # Cleanup ALWAYS runs (even if no tasks queued — sandboxes terminate
+        # asynchronously and must be tracked regardless of queue depth)
+        for p in self._providers:
+            try:
+                await p.cleanup_stale()
+            except Exception:
+                pass
+
         if not candidates:
             return
 
@@ -85,13 +93,6 @@ class EphemeralHarvester:
                 )
         if not launched:
             log.warning("harvester: all %d provider(s) failed to launch", len(candidates))
-
-        # 5. Nettoyer les workers morts (pour TOUS les providers, pas juste les candidates)
-        for p in self._providers:
-            try:
-                await p.cleanup_stale()
-            except Exception:
-                pass
 
     async def _count_queued(self) -> int:
         """Compter les tâches en attente dans la DB."""

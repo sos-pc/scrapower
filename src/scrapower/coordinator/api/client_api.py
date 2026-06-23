@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
@@ -72,6 +73,7 @@ def create_client_router(require_auth: Callable | None = None) -> APIRouter:
         if task is None:
             raise HTTPException(status_code=404, detail={"error": "NOT_FOUND"})
         _check_owner(task, request)
+        log_path = Path("data/logs") / f"{task_id}.log"
         return JSONResponse(
             {
                 "task_id": task.id,
@@ -79,6 +81,10 @@ def create_client_router(require_auth: Callable | None = None) -> APIRouter:
                 "status": task.state,
                 "assigned_worker_id": task.assigned_worker_id,
                 "runtime": task.runtime,
+                "error": task.error or None,
+                "has_logs": log_path.exists(),
+                "logs_url": f"/tasks/{task_id}/logs" if log_path.exists() else None,
+                "output_hash": task.output_hash or None,
             }
         )
 

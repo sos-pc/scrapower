@@ -51,10 +51,11 @@
 - [ ] **Coordinateur décide au prepare** — si tous les workers sont `datacenter` → pré-DL audio (élimine gaspillage fallback)
 
 ### Corrections P1 (prochaine session)
-- [ ] **`COOLDOWN_SEC`** 120→60s pour Modal, cleanup plus agressif
-- [ ] **Max concurrent workers** — vérifier le nombre actif avant de lancer (évite saturation MAX_CONCURRENT)
+- [x] **`COOLDOWN_SEC`** 120→60s pour Modal, log debug cooldown/max concurrent ✅
+- [x] **Kaggle cooldown** — ajouté (manquait, `_last_start` jamais utilisé) ✅
+- [x] **`last_error` + logs** — colonne `error` dans la DB, `has_logs` + `logs_url` dans `GET /tasks/{id}` ✅
+- [x] **Rate limit pull** — dual-mode: auth (`worker_id` 30/min) vs anon (IP 6/min survival) ✅
 - [ ] **Debug Kaggle inactif** — vérifier pourquoi les kernels Kaggle ne pull pas pendant les tests
-- [ ] **`last_error` visible** — `GET /tasks/{id}` expose le dernier message d'erreur + stderr
 - [ ] **Fallback automatique** — quand worker retourne exit_code=2, trigger_fallback sans attendre le cycle complet
 
 ### Corrections P2 (v0.7+)
