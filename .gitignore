@@ -38,3 +38,4 @@ deploy/vpn/ca.crt
 deploy/vpn/client.crt
 deploy/vpn/client.key
 deploy/vpn-wg/SCRAPOWER.conf
+Reprise Scrapower dernière tâche en cours
