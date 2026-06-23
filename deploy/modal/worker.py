@@ -234,22 +234,34 @@ async def run_worker():
             # Drain any buffered logs before pull
             logs_chunk = _drain_logs()
 
-            # PULL (with recent logs for debugging)
-            try:
-                async with session.post(
-                    f"{COORDINATOR_URL}/worker/pull",
-                    json={
-                        "type": "pull",
-                        "worker_id": WORKER_ID,
-                        "capabilities": CAPABILITIES,
-                        "logs": logs_chunk,
-                    },
-                    headers={"X-API-Key": API_KEY},
-                    timeout=aiohttp.ClientTimeout(total=10),
-                ) as r:
-                    data = await r.json()
-            except Exception as e:
-                _log(f"Pull failed: {e}")
+            # PULL (with retry on 5xx / transient errors)
+            data = None
+            for attempt in range(3):
+                try:
+                    async with session.post(
+                        f"{COORDINATOR_URL}/worker/pull",
+                        json={
+                            "type": "pull",
+                            "worker_id": WORKER_ID,
+                            "capabilities": CAPABILITIES,
+                            "logs": logs_chunk,
+                        },
+                        headers={"X-API-Key": API_KEY},
+                        timeout=aiohttp.ClientTimeout(total=10),
+                    ) as r:
+                        if r.status >= 500:
+                            _log(f"Pull 5xx ({r.status}), retry {attempt+1}/3")
+                            await asyncio.sleep(2 ** attempt)
+                            continue
+                        data = await r.json()
+                        break
+                except Exception as e:
+                    _log(f"Pull error: {e}, retry {attempt+1}/3")
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+
+            if data is None:
+                _log("Pull failed after 3 retries")
                 await asyncio.sleep(POLL_INTERVAL_SEC)
                 continue
 
