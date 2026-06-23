@@ -136,37 +136,57 @@ Each provider implements:
 
 ## VPN
 
-### Homelab WireGuard (primary)
+### Homelab WireGuard + SOCKS5 proxy (primary)
 
-A WireGuard server on the homelab provides a residential IP exit node for all workers:
+The workers route YouTube downloads through a SOCKS5 proxy on Oracle,
+which tunnels traffic to the homelab's residential IP via WireGuard.
 
 ```
-┌──────────────────────────────────────────────────────┐
-│  HOMELAB (IP résidentielle)                          │
-│  ┌──────────────────────┐                            │
-│  │ WireGuard server     │                            │
-│  │ Port UDP 51820       │                            │
-│  └──────────┬───────────┘                            │
-└─────────────┼────────────────────────────────────────┘
-              │
+┌──────────────────────────────────────────────────────────────┐
+│  HOMELAB (IP résidentielle 82.67.104.226)                    │
+│  ┌──────────────────────┐                                    │
+│  │ WireGuard server     │← UDP :443 (forwardé box)           │
+│  │ wg-easy Docker       │                                    │
+│  └──────────┬───────────┘                                    │
+└─────────────┼────────────────────────────────────────────────┘
+              │ WireGuard tunnel
+┌─────────────┼────────────────────────────────────────────────┐
+│  ORACLE VM (130.110.242.56)                                   │
+│  ┌──────────┴───────────┐  ┌────────────────────┐            │
+│  │ WireGuard client     │  │ Dante SOCKS5 :1081  │            │
+│  │ wg0: 10.8.0.3        │  │ auth: scrapower/... │            │
+│  │ table 51820 → wg0    │  │ external: wg0       │            │
+│  └──────────────────────┘  └────────┬───────────┘            │
+│                                     │                         │
+│  ┌──────────────────────────────────┴───────────┐            │
+│  │ Coordinator (port 8777)                      │            │
+│  │ WG_PROXY=socks5://...@127.0.0.1:1081        │            │
+│  │ WG_PROXY_PUBLIC=socks5://...@scrapower...    │            │
+│  └──────────────────────────────────────────────┘            │
+└──────────────────────────────────────────────────────────────┘
+              │ TCP :1081 (public)
     ┌─────────┼─────────┬──────────────┐
     ▼         ▼         ▼              ▼
 ┌───────┐ ┌───────┐ ┌───────┐    ┌───────────┐
 │ Modal │ │ Kaggle│ │Coord. │    │ Browser   │
 │Sandbox│ │Kernel │ │Oracle │    │ (futur)   │
-│ wg0   │ │ wg0   │ │ wg0   │    │           │
+│       │ │       │ │(fallbk)│   │           │
 └───────┘ └───────┘ └───────┘    └───────────┘
 
-Tous les workers → yt-dlp → homelab:51820 → YouTube
-IP résidentielle → pas de blocage anti-bot
+yt-dlp --proxy socks5://scrapower:PASS@scrapower.talos-int.com:1081
+→ Dante sur Oracle → WireGuard → homelab → YouTube (IP résidentielle)
 ```
 
-**Avantages** :
-- IP résidentielle = pas de blocage YouTube/Cloudflare
-- Gratuit (juste la connexion internet existante)
-- Utilisable par tous les workers, pas seulement Oracle
-- WireGuard = intégré au kernel, ultra-léger
-- DuckDNS pour IP dynamique
+**Critical fix**: WireGuard's `table 51820` routes ALL unmarked traffic through
+wg0. Dante's SYN-ACK replies to external clients were being sucked into the
+tunnel instead of going back through eth0. The fix marks SOCKS5 reply packets:
+
+```sh
+iptables -t mangle -A OUTPUT -p tcp --sport 1081 -j MARK --set-mark 0xca6c
+```
+
+This mark tells the routing policy to use the main table (via eth0) instead
+of table 51820 (via wg0). Applied in `deploy/vpn-wg/entrypoint.sh`.
 
 ### CyberGhost (fallback)
 

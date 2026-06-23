@@ -7,6 +7,7 @@ idle timeout to save GPU credits.
 
 import asyncio
 import hashlib
+import io
 import json
 import os
 import subprocess
@@ -88,44 +89,152 @@ def execute_wasm(wasm_bytes, input_data):
         hashlib.sha256(input_data).digest(),
         hashlib.sha256(hashlib.sha256(input_data).digest()).hexdigest(),
         0,
+        "wasm executed successfully",
     )
 
 
 def execute_python(executable, input_data):
+    """Run a Python task script, capturing stderr in real-time for heartbeats."""
+    import threading
+
     with tempfile.TemporaryDirectory() as tmp:
         script = Path(tmp) / "script.py"
         script.write_bytes(executable)
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             ["python3", str(script)],
-            input=input_data,
-            capture_output=True,
-            timeout=900,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
+
+        # Read stderr line-by-line in a thread, feed to global log buffer
+        stderr_lines: list[str] = []
+
+        def _read_stderr():
+            for line in proc.stderr:
+                decoded = line.decode(errors="replace").rstrip()
+                stderr_lines.append(decoded)
+                _log(f"[sub] {decoded}")
+
+        stderr_thread = threading.Thread(target=_read_stderr, daemon=True)
+        stderr_thread.start()
+        _log("[sub] stderr reader started")
+
+        # Write input and close stdin (blocks until process exits or timeout)
         try:
-            result = json.loads(proc.stdout.decode())
-            output = result.get("output_bytes", proc.stdout)
+            stdout_data, _ = proc.communicate(input=input_data, timeout=600)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout_data, _ = proc.communicate()
+            _log("[sub] TIMEOUT after 600s")
+        stderr_thread.join(timeout=5)
+        exit_code = proc.returncode
+        stderr_str = "\n".join(stderr_lines)
+        try:
+            result = json.loads(stdout_data.decode())
+            output = result.get("output_bytes", stdout_data)
             if isinstance(output, str):
                 try:
                     output = bytes.fromhex(output)
                 except ValueError:
                     output = output.encode()
             output_hash = result.get("output_hash", hashlib.sha256(output).hexdigest())
-            exit_code = result.get("exit_code", 0)
+            exit_code = result.get("exit_code", exit_code)
         except (json.JSONDecodeError, UnicodeDecodeError):
-            output = proc.stdout
+            output = stdout_data
             output_hash = hashlib.sha256(output).hexdigest()
-            exit_code = 1 if proc.returncode != 0 else 0
-    return output, output_hash, exit_code
+            if exit_code == 0:
+                exit_code = 1
+            if not stderr_str:
+                stderr_str = stdout_data.decode()[:8192] if stdout_data else "no output"
+    return output, output_hash, exit_code, stderr_str
 
 
 # -- Main loop (Mode B: HTTP pull/submit) ----------------------------
+
+# Log buffer: workers accumulate stderr here and flush to coordinator
+# via pull requests and heartbeat. Enables debugging stuck workers.
+_LOG_LINES: list[str] = []
+_LOG_TASK_ID: str = ""
+_LOG_TOKEN: str = ""
+
+
+def _log(msg: str) -> None:
+    """Append to in-memory log buffer (also print for sandbox stdout)."""
+    line = f"{time.strftime('%H:%M:%S')} {msg}"
+    _LOG_LINES.append(line)
+    if len(_LOG_LINES) > 200:
+        del _LOG_LINES[:-100]
+    print(line)
+
+
+def _drain_logs() -> str:
+    """Return recent logs and clear the buffer."""
+    if not _LOG_LINES:
+        return ""
+    chunk = "\n".join(_LOG_LINES[-50:])
+    _LOG_LINES.clear()
+    return chunk
+
+
+def _run_task_sync(executable, input_data, rt):
+    """Execute task in a thread, capturing stdout/stderr into log buffer."""
+    import sys
+
+    # Redirect stderr to a StringIO so we can capture it for heartbeats
+    stderr_capture = io.StringIO()
+    old_stderr = sys.stderr
+    sys.stderr = stderr_capture
+    try:
+        if rt == "python":
+            result = execute_python(executable, input_data)
+        else:
+            result = execute_wasm(executable, input_data)
+        # Flush captured stderr into log buffer
+        captured = stderr_capture.getvalue()
+        if captured:
+            for line in captured.split("\n"):
+                if line.strip():
+                    _log(f"[sub] {line.strip()}")
+        return result
+    finally:
+        sys.stderr = old_stderr
+
+
+async def _heartbeat(session, interval=30):
+    """Periodically send logs to coordinator during task execution."""
+    while _LOG_TASK_ID:
+        await asyncio.sleep(interval)
+        if not _LOG_TASK_ID:
+            break
+        logs = _drain_logs()
+        try:
+            async with session.post(
+                f"{COORDINATOR_URL}/worker/heartbeat",
+                json={
+                    "type": "heartbeat",
+                    "worker_id": WORKER_ID,
+                    "task_id": _LOG_TASK_ID,
+                    "assignment_token": _LOG_TOKEN,
+                    "logs": logs,
+                },
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as r:
+                await r.json()
+        except Exception:
+            pass  # heartbeat is best-effort
+
+
 async def run_worker():
-    global TOTAL_COMPLETED, last_task_time
+    global TOTAL_COMPLETED, last_task_time, _LOG_TASK_ID, _LOG_TOKEN
 
     async with aiohttp.ClientSession() as session:
-        print(f"Polling {COORDINATOR_URL}/worker/pull every {POLL_INTERVAL_SEC}s...")
+        _log(f"Polling {COORDINATOR_URL}/worker/pull every {POLL_INTERVAL_SEC}s...")
         while True:
-            # PULL
+            # Drain any buffered logs before pull
+            logs_chunk = _drain_logs()
+
+            # PULL (with recent logs for debugging)
             try:
                 async with session.post(
                     f"{COORDINATOR_URL}/worker/pull",
@@ -133,29 +242,30 @@ async def run_worker():
                         "type": "pull",
                         "worker_id": WORKER_ID,
                         "capabilities": CAPABILITIES,
+                        "logs": logs_chunk,
                     },
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as r:
                     data = await r.json()
             except Exception as e:
-                print(f"Pull failed: {e}")
+                _log(f"Pull failed: {e}")
                 await asyncio.sleep(POLL_INTERVAL_SEC)
                 continue
 
             task = data.get("task")
             if not task:
                 if time.time() - last_task_time > IDLE_TIMEOUT_SEC:
-                    print(f"Idle for {IDLE_TIMEOUT_SEC}s — stopping to save credits")
+                    _log(f"Idle for {IDLE_TIMEOUT_SEC}s — stopping to save credits")
                     break
                 await asyncio.sleep(POLL_INTERVAL_SEC)
                 continue
 
-            # EXECUTE
+            # EXECUTE (in thread, with heartbeat)
             last_task_time = time.time()
             tid = task["id"][:12]
             tok = task["assignment_token"]
             rt = task.get("runtime", "wasm")
-            print(f"Task: {tid}... (runtime={rt})")
+            _log(f"Task: {tid}... (runtime={rt})")
 
             try:
                 async with session.get(
@@ -169,19 +279,37 @@ async def run_worker():
                 ) as r:
                     input_data = await r.read()
             except Exception as e:
-                print(f"  Blob download failed: {e}")
+                _log(f"Blob download failed: {e}")
                 continue
 
+            # Start heartbeat during task execution
+            _LOG_TASK_ID = task["id"]
+            _LOG_TOKEN = tok
+            hb_task = asyncio.create_task(_heartbeat(session))
+
+            worker_stderr = ""
+            output = b""
+            output_hash = ""
+            exit_code = 1
             try:
-                if rt == "python":
-                    output, output_hash, exit_code = execute_python(executable, input_data)
-                else:
-                    output, output_hash, exit_code = execute_wasm(executable, input_data)
+                loop = asyncio.get_running_loop()
+                result = await loop.run_in_executor(
+                    None, _run_task_sync, executable, input_data, rt
+                )
+                output, output_hash, exit_code, worker_stderr = result
             except Exception as e:
-                print(f"  Error: {e}")
-                continue
+                worker_stderr = f"{type(e).__name__}: {e}"
+                _log(f"Error: {worker_stderr}")
+            finally:
+                _LOG_TASK_ID = ""
+                _LOG_TOKEN = ""
+                hb_task.cancel()
+                try:
+                    await hb_task
+                except asyncio.CancelledError:
+                    pass
 
-            print(f"  OK: {output_hash[:12]}... exit_code={exit_code}")
+            _log(f"OK: {output_hash[:12]}... exit_code={exit_code}")
 
             # UPLOAD result blob
             try:
@@ -194,7 +322,7 @@ async def run_worker():
                 if not output_hash:
                     output_hash = up.get("hash", "")
             except Exception as e:
-                print(f"  Blob upload failed: {e}")
+                _log(f"Blob upload failed: {e}")
                 continue
 
             # SUBMIT
@@ -207,19 +335,19 @@ async def run_worker():
                         "assignment_token": tok,
                         "result": {
                             "output_hash": output_hash,
-                            "execution_metadata": {"exit_code": exit_code, "stderr": ""},
+                            "execution_metadata": {"exit_code": exit_code, "stderr": worker_stderr},
                         },
                     },
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as r:
                     result = await r.json()
                 accepted = result.get("accepted", False)
-                print(f"  Submit: accepted={accepted}")
+                _log(f"Submit: accepted={accepted}")
                 if accepted:
                     TOTAL_COMPLETED += 1
-                    print(f"  Total: {TOTAL_COMPLETED}")
+                    _log(f"Total completed: {TOTAL_COMPLETED}")
             except Exception as e:
-                print(f"  Submit failed: {e}")
+                _log(f"Submit failed: {e}")
 
             await asyncio.sleep(POLL_INTERVAL_SEC)
 

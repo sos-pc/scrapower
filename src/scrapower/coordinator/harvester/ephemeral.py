@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 
 from .base import WorkerProvider
 
@@ -66,23 +65,29 @@ class EphemeralHarvester:
         if queued == 0:
             return
 
-        # 4. Lancer un worker sur le provider le moins entamé
-        pct, provider = candidates[0]
-        log.info(
-            "harvester: %d queued, launching on %s (%.0f%% remaining)",
-            queued,
-            type(provider).__name__,
-            pct,
-        )
-        try:
-            ok = await provider.launch_worker()
-            if not ok:
-                log.warning("harvester: %s launch failed", type(provider).__name__)
-        except Exception:
-            log.exception("harvester: %s launch crashed", type(provider).__name__)
+        # 4. Lancer sur le provider le moins entamé (avec fallback)
+        launched = False
+        for pct, provider in candidates:
+            try:
+                ok = await provider.launch_worker()
+                if ok:
+                    log.info(
+                        "harvester: launched on %s (%.0f%% remaining)",
+                        type(provider).__name__,
+                        pct,
+                    )
+                    launched = True
+                    break
+                log.warning("harvester: %s launch failed, trying next...", type(provider).__name__)
+            except Exception:
+                log.exception(
+                    "harvester: %s launch crashed, trying next...", type(provider).__name__
+                )
+        if not launched:
+            log.warning("harvester: all %d provider(s) failed to launch", len(candidates))
 
-        # 5. Nettoyer les workers morts (pour tous les providers)
-        for _, p in candidates:
+        # 5. Nettoyer les workers morts (pour TOUS les providers, pas juste les candidates)
+        for p in self._providers:
             try:
                 await p.cleanup_stale()
             except Exception:

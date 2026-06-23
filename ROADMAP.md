@@ -31,25 +31,42 @@
 
 ---
 
-## 🔜 v0.6 — Homelab VPN + fiabilisation
+## ✅ v0.6 — Homelab VPN + fiabilisation (JUIN 2026)
 
 ### Homelab VPN exit node (priorité P0)
-- [ ] **WireGuard server sur homelab** — IP résidentielle pour tous les workers
-- [ ] **Config auto** — chaque worker reçoit la config WireGuard
-- [ ] **Fallback CyberGhost** — si homelab down, bascule sur VPN commercial
-- [ ] **DuckDNS** — IP dynamique → nom de domaine stable
+- [x] **WireGuard server sur homelab** — IP résidentielle pour tous les workers
+- [x] **Tunnel SOCKS5 Oracle** — Dante proxy port 1081, fix iptables mangle SYN-ACK, URL publique
+- [x] **Fallback CyberGhost** — conservé comme secours sur port 1080
+- [x] **Port UDP 443** — réutilise le port déjà forwardé sur la box (pas de nouveau port)
 
 **Impact** : Modal, Kaggle, et tout futur worker peuvent télécharger depuis YouTube sans blocage. Plus besoin de fallback coordinateur.
 
-### Corrections phase de test
-- [ ] **`network.ip_reputation`** dans les capabilities — "residential" | "datacenter" | "vpn"
-- [ ] **Coordinateur décide au prepare** — si tous les workers sont `datacenter` → pré-DL audio
-- [ ] **`last_error` visible** — `GET /tasks/{id}` expose le dernier message d'erreur
-- [ ] **`COOLDOWN_SEC`** 120→60s pour Modal
-- [ ] **Max concurrent workers** — le harvester vérifie le nombre actif avant de lancer
+### Corrections phase de test (P0 — en cours)
+- [x] **iptables mangle fix** — `--sport 1081 -j MARK --set-mark 0xca6c` (SYN-ACK bloqués)
+- [x] **`deadline_ms` dans INSERT** — corrigé, les tâches ont bien 900000ms maintenant
+- [x] **Suivi worker heartbeat** — `requeue_stale` atomique 90s, touch `assigned_at` sur tous les signaux (pull/heartbeat/submit/WS), logs Mode A persistés, heartbeat Kaggle
+- [x] **Anti-pattern coordinator DL** — documenté comme TEMPORARY BANDAGE dans le code. Cible : workers DL eux-mêmes via WireGuard
+- [x] **`cleanup_stale` cross-compte** — Modal : `_sandbox_tokens` dict, itération tous tokens. Kaggle : `_kernel_refs` tracking local. Cleanup pour TOUS les providers (pas juste candidates)
+- [ ] **`network.ip_reputation`** dans les capabilities — tag informatif "residential" | "datacenter" | "vpn" (non bloquant)
+- [ ] **Coordinateur décide au prepare** — si tous les workers sont `datacenter` → pré-DL audio (élimine gaspillage fallback)
+
+### Corrections P1 (prochaine session)
+- [ ] **`COOLDOWN_SEC`** 120→60s pour Modal, cleanup plus agressif
+- [ ] **Max concurrent workers** — vérifier le nombre actif avant de lancer (évite saturation MAX_CONCURRENT)
+- [ ] **Debug Kaggle inactif** — vérifier pourquoi les kernels Kaggle ne pull pas pendant les tests
+- [ ] **`last_error` visible** — `GET /tasks/{id}` expose le dernier message d'erreur + stderr
+- [ ] **Fallback automatique** — quand worker retourne exit_code=2, trigger_fallback sans attendre le cycle complet
+
+### Corrections P2 (v0.7+)
+- [ ] **`remaining_pct()` Modal** — tracker le budget $30 réel (décrémenter au lancement de sandbox)
+- [ ] **Priorité harvester** — si Modal saturé (sandboxes zombies), basculer automatiquement sur Kaggle
+- [ ] **Tâche timeout → retry intelligent** — ne pas réassigner au même type de worker si échec réseau
+- [ ] **Rotation + rétention logs** — `data/logs/{id}.log` : garder les 1000 dernières lignes par tâche, supprimer après 7j dans `cleanup_expired`
 
 ### Monitoring
-- [ ] **`/stats` enrichi** — quota par provider, workers actifs, statut VPN homelab
+- [x] **`/stats` enrichi** — quota Kaggle par compte, workers actifs
+- [x] **Logs workers → coordinateur** — `_save_worker_logs()` + `GET /tasks/{id}/logs`
+- [ ] **Statut VPN homelab** dans `/stats`
 
 ---
 

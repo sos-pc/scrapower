@@ -174,6 +174,9 @@ async def handle_ws(
             elif msg_type == "task_accept":
                 if session:
                     session.tasks_in_progress += 1
+                # Touch assigned_at — worker confirms it took the task
+                if task_service:
+                    await _touch_task(task_service, msg["task_id"], prefix="ws-accept")
 
             elif msg_type == "task_result":
                 if session:
@@ -229,6 +232,16 @@ async def handle_ws(
                             except Exception:
                                 pass
 
+                        # Touch assigned_at — result submission is a liveness signal
+                        await _touch_task(task_service, msg["task_id"], prefix="ws-result")
+
+                        # Persist stderr logs (parity with Mode B submit)
+                        stderr = (
+                            msg.get("result", {}).get("execution_metadata", {}).get("stderr", "")
+                        )
+                        if stderr:
+                            await _save_worker_logs_ws(msg["task_id"], stderr, prefix="ws-result")
+
                         if resolved:
                             await task_service.complete(msg["task_id"], output_hash, token)
 
@@ -250,6 +263,16 @@ async def handle_ws(
                     )
                     continue
                 session.tasks_in_progress = msg.get("tasks_in_progress", 0)
+
+                # Touch assigned_at on all tasks owned by this worker
+                if task_service and session.worker_id:
+                    await _touch_worker_tasks(task_service, session.worker_id, prefix="ws-hb")
+
+                # Persist worker logs (parity with Mode B heartbeat)
+                worker_logs = msg.get("logs", "")
+                if worker_logs:
+                    await _save_worker_logs_ws(session.worker_id, worker_logs, prefix="ws-hb")
+
                 await ws.send_json(
                     to_dict(
                         HeartbeatAck(
@@ -322,3 +345,70 @@ def _auth_level(msg: dict) -> int:
         return 2
 
     return 0
+
+
+# ── Liveness helpers (shared by Mode A and Mode B) ──────────────────
+
+
+async def _touch_task(task_service, task_id: str, prefix: str = "") -> None:
+    """Reset assigned_at on a task — any worker signal = liveness proof.
+
+    Called by: task_accept, task_result, heartbeat (WS), submit (HTTP).
+    Best-effort: exceptions are silently ignored.
+    """
+    try:
+        now = str(time.time())
+        await task_service._tm._db.execute(
+            "UPDATE tasks SET assigned_at = ?, updated_at = ? WHERE id = ?",
+            (now, now, task_id),
+        )
+        await task_service._tm._db.commit()
+    except Exception:
+        pass
+
+
+async def _touch_worker_tasks(task_service, worker_id: str, prefix: str = "") -> None:
+    """Reset assigned_at on ALL tasks assigned to this worker.
+
+    Used by WS heartbeat — the worker doesn't send per-task IDs in
+    heartbeat, so we touch every ASSIGNED task owned by this worker.
+    """
+    try:
+        now = str(time.time())
+        cursor = await task_service._tm._db.execute(
+            """UPDATE tasks SET assigned_at = ?, updated_at = ?
+               WHERE assigned_worker_id = ? AND state = ?""",
+            (now, now, worker_id, "ASSIGNED"),
+        )
+        await task_service._tm._db.commit()
+        if cursor.rowcount:
+            log.debug(
+                "ws heartbeat: touched %d tasks for worker %s",
+                cursor.rowcount,
+                worker_id[:16],
+            )
+    except Exception:
+        pass
+
+
+async def _save_worker_logs_ws(identifier: str, text: str, prefix: str = "ws") -> None:
+    """Persist worker logs to disk — same format as Mode B _save_worker_logs.
+
+    Uses the same data/logs/ directory so GET /tasks/{id}/logs works for
+    both Mode A and Mode B workers.
+    """
+    from pathlib import Path as _Path
+
+    try:
+        log_dir = _Path("data/logs")
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / f"{identifier}.log"
+        import time as _time
+
+        with open(log_path, "a") as f:
+            f.write(f"=== {_time.strftime('%Y-%m-%d %H:%M:%S')} [{prefix}] ===\n")
+            f.write(text)
+            if not text.endswith("\n"):
+                f.write("\n")
+    except Exception:
+        pass

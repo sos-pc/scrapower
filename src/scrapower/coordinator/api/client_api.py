@@ -120,4 +120,17 @@ def create_client_router(require_auth: Callable | None = None) -> APIRouter:
             raise HTTPException(status_code=404, detail={"error": "BLOB_NOT_FOUND"})
         return Response(content=data, media_type="application/octet-stream")
 
+    @router.get("/tasks/{task_id}/logs")
+    async def get_task_logs(task_id: str, request: Request):
+        """Get worker logs for a task. Requires API key."""
+        if require_auth:
+            _check_auth(request)
+
+        from pathlib import Path
+
+        log_path = Path("data/logs") / f"{task_id}.log"
+        if not log_path.exists():
+            raise HTTPException(status_code=404, detail={"error": "NO_LOGS"})
+        return Response(content=log_path.read_bytes(), media_type="text/plain")
+
     return router

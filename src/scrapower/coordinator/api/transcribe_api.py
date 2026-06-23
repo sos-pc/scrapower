@@ -38,6 +38,13 @@ WHISPER_RUNNER_HASH = _compute_whisper_hash()
 
 log = logging.getLogger(__name__)
 
+# === TEMPORARY BANDAGE (v0.4-v0.5) ===================================
+# Coordinator-side audio download via yt-dlp. NOT the target architecture.
+# TARGET: Workers download via homelab WireGuard SOCKS5 proxy (WG_PROXY).
+# The coordinator is a lightweight orchestrator, not a download node.
+# Remove _download_audio() and prepare_audio_fallback() once WireGuard
+# is confirmed stable on all worker types (Modal, Kaggle, HF Spaces).
+# =======================================================================
 # Limit concurrent yt-dlp downloads to avoid saturating Oracle bandwidth
 _download_sem = asyncio.Semaphore(2)
 
@@ -133,7 +140,11 @@ async def _prepare_whisper_input(
 
 
 async def _download_audio(url: str, cookies_hash: str, db, blob_dir: str) -> bytes:
-    """Download audio from a URL. Uses yt-dlp for YouTube, direct for .wav/.mp3."""
+    """[TEMPORARY BANDAGE] Download audio on coordinator via yt-dlp.
+
+    TARGET: Workers download themselves via homelab WireGuard proxy.
+    This function will be REMOVED once WG_PROXY is stable on all workers.
+    """
     import urllib.request
 
     DIRECT_EXTS = (".wav", ".mp3", ".m4a", ".ogg", ".flac", ".opus", ".aac", ".weba")
@@ -206,11 +217,13 @@ async def _download_audio(url: str, cookies_hash: str, db, blob_dir: str) -> byt
 
 
 async def prepare_audio_fallback(task, db, config):
-    """Fallback: download audio on coordinator and update task input.
+    """[TEMPORARY BANDAGE] Download audio on coordinator when worker fails.
 
-    Called by TaskService.trigger_fallback() when a worker returns
-    exit_code=2 (DOWNLOAD_FAILED). Downloads audio via VPN, stores as
-    blob, and updates the task's input_hash so any worker can complete it.
+    Called on exit_code=2 (DOWNLOAD_FAILED). Downloads audio via VPN,
+    stores as blob, updates task input_hash.
+
+    TARGET: Workers download themselves via homelab WireGuard proxy.
+    This function will be REMOVED once WG_PROXY is stable on all workers.
     """
     import json as _json
 

@@ -173,33 +173,44 @@ class TaskService:
         """Create a challenge record for double-execution verification."""
         return await self._tm.create_challenge(task_id, token_a, token_b)
 
-    async def requeue_stale(self, timeout_sec: float = 300) -> int:
-        """Re-queue ASSIGNED tasks that haven't completed in time.
+    async def requeue_stale(self, silence_timeout_sec: float = 90) -> int:
+        """Re-queue ASSIGNED tasks whose worker hasn't signalled recently.
 
-        Uses the task's own deadline_ms when it's longer than the default
-        (e.g. Whisper transcription can take 10+ min).  Falls back to
-        timeout_sec (default 300s) for backward compat.
+        Atomic single-UPDATE with WHERE on assigned_at — no TOCTOU race.
+        Works for Mode A and Mode B: pull, heartbeat (HTTP + WS), submit,
+        and task_accept all reset assigned_at.
+
+        A worker that heartbeats every 30s keeps its task alive indefinitely.
+        A worker that crashes is detected within 90s.
+
+        Args:
+            silence_timeout_sec: seconds without any signal before timeout.
+                Default 90s (3 heartbeat intervals at 30s).
 
         Returns number of tasks requeued."""
-        import time
+        import time as _time
 
-        now = time.time()
+        now = _time.time()
         cursor = await self._tm._db.execute(
-            "SELECT id, deadline_ms, assigned_at FROM tasks WHERE state = ?",
-            (TaskState.ASSIGNED,),
+            """UPDATE tasks SET state = ?, updated_at = ?
+               WHERE state = ? AND assigned_at < ?""",
+            (
+                TaskState.TIMEOUT,
+                str(now),
+                TaskState.ASSIGNED,
+                str(now - silence_timeout_sec),
+            ),
         )
-        count = 0
-        async for row in cursor:
-            assigned_at = float(row["assigned_at"] or 0)
-            task_deadline_s = max(
-                timeout_sec,
-                (row["deadline_ms"] or 60000) / 1000.0,
+        await self._tm._db.commit()
+        if cursor.rowcount:
+            import logging
+
+            logging.getLogger(__name__).info(
+                "requeued %d stale tasks (silence > %ds)",
+                cursor.rowcount,
+                silence_timeout_sec,
             )
-            if now - assigned_at < task_deadline_s:
-                continue  # Still within the task's own deadline
-            await self._tm.transition(row["id"], TaskState.TIMEOUT)
-            count += 1
-        return count
+        return cursor.rowcount
 
     async def cleanup_expired(
         self, completed_ttl_sec: float = 86400, pending_ttl_sec: float = 3600

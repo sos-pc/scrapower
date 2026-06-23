@@ -124,6 +124,11 @@ async def pull(request: Request, sessions: SessionManager):
     worker_id = body.get("worker_id", f"anon-{client_ip}")
     capabilities = body.get("capabilities", {})
 
+    # Save any logs the worker sent along with the pull (heartbeat-style)
+    worker_logs = body.get("logs", "")
+    if worker_logs:
+        await _save_worker_logs(worker_id, worker_logs, prefix="pull")
+
     task_service = getattr(request.app.state, "task_service", None)
     if not task_service:
         return JSONResponse({"type": "pull_response", "task": None})
@@ -231,10 +236,20 @@ async def submit(request: Request, sessions: SessionManager):
             }
         )
 
-    # Reject empty/error results — mark TIMEOUT so they requeue (same as WS handler)
+    # Extract result metadata
     status = body.get("result", {}).get("execution_metadata", {}).get("exit_code", 0)
+    stderr_info = body.get("result", {}).get("execution_metadata", {}).get("stderr", "")
+
+    # Always save worker stderr for debugging (both success and failure)
+    if stderr_info:
+        await _save_worker_logs(task_id, stderr_info)
+
+    # Reject empty/error results — mark TIMEOUT so they requeue (same as WS handler)
     if not output_hash or status != 0:
         # exit_code 2 = DOWNLOAD_FAILED: trigger fallback before requeue
+        # [TEMPORARY BANDAGE] Falls back to coordinator-side yt-dlp.
+        # TARGET: Workers use WG_PROXY to download themselves.
+        # Remove this fallback once WireGuard is stable on all workers.
         if status == 2 and task_service:
             try:
                 await task_service.trigger_fallback(task_id)
@@ -258,6 +273,15 @@ async def submit(request: Request, sessions: SessionManager):
     success = await task_service.complete(task_id, output_hash, assignment_token)
     if success:
         log.info("mode-b submit: completed %s hash=%s", task_id[:12], output_hash[:12])
+    else:
+        # Touch assigned_at — even on reject, the submit proves the worker was alive.
+        # If the token was already consumed (race with requeue), this is harmless.
+        try:
+            from .ws_handler import _touch_task
+
+            await _touch_task(task_service, task_id, prefix="submit")
+        except Exception:
+            pass
 
     return JSONResponse(
         {
@@ -267,3 +291,20 @@ async def submit(request: Request, sessions: SessionManager):
             "credit_earned": 1 if success else 0,
         }
     )
+
+
+async def _save_worker_logs(task_id: str, stderr: str, prefix: str = "submit"):
+    """Save worker stderr to a log file for debugging."""
+    import os
+    from pathlib import Path
+
+    log_dir = Path("data/logs")
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"{task_id}.log"
+    with open(log_path, "a") as f:
+        import time
+
+        f.write(f"=== {time.strftime('%Y-%m-%d %H:%M:%S')} [{prefix}] ===\n")
+        f.write(stderr)
+        if not stderr.endswith("\n"):
+            f.write("\n")

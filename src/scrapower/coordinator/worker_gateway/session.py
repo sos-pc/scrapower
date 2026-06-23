@@ -36,7 +36,9 @@ class SessionManager:
         self._heartbeat_interval = heartbeat_interval_sec
         self._heartbeat_threshold = heartbeat_miss_threshold
 
-    def create(self, worker_id: str, ws: Any = None, auth_level: int = 0, peer_ip: str = "") -> WorkerSession:
+    def create(
+        self, worker_id: str, ws: Any = None, auth_level: int = 0, peer_ip: str = ""
+    ) -> WorkerSession:
         """Create a new session for a worker."""
         session_id = uuid.uuid4().hex[:16]
         session = WorkerSession(
@@ -99,9 +101,31 @@ class SessionManager:
                         await on_zombie(session)
             # Cleanup: remove zombies older than 1 hour
             to_remove = [
-                sid for sid, s in self._sessions.items()
+                sid
+                for sid, s in self._sessions.items()
                 if s.is_zombie and (now - s.last_heartbeat) > 3600
             ]
             for sid in to_remove:
-                del self._sessions[sid]
+                session = self._sessions.pop(sid, None)
+                if session:
+                    # Flush final logs before the session disappears
+                    try:
+                        from pathlib import Path as _Path
+
+                        log_dir = _Path("data/logs")
+                        log_dir.mkdir(parents=True, exist_ok=True)
+                        log_path = log_dir / f"{session.worker_id}.log"
+                        import time as _time
+
+                        with open(log_path, "a") as f:
+                            f.write(
+                                f"=== {_time.strftime('%Y-%m-%d %H:%M:%S')} [zombie-purge] ===\n"
+                            )
+                            f.write(
+                                f"Session removed after 1h zombie. "
+                                f"Last heartbeat: {session.last_heartbeat:.0f}, "
+                                f"worker_id={session.worker_id}\n"
+                            )
+                    except Exception:
+                        pass
             await asyncio.sleep(self._heartbeat_interval)

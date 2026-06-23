@@ -122,8 +122,9 @@ class TaskManager:
         )
         cursor = await self._db.execute(
             """INSERT INTO tasks (id, client_id, state, definition_json, retries,
-               executable_hash, input_hash, runtime, gpu_required, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               executable_hash, input_hash, runtime, gpu_required, deadline_ms,
+               max_retries, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 task.id,
                 task.client_id,
@@ -134,6 +135,8 @@ class TaskManager:
                 task.input_hash,
                 task.runtime,
                 int(task.gpu_required),
+                task.deadline_ms,
+                task.max_retries,
                 task.created_at,
                 task.updated_at,
             ),

@@ -8,7 +8,6 @@ or MODAL_ACCOUNTS JSON array for multi-account.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import time
@@ -22,7 +21,7 @@ MAX_CONCURRENT = 3  # max simultaneous sandboxes per provider
 GPU_TYPE = "T4"  # default GPU — $0.59/h on Modal Starter
 GPU_VRAM_MB = 16384
 SANDBOX_TIMEOUT = 6 * 3600  # 6h max per sandbox
-IDLE_TIMEOUT = 120  # 2 min idle → auto-terminate (saves credits)
+IDLE_TIMEOUT = 600  # 10 min idle → auto-terminate (whisper needs 3-5 min of silence)
 WORKER_SCRIPT = "deploy/modal/worker.py"
 BUDGET_MONTHLY_USD = 30.0  # Modal Starter free credits per account
 
@@ -47,6 +46,7 @@ class ModalHarvester(WorkerProvider):
         self._round = 0
         self._total_seconds_used: float = 0
         self._sandbox_ids: list[str] = []
+        self._sandbox_tokens: dict[str, tuple[str, str]] = {}  # sb_id -> (token_id, token_secret)
         self._running = False
         # GPU cost per second (from Modal pricing)
         self._cost_per_sec = {
@@ -84,6 +84,12 @@ class ModalHarvester(WorkerProvider):
             sb = await self._create_sandbox(worker_path)
             self._last_start = time.time()
             self._sandbox_ids.append(sb.object_id)
+            # Track which account's token created this sandbox (for cross-account cleanup)
+            account = self._accounts[(self._round - 1) % len(self._accounts)]
+            self._sandbox_tokens[sb.object_id] = (
+                account["token_id"],
+                account["token_secret"],
+            )
             log.info("modal sandbox created: %s (gpu=%s)", sb.object_id, self._gpu_type)
             return True
         except Exception as e:
@@ -93,21 +99,40 @@ class ModalHarvester(WorkerProvider):
     async def cleanup_stale(self) -> None:
         """Remove terminated sandboxes from local tracking list.
 
-        Modal Sandboxes auto-terminate after idle_timeout or when
-        the entrypoint exits. We periodically check which ones are
-        still running and remove dead ones from our list.
+        Iterates ALL account tokens to find sandboxes — Modal's API is
+        scoped to the current os.environ token, so a sandbox created with
+        account A is invisible to account B. We check every token.
         """
         if not self._sandbox_ids:
             return
         try:
             import modal
 
-            app = await modal.App.lookup.aio("scrapower", create_if_missing=False)
-            alive = set()
-            async for sb_info in modal.Sandbox.list.aio(app_id=app.app_id):
-                alive.add(sb_info.object_id)
+            alive: set[str] = set()
+            all_tokens = set(self._sandbox_tokens.values())
+            # Fallback: if no tokens tracked yet (pre-fix sandboxes), use current env
+            if not all_tokens:
+                tid = os.environ.get("MODAL_TOKEN_ID", "")
+                tsec = os.environ.get("MODAL_TOKEN_SECRET", "")
+                if tid and tsec:
+                    all_tokens = {(tid, tsec)}
+
+            for tid, tsec in all_tokens:
+                try:
+                    os.environ["MODAL_TOKEN_ID"] = tid
+                    os.environ["MODAL_TOKEN_SECRET"] = tsec
+                    app = await modal.App.lookup.aio("scrapower", create_if_missing=False)
+                    async for sb_info in modal.Sandbox.list.aio(app_id=app.app_id):
+                        alive.add(sb_info.object_id)
+                except Exception:
+                    continue  # token might be invalid or account deleted
+
             before = len(self._sandbox_ids)
             self._sandbox_ids = [sid for sid in self._sandbox_ids if sid in alive]
+            # Also clean up orphaned token entries
+            for sid in list(self._sandbox_tokens):
+                if sid not in alive:
+                    del self._sandbox_tokens[sid]
             removed = before - len(self._sandbox_ids)
             if removed:
                 log.info(

@@ -39,6 +39,7 @@ class KaggleHarvester(WorkerProvider):
         self._last_start: float = 0
         self._current_cooldown: float = COOLDOWN_SEC
         self._last_cleanup: float = 0
+        self._kernel_refs: list[str] = []  # kernel IDs we've launched
 
     @staticmethod
     def _find_notebook() -> str:
@@ -46,64 +47,6 @@ class KaggleHarvester(WorkerProvider):
             if os.path.exists(c):
                 return c
         raise FileNotFoundError("Kaggle notebook template not found")
-
-    async def run(self):
-        self._running = True
-        log.info("kaggle harvester: %d account(s), tick=%ds", len(self._accounts), TICK_SEC)
-        while self._running:
-            try:
-                await self._tick()
-            except Exception:
-                log.exception("harvester tick")
-            await asyncio.sleep(TICK_SEC)
-
-    def stop(self):
-        self._running = False
-
-    async def _tick(self):
-        # Cleanup old kernels every 5 minutes
-        await self._cleanup_old_kernels()
-
-        if time.time() - self._last_start < self._current_cooldown:
-            return
-        queued = await self._count_queued_tasks()
-        log.debug("harvester tick: queued=%d", queued)
-        if queued == 0:
-            return
-
-        # Check GPU quota before starting a kernel
-        quota = await self._get_quota()
-        if quota is not None and quota["remaining_h"] < 0.1:
-            log.warning(
-                "harvester: GPU quota exhausted (%.2fh remaining), not starting kernel",
-                quota["remaining_h"],
-            )
-            return
-
-        log.info(
-            "harvester: %d queued tasks, starting kernel (GPU quota: %.1fh)",
-            queued,
-            quota["remaining_h"] if quota else 0,
-        )
-        success = await self._start_kernel()
-        self._last_start = time.time()
-        if not success:
-            self._current_cooldown = min(self._current_cooldown * 2, 1800)
-        else:
-            self._current_cooldown = COOLDOWN_SEC
-
-    async def _count_queued_tasks(self) -> int:
-        try:
-            import scrapower.coordinator.worker_gateway.router as rmod
-
-            tm = getattr(rmod, "task_manager", None)
-            if tm is None:
-                return 0
-            cursor = await tm._db.execute("SELECT COUNT(*) as n FROM tasks WHERE state = 'queued'")
-            row = await cursor.fetchone()
-            return row["n"] if row else 0
-        except Exception:
-            return 0
 
     async def _get_quota(self) -> dict | None:
         """Get GPU quota for the next account (peek, don't consume)."""
@@ -256,7 +199,12 @@ class KaggleHarvester(WorkerProvider):
                     )
                     break
             src = src.replace('API_KEY = ""', f'API_KEY = "{self._api_key}"')
-            wg_proxy = os.environ.get("SCRAPOWER_WG_PROXY", "")
+            # Workers need the PUBLIC proxy URL (scrapower.talos-int.com:1081),
+            # not the coordinator's localhost alias. The public URL is reachable
+            # from Kaggle/Modal servers; localhost is only for coordinator fallback.
+            wg_proxy = os.environ.get("SCRAPOWER_WG_PROXY_PUBLIC", "") or os.environ.get(
+                "SCRAPOWER_WG_PROXY", ""
+            )
             if wg_proxy:
                 src = src.replace('WG_PROXY = ""', f'WG_PROXY = "{wg_proxy}"')
             cell["source"] = src
@@ -300,6 +248,7 @@ class KaggleHarvester(WorkerProvider):
 
             if proc.returncode == 0:
                 log.info("kaggle kernel started: %s (account=%s)", kernel_id, username)
+                self._kernel_refs.append(kernel_id)
                 return True
             else:
                 log.error("kaggle push failed (account=%s): %s", username, stderr.decode()[:200])
@@ -330,16 +279,22 @@ class KaggleHarvester(WorkerProvider):
         return await self.remaining_pct() > 0.3  # 0.1h / 30h ≈ 0.3%
 
     async def launch_worker(self) -> bool:
-        """Lance un kernel Kaggle. Délègue à _start_kernel."""
-        # Don't exceed max concurrent kernels
-        active = await self._count_active_kernels()
-        if active >= 3:
+        """Lance un kernel Kaggle. Utilise le tracking local (pas d'appel API)."""
+        if len(self._kernel_refs) >= 3:
             return False
-        return await self._start_kernel()
+        return await self._start_kernel() or False
 
     async def cleanup_stale(self) -> None:
-        """Nettoie les kernels morts. Délègue à _cleanup_old_kernels."""
+        """Nettoie les kernels morts + synchro du tracking local."""
         await self._cleanup_old_kernels()
+        # Sync _kernel_refs with reality: remove entries for deleted kernels
+        # _cleanup_old_kernels handles the actual deletion; we just need to
+        # know how many are still alive. Use _count_active_kernels as ground truth.
+        actual = await self._count_active_kernels()
+        if len(self._kernel_refs) > actual:
+            # Some kernels died without us tracking the deletion;
+            # trim the list to match reality (oldest first)
+            self._kernel_refs = self._kernel_refs[-actual:] if actual > 0 else []
 
     async def _count_active_kernels(self) -> int:
         """Count RUNNING scrapower-auto kernels across all accounts."""
@@ -370,15 +325,14 @@ class KaggleHarvester(WorkerProvider):
         return active
 
     async def status(self) -> ProviderStatus:
-        """Statut agrégé de tous les comptes Kaggle."""
+        """Statut agregé de tous les comptes Kaggle."""
         pct = await self.remaining_pct()
-        active = await self._count_active_kernels()
         return ProviderStatus(
             name="kaggle",
             provider_type="kaggle",
             gpu_type="T4",
             remaining_pct=pct,
-            workers_active=active,
+            workers_active=len(self._kernel_refs),
             quota_detail={"accounts": len(self._accounts)},
         )
 

@@ -52,6 +52,13 @@ def _download_audio(url, workdir, cookies_path=None):
     wg_proxy = os.environ.get("WG_PROXY", "")
     if wg_proxy:
         args += ["--proxy", wg_proxy]
+        # Skip cookies when using proxy: IP/cookie mismatch triggers YouTube anti-bot.
+        # The residential IP from WireGuard is sufficient; cookies tied to another
+        # session IP would cause YouTube to reject the request.
+        cookies_path = None
+        print("[whisper_runner] using WireGuard proxy, cookies disabled", file=sys.stderr)
+    else:
+        print("[whisper_runner] no proxy configured", file=sys.stderr)
     if cookies_path:
         args += ["--cookies", cookies_path]
     args.append(url)
@@ -87,14 +94,22 @@ def _transcribe(audio_path, model_name, language, fmt):
     segments, info = batched.transcribe(
         str(audio_path), language=language, batch_size=8, beam_size=5, vad_filter=True
     )
+    # Collect segments while printing progress (keeps sandbox alive for Modal/Kaggle)
+    seg_list = []
+    last_log = time.time()
+    for i, seg in enumerate(segments):
+        seg_list.append(seg)
+        if time.time() - last_log > 30:
+            print(f"  ... transcribed {i + 1} segments ({seg.start:.0f}s)", file=sys.stderr)
+            last_log = time.time()
     if fmt == "srt":
         lines = []
-        for i, seg in enumerate(segments, 1):
+        for i, seg in enumerate(seg_list, 1):
             s, e = _fmt(seg.start), _fmt(seg.end)
             lines.append(f"{i}\n{s} --> {e}\n{seg.text.strip()}\n")
         return "\n".join(lines)
     elif fmt == "txt":
-        return " ".join(s.text for s in segments)
+        return " ".join(s.text for s in seg_list)
     else:
         return json.dumps(
             {
@@ -102,7 +117,7 @@ def _transcribe(audio_path, model_name, language, fmt):
                 "duration": round(info.duration, 1),
                 "segments": [
                     {"start": round(s.start, 2), "end": round(s.end, 2), "text": s.text.strip()}
-                    for s in segments
+                    for s in seg_list
                 ],
             },
             ensure_ascii=False,
@@ -117,6 +132,7 @@ def _fmt(sec):
 
 
 def main():
+    print("whisper_runner: starting", file=sys.stderr)
     try:
         _ensure_deps()
         config = json.loads(sys.argv[1] if len(sys.argv) > 1 else sys.stdin.read())
