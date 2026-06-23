@@ -249,6 +249,7 @@ async def lifespan(app: FastAPI):
                     coordinator_url=coordinator_url,
                     api_key=api_key,
                     gpu_type=os.environ.get("MODAL_GPU_TYPE", "T4"),
+                    db_path=str(config.data_dir) + "/scrapower.db",
                 )
             )
         except ImportError:

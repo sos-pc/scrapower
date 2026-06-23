@@ -36,6 +36,7 @@ class ModalHarvester(WorkerProvider):
         api_key: str = "",
         budget_monthly_usd: float = BUDGET_MONTHLY_USD,
         gpu_type: str = GPU_TYPE,
+        db_path: str = "",
     ):
         self._accounts = accounts  # list of {token_id, token_secret, [label]}
         self._coordinator_url = coordinator_url
@@ -59,8 +60,55 @@ class ModalHarvester(WorkerProvider):
             "A10": 0.000306,
             "L40S": 0.000542,
         }.get(gpu_type, 0.000164)
+        # Persist tracking across coordinator restarts
+        self._db_path = db_path
+        if db_path:
+            self._load_state()
 
     # ── WorkerProvider interface ──────────────────────────────
+
+    # State persistence (survives coordinator restart)
+
+    def _load_state(self) -> None:
+        """Restore tracking from DB (survives coordinator restart)."""
+        try:
+            import sqlite3
+
+            conn = sqlite3.connect(self._db_path)
+            for key, attr, cast in [
+                ("modal:seconds_used", "_total_seconds_used", float),
+                ("modal:billing_cost", "_billing_cost_cached", float),
+                ("modal:billing_checked", "_billing_last_check", float),
+            ]:
+                row = conn.execute("SELECT value FROM kv_store WHERE key = ?", (key,)).fetchone()
+                if row:
+                    setattr(self, attr, cast(row[0]))
+            conn.close()
+        except Exception:
+            pass  # DB might not exist yet - will save on next cleanup
+
+    def _save_state(self) -> None:
+        """Persist tracking to DB (called after each cleanup cycle)."""
+        if not self._db_path:
+            return
+        try:
+            import sqlite3
+
+            conn = sqlite3.connect(self._db_path)
+            conn.execute("CREATE TABLE IF NOT EXISTS kv_store (key TEXT PRIMARY KEY, value TEXT)")
+            for key, val in [
+                ("modal:seconds_used", str(self._total_seconds_used)),
+                ("modal:billing_cost", str(self._billing_cost_cached)),
+                ("modal:billing_checked", str(self._billing_last_check)),
+            ]:
+                conn.execute(
+                    "INSERT OR REPLACE INTO kv_store (key, value) VALUES (?, ?)",
+                    (key, val),
+                )
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass  # best-effort - DB might be locked
 
     async def remaining_pct(self) -> float:
         """Budget restant (0-100). Combine billing API + local tracking.
@@ -167,6 +215,7 @@ class ModalHarvester(WorkerProvider):
         scoped to the current os.environ token, so a sandbox created with
         account A is invisible to account B. We check every token.
         """
+        self._save_state()
         if not self._sandbox_ids:
             return
         try:
@@ -213,6 +262,7 @@ class ModalHarvester(WorkerProvider):
                     removed,
                     len(self._sandbox_ids),
                 )
+            self._save_state()
         except Exception:
             pass  # Modal API might not be available; will retry next tick
 
