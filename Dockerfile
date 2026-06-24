@@ -13,18 +13,16 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# System deps: ffmpeg (for yt-dlp) + deno (JS runtime for YouTube extraction)
+# System deps: ffmpeg (for yt-dlp)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl ca-certificates ffmpeg unzip \
-    && rm -rf /var/lib/apt/lists/* \
-    && curl -fsSL https://deno.land/install.sh | sh \
-    && mv /root/.deno/bin/deno /usr/local/bin/deno
+    curl ca-certificates ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy and install Python dependencies
 COPY pyproject.toml .
 RUN pip install --no-cache-dir \
     fastapi "uvicorn[standard]" pydantic aiosqlite aiofiles \
-    structlog aiohttp wasmtime cryptography kaggle faster-whisper yt-dlp yt-dlp-ejs modal
+    structlog aiohttp wasmtime cryptography kaggle faster-whisper yt-dlp modal
 
 # Copy application source (package lives in src/scrapower/)
 COPY src/ src/
