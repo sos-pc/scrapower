@@ -45,21 +45,12 @@ class ModalHarvester(WorkerProvider):
         self._budget_monthly = budget_monthly_usd
         self._last_start: float = 0
         self._round = 0
-        self._total_seconds_used: float = 0
         self._sandbox_ids: list[str] = []
         self._sandbox_tokens: dict[str, tuple[str, str]] = {}  # sb_id -> (token_id, token_secret)
-        self._sandbox_started: dict[str, float] = {}  # sb_id -> creation timestamp
         self._running = False
         # Billing cache (refreshed from modal.billing API every 10 min)
         self._billing_cost_cached: float = 0.0
         self._billing_last_check: float = 0.0
-        # GPU cost per second (from Modal pricing)
-        self._cost_per_sec = {
-            "T4": 0.000164,
-            "L4": 0.000222,
-            "A10": 0.000306,
-            "L40S": 0.000542,
-        }.get(gpu_type, 0.000164)
         # Persist tracking across coordinator restarts
         self._db_path = db_path
         if db_path:
@@ -76,7 +67,6 @@ class ModalHarvester(WorkerProvider):
 
             conn = sqlite3.connect(self._db_path)
             for key, attr, cast in [
-                ("modal:seconds_used", "_total_seconds_used", float),
                 ("modal:billing_cost", "_billing_cost_cached", float),
                 ("modal:billing_checked", "_billing_last_check", float),
             ]:
@@ -97,7 +87,6 @@ class ModalHarvester(WorkerProvider):
             conn = sqlite3.connect(self._db_path)
             conn.execute("CREATE TABLE IF NOT EXISTS kv_store (key TEXT PRIMARY KEY, value TEXT)")
             for key, val in [
-                ("modal:seconds_used", str(self._total_seconds_used)),
                 ("modal:billing_cost", str(self._billing_cost_cached)),
                 ("modal:billing_checked", str(self._billing_last_check)),
             ]:
@@ -111,16 +100,15 @@ class ModalHarvester(WorkerProvider):
             pass  # best-effort - DB might be locked
 
     async def remaining_pct(self) -> float:
-        """Budget restant (0-100). Combine billing API + local tracking.
+        """Budget restant (0-100). Single source of truth: modal.billing API.
 
-        Calls modal.billing.workspace_billing_report (cached 10 min) for
-        confirmed spend, then adds local estimate for active/recent sandboxes
-        that haven't appeared in billing yet (API has collection delay).
+        Calls billing for ALL accounts every 10 min. Adds a small margin
+        per active sandbox (API has collection delay) -- one sandbox hour
+        at worst = $0.59, or ~2% of the monthly budget. Simple and reliable.
         """
         if not self._accounts:
             return 0.0
 
-        # Refresh billing data from Modal API (cached 10 min)
         now = time.time()
         if now - self._billing_last_check > 600:
             try:
@@ -128,48 +116,51 @@ class ModalHarvester(WorkerProvider):
 
                 now_utc = datetime.datetime.now(datetime.timezone.utc)
                 start = now_utc - datetime.timedelta(days=30)
-                report = await self._billing_api_call(start, now_utc)
-                self._billing_cost_cached = sum(float(item.get("cost", 0)) for item in report)
+                total_cost = 0.0
+                for account in self._accounts:
+                    cost = await self._billing_for_account(account, start, now_utc)
+                    total_cost += cost
+                self._billing_cost_cached = total_cost
                 self._billing_last_check = now
-                log.debug(
-                    "modal billing: $%.4f confirmed (cached 10 min)",
-                    self._billing_cost_cached,
-                )
+                log.debug("modal billing: $%.4f total (all accounts)", total_cost)
             except Exception:
-                pass  # billing API may not be available; keep cached value
+                pass  # keep cached value
 
-        # Per-account: return the BEST account's remaining budget.
-        # The harvester needs to know if ANY account can still launch.
-        # Using an average would mask an exhausted account behind a full one.
+        # Per-account: best remaining budget, with sandbox margin
         best_pct = 0.0
         for account in self._accounts:
             tid = account.get("token_id", "")
-            account_seconds = sum(
-                now - self._sandbox_started[sid]
+            # Count active sandboxes for this account
+            active = sum(
+                1
                 for sid, (tok_id, _) in self._sandbox_tokens.items()
-                if tok_id == tid and sid in self._sandbox_started
+                if tok_id == tid and sid in self._sandbox_ids
             )
-            account_used = account_seconds * self._cost_per_sec
-            pct = max(0, self._budget_monthly - account_used) / self._budget_monthly * 100
-            best_pct = max(best_pct, pct)
-        # Floor to billing API confirmed cost (prevents 100% after restart)
-        if best_pct > 0 and self._billing_cost_cached > 0:
+            # Margin: 1 sandbox-hour = $0.59 = ~2% of $30
+            margin = active * 2.0
+            account_pct = max(0.0, 100.0 - margin)
+            best_pct = max(best_pct, account_pct)
+
+        # Floor by billing API (actual cost, never lower)
+        if self._billing_cost_cached > 0:
             total_budget = self._budget_monthly * len(self._accounts)
             billed_pct = max(0, total_budget - self._billing_cost_cached) / total_budget * 100
             best_pct = min(best_pct, billed_pct)
         return best_pct
 
-    async def _billing_api_call(self, start, end) -> list[dict]:
-        """Call modal.billing API. Override per-account token first."""
+    async def _billing_for_account(self, account: dict, start, end) -> float:
+        """Call modal.billing API for a single account. Returns total cost."""
         import modal
 
-        account = self._accounts[self._round % len(self._accounts)] if self._accounts else {}
-        if account:
-            os.environ["MODAL_TOKEN_ID"] = account.get("token_id", "")
-            os.environ["MODAL_TOKEN_SECRET"] = account.get("token_secret", "")
-        return await modal.billing.workspace_billing_report.aio(
-            start=start, end=end, resolution="d"
-        )
+        os.environ["MODAL_TOKEN_ID"] = account.get("token_id", "")
+        os.environ["MODAL_TOKEN_SECRET"] = account.get("token_secret", "")
+        try:
+            report = await modal.billing.workspace_billing_report.aio(
+                start=start, end=end, resolution="d"
+            )
+            return sum(float(item.get("cost", 0)) for item in report)
+        except Exception:
+            return 0.0
 
     async def has_quota(self) -> bool:
         """Budget restant > 1%."""
@@ -201,7 +192,6 @@ class ModalHarvester(WorkerProvider):
                 account["token_id"],
                 account["token_secret"],
             )
-            self._sandbox_started[sb.object_id] = time.time()
             log.info("modal sandbox created: %s (gpu=%s)", sb.object_id, self._gpu_type)
             return True
         except Exception as e:
@@ -242,14 +232,6 @@ class ModalHarvester(WorkerProvider):
 
             before = len(self._sandbox_ids)
 
-            # Charge confirmed runtime for sandboxes that have terminated
-            now = time.time()
-            removed_ids = [sid for sid in self._sandbox_ids if sid not in alive]
-            for sid in removed_ids:
-                if sid in self._sandbox_started:
-                    self._total_seconds_used += now - self._sandbox_started[sid]
-                    del self._sandbox_started[sid]
-
             self._sandbox_ids = [sid for sid in self._sandbox_ids if sid in alive]
             # Also clean up orphaned token entries
             for sid in list(self._sandbox_tokens):
@@ -278,8 +260,7 @@ class ModalHarvester(WorkerProvider):
             quota_detail={
                 "accounts": len(self._accounts),
                 "budget_monthly_usd": self._budget_monthly,
-                "cost_per_hour": self._cost_per_sec * 3600,
-                "seconds_used": self._total_seconds_used,
+                "cost_per_hour": {"T4": 0.59, "L4": 0.80, "A10": 1.10, "L40S": 1.95}.get(self._gpu_type, 0.59),
             },
         )
 
