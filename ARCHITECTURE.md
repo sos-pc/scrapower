@@ -2,29 +2,33 @@
 
 ## Overview
 
-Scrapower is a distributed computing aggregator that dispatches tasks (WASM or Python) to ephemeral workers (Kaggle notebooks, Modal Sandboxes, HuggingFace Spaces, browser tabs).
+Scrapower is a distributed computing aggregator that dispatches typed tasks
+(whisper, wasm, python, fetch) to ephemeral GPU workers (Kaggle, Modal) via
+an HTTP pull protocol. A quota-based harvester picks the least-used provider.
 
 ```
-Client ──POST /transcribe──→ Coordinator (Oracle)
-                                  │
-                                  ├─ EphemeralHarvester (quota-based)
-                                  │   ├─ KaggleHarvester (3 comptes, T4 GPU)
-                                  │   └─ ModalHarvester (2 comptes, T4 GPU)
-                                  │
-                                  ├─ Blob store (SHA-256 content-addressed)
-                                  ├─ SQLite (tasks, blobs, sessions)
-                                  ├─ VPN (CyberGhost, yt-dlp fallback)
-                                  └─ Universal fallback (Mode B → Mode A)
+Client ──POST /tasks {type, requirements}──→ Coordinator (Oracle)
+                                                  │
+                                                  ├─ EphemeralHarvester (quota-based)
+                                                  │   ├─ KaggleHarvester (N comptes, T4 GPU)
+                                                  │   └─ ModalHarvester (N comptes, T4 GPU)
+                                                  │
+                                                  ├─ Task matching: _match_capabilities()
+                                                  ├─ Blob store (SHA-256 content-addressed)
+                                                  ├─ SQLite (tasks, blobs, sessions)
+                                                  ├─ WireGuard homelab VPN (SOCKS5 proxy)
+                                                  └─ Reactive fallback (worker DL fail → coordinator DL)
 ```
 
 ## Protocol: Mode B (HTTP pull/submit) — PRIMARY
 
-Workers poll for tasks via HTTP. No persistent connection needed. Works for Kaggle, Modal, and any ephemeral worker.
+Workers poll for tasks via HTTP. No persistent connection needed.
+Works for Kaggle, Modal, and any ephemeral worker.
 
 ```
 Worker                              Coordinator
   │                                     │
-  │── POST /worker/pull ──────────────→│  capabilities + worker_id
+  │── POST /worker/pull ──────────────→│  capabilities + worker_id + X-API-Key
   │←── {task, assignment_token} ───────│  atomic assign from QUEUED pool
   │                                     │
   │   [execute 2-15 min]                │
@@ -34,12 +38,60 @@ Worker                              Coordinator
   │←── {accepted: true} ───────────────│  task → COMPLETED
 ```
 
-The `exit_code` in the submit payload controls the flow:
+The `exit_code` controls the flow:
 - `0` → success → COMPLETED
 - `1` → general error → retry
 - `2` → DOWNLOAD_FAILED → coordinator fallback (download audio) → retry
 
-Mode A (WebSocket push) is retained for browser workers. Toggle via `SCRAPOWER_WS_ASSIGN_ENABLED`.
+Mode A (WebSocket push) is retained for future browser workers.
+Toggle via `SCRAPOWER_WS_ASSIGN_ENABLED`.
+
+## Task Types & Matching
+
+Tasks declare their type and requirements; workers declare their capabilities.
+The coordinator matches them via `_match_capabilities()`.
+
+### Task definition
+
+```json
+POST /tasks {
+  "type": "whisper",                        // whisper | wasm | python | fetch
+  "requirements": {                         // optional
+    "gpu": true,                            // requires GPU
+    "network": "outbound",                  // needs internet access
+    "ram_mb": 4096                          // minimum RAM
+  },
+  "runtime": "python",                      // execution engine (wasm | python)
+  "executable_hash": "...",
+  "input_hash": "..."
+}
+```
+
+### Worker capabilities
+
+```json
+{
+  "task_types": ["whisper", "python", "wasm"],
+  "runtimes": ["wasm", "python"],
+  "resources": {
+    "cpu_cores": 4, "ram_mb": 30720,
+    "gpu": {"supported": true, "type": "cuda", "model": "T4", "vram_mb": 16384}
+  },
+  "network": {"connectivity": "outgoing_only"},
+  "lifecycle": {"mode": "ephemeral", "max_lifetime_sec": 21600}
+}
+```
+
+### Matching logic (`_match_capabilities`)
+
+1. `task.type` in `worker.task_types` (fallback to `worker.runtimes` for old workers)
+2. `task.runtime` in `worker.runtimes`
+3. `task.requirements.gpu` → worker must have GPU
+4. `task.requirements.ram_mb` → worker must have enough (floor: 128 MB)
+5. `task.requirements.network == "outbound"` → worker must have `outgoing_only` connectivity
+6. `worker.lifecycle.remaining` >= `task.deadline_ms`
+
+Used by both Mode B pull handler and Mode A scheduler (same function).
 
 ## Task Lifecycle
 
@@ -51,207 +103,163 @@ PENDING → DOWNLOADING → QUEUED → ASSIGNED → COMPLETED
                                        FAILED (max retries=3)
 ```
 
-- **PENDING**: Task created, input not yet ready
-- **DOWNLOADING**: Coordinator or worker preparing input
-- **QUEUED**: Ready for dispatch
-- **ASSIGNED**: Pulled by a worker, token-protected
-- **COMPLETED**: Worker submitted valid result
-- **TIMEOUT**: Worker didn't respond or returned error → requeue
-- **FAILED**: Max retries exhausted
-
-## Transcription Flow (Universal Mode B → Mode A)
+## Transcription Flow
 
 ```
-1. POST /transcribe {url, model} → task PENDING
-2. Coordinator checks worker capabilities:
-   ├─ Workers with ip_reputation=residential → Mode B (worker DL, 0 CPU Oracle)
-   └─ All workers ip_reputation=datacenter → Mode A (pre-DL, fallback)
-3. Input stored as blob, task → QUEUED
-4. Harvester detects queued task → launches worker (chosen by quota %)
-5. Worker pulls task (POST /worker/pull)
-6. Worker downloads executable + input blobs
-7. Mode B: worker runs yt-dlp via homelab WireGuard VPN
-   → IP résidentielle → YouTube sert le contenu → whisper
-8. Mode A: worker downloads audio blob from coordinator
-   → whisper on GPU → submit → COMPLETED
-9. Client polls GET /results/{task_id} → transcript
+1. POST /transcribe {url, model} → task PENDING (type="whisper")
+2. Input stored as blob {url, cookies_hash}, task → QUEUED
+3. Harvester detects queued task → launches worker (best quota %)
+4. Worker pulls task (POST /worker/pull)
+5. Worker downloads audio via homelab WireGuard SOCKS5 proxy
+   → yt-dlp --proxy socks5://... → whisper GPU → transcript
+6. Worker submits result → COMPLETED
+7. Client polls GET /results/{task_id} → transcript
+
+If download fails (exit_code=2):
+  → Coordinator fallback: download audio via homelab VPN
+  → Store as blob → task requeued with audio_hash
+  → Worker retries with blob (no internet needed)
 ```
 
-### Decision flow (coordinator `_prepare_whisper_input`)
-
-```
-Any active worker has ip_reputation != "datacenter" ?
-  YES → store {url, cookies_hash} (Mode B, worker DL)
-  NO  → download audio via homelab VPN/CyberGhost
-         store {audio_hash} (Mode A, worker reads blob)
-```
-
-This eliminates the wasteful fallback cycle observed in testing: every task going
-through Mode B failure → fallback → Mode A retry. The coordinator knows ahead of time
-whether workers can download directly.
+> **Note**: The coordinator-side download is a TEMPORARY BANDAGE.
+> Target: workers always download themselves via WireGuard.
+> Remove fallback once WG is confirmed stable on all workers.
 
 ## Harvester (EphemeralHarvester)
 
-Unified harvester managing all GPU worker providers via the `WorkerProvider` interface:
+Unified harvester managing all GPU worker providers via `WorkerProvider`.
 
 ```
 EphemeralHarvester
-├── KaggleHarvester   (3 comptes, T4, 30h/sem ×3)
-└── ModalHarvester    (2 comptes, T4, $30/mois ×2)
+├── KaggleHarvester   (N comptes, T4, 30h/sem each)
+└── ModalHarvester    (N comptes, T4, $30/mois each)
 ```
 
-**Priority**: providers are sorted by `remaining_pct()` — the account with the highest remaining quota percentage is used first. No platform is favored. A Kaggle account at 93% runs before a Modal account at 80%.
+**Priority**: providers sorted by `remaining_pct()` — highest first.
+A Kaggle account at 93% runs before a Modal account at 80%.
 
-**Lifecycle**: every 15s, the harvester:
-1. Queries `remaining_pct()` from all providers
-2. Filters out providers with < 5% quota
-3. Sorts by quota % descending
-4. Checks for queued GPU tasks
-5. Launches one worker on the top provider
-6. Runs cleanup on all providers
+**Lifecycle** (every 15s):
+1. Query `remaining_pct()` from all providers
+2. Filter < 5% quota
+3. Sort by quota % descending
+4. Check for queued tasks
+5. Launch one worker on best provider
+6. Run cleanup on all providers
 
-### WorkerProvider ABC
+### WorkerProvider interface
 
-Each provider implements:
-- `remaining_pct()` — quota as percentage (0-100), comparable across platforms
-- `has_quota()` — true if above minimum threshold
-- `launch_worker()` — creates a worker (kernel/sandbox)
-- `cleanup_stale()` — removes dead/orphaned workers
+- `remaining_pct()` — quota % (0-100), cross-platform comparable
+- `has_quota()` — above minimum threshold
+- `launch_worker()` — creates a worker
+- `cleanup_stale()` — removes dead workers
 - `status()` — returns ProviderStatus
 
 ### KaggleHarvester
 
-- Uses `kaggle kernels push` to create notebook workers
-- Quota via `kaggle quota --csv` (GPU hours remaining)
-- Cleanup: deletes COMPLETE/ERROR kernels, kills RUNNING > 1h
+- `kaggle kernels push` to create notebook workers
+- Quota: `kaggle quota --csv` per account (GPU hours)
+- Cleanup: delete COMPLETE/ERROR, kill RUNNING > 1h
 - Round-robin across accounts
 
 ### ModalHarvester
 
-- Uses `modal.Sandbox.create()` with CUDA image (nvidia/cuda:12.4.0)
+- `modal.Sandbox.create()` with CUDA image (nvidia/cuda:12.4.0)
 - GPU T4 ($0.59/h), idle_timeout=2min, max 6h per sandbox
 - Worker script runs Mode B polling loop, auto-exits after idle
-- Round-robin across accounts via `_next_account()`
-- Budget tracking: local counter (seconds × $/sec rate)
+- **Budget tracking**: `modal.billing` API as single source of truth
+  - Queries ALL accounts every 10 min (cached)
+  - Survives coordinator restarts (persisted in `kv_store` DB)
+  - Per-account margin: simple sandbox count (~2% per active sandbox)
 
 ## VPN
 
 ### Homelab WireGuard + SOCKS5 proxy (primary)
 
-The workers route YouTube downloads through a SOCKS5 proxy on Oracle,
-which tunnels traffic to the homelab's residential IP via WireGuard.
+Workers route YouTube downloads through SOCKS5 proxy on Oracle,
+which tunnels to homelab residential IP via WireGuard.
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│  HOMELAB (IP résidentielle 82.67.104.226)                    │
-│  ┌──────────────────────┐                                    │
-│  │ WireGuard server     │← UDP :443 (forwardé box)           │
-│  │ wg-easy Docker       │                                    │
-│  └──────────┬───────────┘                                    │
-└─────────────┼────────────────────────────────────────────────┘
-              │ WireGuard tunnel
-┌─────────────┼────────────────────────────────────────────────┐
-│  ORACLE VM (130.110.242.56)                                   │
-│  ┌──────────┴───────────┐  ┌────────────────────┐            │
-│  │ WireGuard client     │  │ Dante SOCKS5 :1081  │            │
-│  │ wg0: 10.8.0.3        │  │ auth: scrapower/... │            │
-│  │ table 51820 → wg0    │  │ external: wg0       │            │
-│  └──────────────────────┘  └────────┬───────────┘            │
-│                                     │                         │
-│  ┌──────────────────────────────────┴───────────┐            │
-│  │ Coordinator (port 8777)                      │            │
-│  │ WG_PROXY=socks5://...@127.0.0.1:1081        │            │
-│  │ WG_PROXY_PUBLIC=socks5://...@scrapower...    │            │
-│  └──────────────────────────────────────────────┘            │
-└──────────────────────────────────────────────────────────────┘
-              │ TCP :1081 (public)
-    ┌─────────┼─────────┬──────────────┐
-    ▼         ▼         ▼              ▼
-┌───────┐ ┌───────┐ ┌───────┐    ┌───────────┐
-│ Modal │ │ Kaggle│ │Coord. │    │ Browser   │
-│Sandbox│ │Kernel │ │Oracle │    │ (futur)   │
-│       │ │       │ │(fallbk)│   │           │
-└───────┘ └───────┘ └───────┘    └───────────┘
-
-yt-dlp --proxy socks5://scrapower:PASS@scrapower.talos-int.com:1081
-→ Dante sur Oracle → WireGuard → homelab → YouTube (IP résidentielle)
+HOMELAB (residential IP)
+  │ WireGuard server (UDP :443)
+  └── WireGuard tunnel ──┐
+                          ▼
+ORACLE VM
+  ├── WireGuard client (wg0, table 51820)
+  ├── Dante SOCKS5 :1081 (auth, external: wg0)
+  │     ↑
+  │     │ yt-dlp --proxy socks5://scrapower:PASS@scrapower.talos-int.com:1081
+  │     │
+  └── Coordinator (host network, port 8777)
 ```
 
-**Critical fix**: WireGuard's `table 51820` routes ALL unmarked traffic through
-wg0. Dante's SYN-ACK replies to external clients were being sucked into the
-tunnel instead of going back through eth0. The fix marks SOCKS5 reply packets:
+**Critical iptables fix**: marks SOCKS5 reply packets to avoid routing loops:
 
 ```sh
 iptables -t mangle -A OUTPUT -p tcp --sport 1081 -j MARK --set-mark 0xca6c
 ```
 
-This mark tells the routing policy to use the main table (via eth0) instead
-of table 51820 (via wg0). Applied in `deploy/vpn-wg/entrypoint.sh`.
-
 ### CyberGhost (fallback)
 
-Docker container OpenVPN + SOCKS5. Utilisé uniquement si le homelab est down ou
-pour le coordinateur Oracle en secours.
-
-YouTube blocks datacenter IPs. The VPN provides a clean exit IP. Only YouTube
-requests are routed through the proxy: `yt-dlp --proxy socks5://127.0.0.1:1080`.
+Docker OpenVPN + SOCKS5. Used only if homelab is down.
 
 ## Blob Store
 
-Content-addressed by SHA-256. Immutable. Reference-counted.
+SHA-256 content-addressed, immutable, reference-counted.
 
 ```
-PUT /blobs  →  hash = SHA-256(data)
-GET /blobs/{hash} → data
+PUT  /blobs        → hash = SHA-256(data)
+GET  /blobs/{hash} → data
 ```
 
-Ref_count is incremented when a task references a blob, decremented on cleanup. GC only deletes blobs with ref_count=0.
+Ref_count incremented on task reference, decremented on cleanup.
+GC deletes blobs at ref_count=0.
 
 ## Scheduler
 
-- **Mode B (HTTP pull)**: Workers pull tasks. The pull handler does atomic assign.
-- **Mode A (WS push)**: Scheduler pushes tasks to connected WS workers (disabled by default).
-- **requeue_stale()**: ASSIGNED tasks past their deadline are requeued.
-- **cleanup_expired()**: Old COMPLETED/FAILED tasks are deleted, blob refs released.
+- **Mode B (HTTP pull)**: Workers pull tasks. Pull handler does atomic assign + `_match_capabilities()`.
+- **Mode A (WS push)**: Scheduler pushes tasks to connected WS workers. Uses same `_match_capabilities()`.
+- **requeue_stale()**: ASSIGNED tasks past 90s timeout are requeued. All worker signals (pull, heartbeat, submit) reset `assigned_at`.
+- **cleanup_expired()**: COMPLETED/FAILED tasks deleted after 24h, blob refs released.
 
 ## Workers
 
-### Active worker types
+### Active
 
 | Type | GPU | RAM | Internet | Protocol |
 |------|-----|-----|----------|----------|
-| Kaggle (notebook) | T4 ×1 | 30 GB | Yes | Mode B |
-| Modal (sandbox) | T4 ×1 | 30 GB | Yes | Mode B |
-| HF Spaces | None | 16 GB | Yes | Mode A (WS) |
-| Browser (WASM) | WebGPU | Variable | Limited | Mode A (WS) |
+| Kaggle (notebook) | T4 | 30 GB | Via WG proxy | Mode B |
+| Modal (sandbox) | T4 | 30 GB | Via WG proxy | Mode B |
 
-### Capabilities
+### Planned (future)
 
-Workers declare their capabilities on connection/pull:
-```json
-{
-  "runtimes": ["wasm", "python"],
-  "resources": {
-    "cpu_cores": 4, "ram_mb": 30720,
-    "gpu": {"supported": true, "type": "cuda", "model": "T4", "vram_mb": 16384}
-  },
-  "lifecycle": {"mode": "ephemeral", "max_lifetime_sec": 21600},
-  "network": {
-    "connectivity": "outgoing_only",
-    "ip_reputation": "residential"  // "residential" | "vpn" | "datacenter"
-  }
-}
-```
+| Type | GPU | RAM | Protocol |
+|------|-----|-----|----------|
+| Browser (WASM/WebGPU) | WebGPU | Variable | Mode A (WS) |
+| HF Spaces (CPU) | None | 16 GB | Mode A (WS) |
+| Cloud Run / Lambda | None | Variable | Mode B |
 
-**`ip_reputation`** is a generic, task-agnostic signal. It tells the coordinator
-whether outbound requests from this worker are likely to be blocked by anti-bot
-systems (YouTube, Cloudflare, etc.).
+## Endpoints
 
-| Value | Source IP | YouTube | Web scraping | Use case |
-|-------|-----------|---------|-------------|----------|
-| `residential` | Homelab VPN | ✅ Passe | ✅ Passe | Mode B (worker DL) |
-| `vpn` | CyberGhost | ⚠️ Variable | ⚠️ Variable | Fallback |
-| `datacenter` | Modal, Kaggle | ❌ Bloqué | ❌ Bloqué | Mode A (pré-DL) |
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/tasks` | Submit a typed task |
+| POST | `/transcribe` | Sugar: whisper task from YouTube URL |
+| GET | `/tasks/{id}` | Task status + error + logs_url |
+| GET | `/tasks/{id}/logs` | Worker stderr log |
+| GET | `/results/{id}` | Task output blob |
+| PUT | `/blobs` | Upload blob (auth: API key or assignment_token) |
+| GET | `/blobs/{hash}` | Download blob |
+| POST | `/worker/pull` | Mode B: worker polls for task |
+| POST | `/worker/submit` | Mode B: worker returns result |
+| POST | `/worker/heartbeat` | Worker liveness + logs during execution |
+| WS | `/worker/ws` | Mode A: browser connection |
+| GET | `/stats` | Infrastructure capacity |
+| GET | `/health` | Health check |
 
-This replaces the earlier task-specific `can_download_youtube` — it applies to
-any future task type (scraping, API calls, dataset downloads).
+## Security
+
+- **API key**: `X-API-Key` header on client endpoints
+- **Worker auth**: same header on `/worker/pull` (dual-mode: auth 30/min, anon 6/min)
+- **`assignment_token`**: anti-race-condition on task submit
+- **TLS**: Caddy reverse proxy, Let's Encrypt
+- **Rate limiting**: per-worker_id (auth) or per-IP (anon), sliding window
