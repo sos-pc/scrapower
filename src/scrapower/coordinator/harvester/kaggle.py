@@ -92,6 +92,7 @@ class KaggleHarvester(WorkerProvider):
             return
         self._last_cleanup = now
 
+        cleaned = 0
         for account in self._accounts:
             try:
                 env = os.environ.copy()
@@ -163,8 +164,13 @@ class KaggleHarvester(WorkerProvider):
                         await dproc.communicate()
                         if dproc.returncode == 0:
                             log.info("harvester cleanup: deleted %s", ref)
+                            cleaned += 1
             except Exception:
                 pass
+        if cleaned:
+            log.info("harvester cleanup: deleted %d kernels", cleaned)
+        else:
+            log.debug("harvester cleanup: nothing to clean")
 
     async def _start_kernel(self):
         account = self._next_account()

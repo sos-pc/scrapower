@@ -215,6 +215,7 @@ class ModalHarvester(WorkerProvider):
         """
         self._save_state()
         if not self._sandbox_ids:
+            log.debug("modal cleanup: 0 sandboxes tracked")
             return
         try:
             import modal
@@ -252,6 +253,8 @@ class ModalHarvester(WorkerProvider):
                     removed,
                     len(self._sandbox_ids),
                 )
+            else:
+                log.debug("modal cleanup: 0 terminated")
             self._save_state()
         except Exception:
             pass  # Modal API might not be available; will retry next tick
@@ -304,8 +307,8 @@ class ModalHarvester(WorkerProvider):
         image = (
             modal.Image.from_registry("nvidia/cuda:12.4.0-runtime-ubuntu22.04", add_python="3.12")
             .apt_install("ffmpeg")
-            .pip_install("aiohttp", "faster-whisper", "yt-dlp", "yt-dlp-ejs")
-            .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
+            .pip_install("aiohttp", "faster-whisper", "yt-dlp")
+            .env({"HF_XET_HIGH_PERFORMANCE": "1"})
         )
 
         # Create sandbox with worker script as entrypoint
