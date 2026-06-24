@@ -2,9 +2,10 @@
 
 Gère le cycle de vie des workers éphémères (Kaggle, Modal, etc.) :
 1. Interroge chaque provider pour son quota
-2. Trie par capacité restante décroissante
-3. Lance un worker sur le provider le moins entamé
-4. Nettoie les workers morts
+2. Compte les workers actifs vs tâches en attente
+3. Ne lance que si nécessaire (évite les "launch failed" fantômes)
+4. Trie par capacité restante décroissante
+5. Nettoie les workers morts
 """
 
 from __future__ import annotations
@@ -26,7 +27,6 @@ class EphemeralHarvester:
     def __init__(self, providers: list[WorkerProvider]):
         self._providers = providers
         self._running = False
-        self._last_launch: float = 0
 
     async def run(self):
         """Boucle principale. Tourne indéfiniment."""
@@ -46,16 +46,23 @@ class EphemeralHarvester:
     async def _tick(self):
         # 1. Récupérer les statuts de tous les providers
         candidates: list[tuple[float, WorkerProvider]] = []
+        total_active = 0
+        status_lines: list[str] = []
+
         for p in self._providers:
             try:
                 remaining = await p.remaining_pct()
+                status = await p.status()
+                total_active += status.workers_active
+                status_lines.append(
+                    f"{status.name}({remaining:.0f}%, {status.workers_active} active)"
+                )
                 if remaining >= MIN_QUOTA_PCT:
                     candidates.append((remaining, p))
             except Exception:
                 log.exception("harvester: failed to query %s", type(p).__name__)
 
-        # Cleanup ALWAYS runs (even if no tasks queued — sandboxes terminate
-        # asynchronously and must be tracked regardless of queue depth)
+        # Cleanup ALWAYS runs
         for p in self._providers:
             try:
                 await p.cleanup_stale()
@@ -73,8 +80,29 @@ class EphemeralHarvester:
         if queued == 0:
             return
 
-        # 4. Lancer sur le provider le moins entamé (avec fallback)
+        # 4. Smart launch: ne lancer que si on a besoin de plus de workers
+        if total_active >= queued:
+            log.info(
+                "harvester: %d active workers for %d tasks (%s) — skipping launch",
+                total_active,
+                queued,
+                ", ".join(status_lines),
+            )
+            return
+
+        needed = queued - total_active
+        log.info(
+            "harvester: %d tasks queued, %d active (%s), need %d more — trying %s",
+            queued,
+            total_active,
+            ", ".join(status_lines),
+            needed,
+            type(candidates[0][1]).__name__,
+        )
+
+        # 5. Lancer sur le meilleur provider (le provider logue son propre résultat)
         launched = False
+        skipped = 0
         for pct, provider in candidates:
             try:
                 ok = await provider.launch_worker()
@@ -86,13 +114,19 @@ class EphemeralHarvester:
                     )
                     launched = True
                     break
-                log.warning("harvester: %s launch failed, trying next...", type(provider).__name__)
+                skipped += 1
             except Exception:
                 log.exception(
                     "harvester: %s launch crashed, trying next...", type(provider).__name__
                 )
+
         if not launched:
-            log.warning("harvester: all %d provider(s) failed to launch", len(candidates))
+            log.info(
+                "harvester: all %d provider(s) declined launch (%d tasks waiting, %d workers active)",
+                len(candidates),
+                queued,
+                total_active,
+            )
 
     async def _count_queued(self) -> int:
         """Compter les tâches en attente dans la DB."""

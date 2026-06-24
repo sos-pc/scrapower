@@ -36,7 +36,7 @@ class KaggleHarvester(WorkerProvider):
         self._notebook_template = notebook_template or self._find_notebook()
         self._running = False
         self._round = 0
-        self._last_start: float = 0
+        self._last_start: dict[str, float] = {}  # token_id -> timestamp
         self._current_cooldown: float = COOLDOWN_SEC
         self._last_cleanup: float = 0
         self._kernel_refs: list[str] = []  # kernel IDs we've launched
@@ -283,19 +283,28 @@ class KaggleHarvester(WorkerProvider):
         return await self.remaining_pct() > 0.3  # 0.1h / 30h ≈ 0.3%
 
     async def launch_worker(self) -> bool:
-        """Lance un kernel Kaggle. Avec rate-limit et max concurrent."""
-        if time.time() - self._last_start < COOLDOWN_SEC:
-            log.debug(
-                "kaggle cooldown active (%.0fs remaining)",
-                COOLDOWN_SEC - (time.time() - self._last_start),
+        """Lance un kernel Kaggle. Avec rate-limit per-compte et max concurrent."""
+        # Peek at next account to check per-account cooldown
+        if self._accounts:
+            next_idx = self._round % len(self._accounts)
+            next_tid = self._accounts[next_idx].get("token_id", "default")
+            next_name = self._accounts[next_idx].get("username", "?")
+        else:
+            return False
+        last = self._last_start.get(next_tid, 0)
+        if time.time() - last < COOLDOWN_SEC:
+            log.info(
+                "kaggle cooldown for %s (%.0fs remaining)",
+                next_name,
+                COOLDOWN_SEC - (time.time() - last),
             )
             return False
         if len(self._kernel_refs) >= 3:
-            log.debug("kaggle max concurrent reached (%d/3)", len(self._kernel_refs))
+            log.info("kaggle max concurrent reached (%d/3)", len(self._kernel_refs))
             return False
         ok = await self._start_kernel()
         if ok:
-            self._last_start = time.time()
+            self._last_start[next_tid] = time.time()
         return ok
 
     async def cleanup_stale(self) -> None:

@@ -43,7 +43,7 @@ class ModalHarvester(WorkerProvider):
         self._api_key = api_key
         self._gpu_type = gpu_type
         self._budget_monthly = budget_monthly_usd
-        self._last_start: float = 0
+        self._last_start: dict[str, float] = {}  # token_id -> timestamp
         self._round = 0
         self._sandbox_ids: list[str] = []
         self._sandbox_tokens: dict[str, tuple[str, str]] = {}  # sb_id -> (token_id, token_secret)
@@ -167,16 +167,23 @@ class ModalHarvester(WorkerProvider):
         return await self.remaining_pct() > 1.0
 
     async def launch_worker(self) -> bool:
-        """Crée un Sandbox Modal avec GPU T4."""
-        # Rate-limit + max concurrent
-        if time.time() - self._last_start < COOLDOWN_SEC:
-            log.debug(
-                "modal cooldown active (%.0fs remaining)",
-                COOLDOWN_SEC - (time.time() - self._last_start),
+        """Create a Modal Sandbox with GPU T4. Per-account cooldown."""
+        # Peek at next account to check per-account cooldown
+        if self._accounts:
+            next_idx = self._round % len(self._accounts)
+            next_tid = self._accounts[next_idx].get("token_id", "default")
+        else:
+            return False
+        last = self._last_start.get(next_tid, 0)
+        if time.time() - last < COOLDOWN_SEC:
+            log.info(
+                "modal cooldown for %s (%.0fs remaining)",
+                next_tid[:12],
+                COOLDOWN_SEC - (time.time() - last),
             )
             return False
         if len(self._sandbox_ids) >= MAX_CONCURRENT:
-            log.debug(
+            log.info(
                 "modal max concurrent reached (%d/%d)", len(self._sandbox_ids), MAX_CONCURRENT
             )
             return False
@@ -184,7 +191,7 @@ class ModalHarvester(WorkerProvider):
         try:
             worker_path = self._find_worker_script()
             sb = await self._create_sandbox(worker_path)
-            self._last_start = time.time()
+            self._last_start[next_tid] = time.time()
             self._sandbox_ids.append(sb.object_id)
             # Track which account's token created this sandbox (for cross-account cleanup)
             account = self._accounts[(self._round - 1) % len(self._accounts)]
@@ -197,6 +204,7 @@ class ModalHarvester(WorkerProvider):
         except Exception as e:
             log.error("modal sandbox creation failed: %s", str(e)[:200])
             return False
+
 
     async def cleanup_stale(self) -> None:
         """Remove terminated sandboxes from local tracking list.
