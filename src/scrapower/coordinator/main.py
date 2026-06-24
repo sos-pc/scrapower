@@ -150,12 +150,6 @@ async def lifespan(app: FastAPI):
     # Task manager and scheduler
     task_manager = TaskManager(db)
     app.state.task_manager = task_manager
-    # Reputation service (tracks worker trust based on challenge results)
-    from .reputation import ReputationService
-
-    reputation_service = ReputationService(db)
-    router_mod.reputation_service = reputation_service  # type: ignore[assignment]
-
     task_service = TaskService(task_manager, db, config)
     app.state.task_service = task_service
     router_mod.task_service = task_service  # type: ignore[assignment]
@@ -174,7 +168,6 @@ async def lifespan(app: FastAPI):
         tick_sec=config.scheduler_tick_sec,
         enforce_segregation=config.enforce_segregation,
         verification_mode=config.default_verification_mode,
-        reputation_service=reputation_service,
         ws_assign_enabled=config.ws_assign_enabled,
     )
     sched_task = asyncio.create_task(scheduler.run())

@@ -12,7 +12,6 @@
 |---|----------|---------|----------|
 | A5 | Basse | `yt-dlp-ejs` encore dans Dockerfile | `Dockerfile` L27 |
 | A6 | Basse | Deno installé pour rien dans Dockerfile | `Dockerfile` L20-21 |
-| A7 | Basse | `reputation.py` 100 lignes utilisées seulement par scheduler Mode A | `reputation.py` |
 
 ## 🟢 Watchlist
 

@@ -29,7 +29,6 @@ async def handle_ws(
     ws: WebSocket,
     sessions: SessionManager,
     task_service=None,
-    reputation_service=None,
 ):
     """Handle a single WebSocket connection from a worker."""
     await ws.accept()
@@ -134,13 +133,6 @@ async def handle_ws(
                     auth_level=_auth_level(msg),
                 )
 
-                # Register worker in reputation system (lazy upsert)
-                if reputation_service:
-                    try:
-                        await reputation_service._upsert_worker(session.worker_id)
-                    except Exception:
-                        pass
-
                 log.info(
                     "worker connected: %s (session=%s auth=%d)",
                     session.worker_id,
@@ -212,25 +204,6 @@ async def handle_ws(
                         resolved = await task_service._tm.resolve_challenge(
                             msg["task_id"], token, output_hash
                         )
-
-                        # Update worker reputation based on challenge result
-                        if reputation_service:
-                            try:
-                                cursor = await task_service._tm._db.execute(
-                                    "SELECT status FROM challenges WHERE task_id = ?"
-                                    " AND status != 'pending' ORDER BY id DESC LIMIT 1",
-                                    (msg["task_id"],),
-                                )
-                                row = await cursor.fetchone()
-                                if row:
-                                    if row["status"] == "matched":
-                                        await reputation_service.record_matched(session.worker_id)
-                                    elif row["status"] == "mismatched":
-                                        await reputation_service.record_mismatched(
-                                            session.worker_id
-                                        )
-                            except Exception:
-                                pass
 
                         # Touch assigned_at — result submission is a liveness signal
                         await _touch_task(task_service, msg["task_id"], prefix="ws-result")

@@ -1,29 +1,18 @@
-"""Scheduler — matches queued tasks with compatible workers.
+"""Scheduler -- matches queued tasks with compatible workers.
 
 Runs as a background loop. Pushes task_assign directly to worker WebSockets.
-Supports challenge verification: double-executes random tasks to detect lies.
-Challenge rate is now adaptive: new/untrusted workers get higher rates,
-trusted workers get minimum sampling.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import random
-from typing import TYPE_CHECKING
 
 from .domain import SchedulingPolicy, TaskService
 from .protocol import TaskAssign, TaskPayload, to_dict
 from .worker_gateway.session import SessionManager
 
-if TYPE_CHECKING:
-    from .reputation import ReputationService
-
 log = logging.getLogger(__name__)
-
-# Default challenge rate when reputation service is unavailable
-DEFAULT_CHALLENGE_RATE = 0.10
 
 
 class Scheduler:
@@ -36,7 +25,6 @@ class Scheduler:
         tick_sec: float = 5.0,
         enforce_segregation: bool = False,
         verification_mode: str = "trust",
-        reputation_service: "ReputationService | None" = None,
         ws_assign_enabled: bool = True,
     ):
         self._tasks = task_service
@@ -44,7 +32,6 @@ class Scheduler:
         self._tick = tick_sec
         self._verification = verification_mode
         self._policy = SchedulingPolicy(enforce_segregation=enforce_segregation)
-        self._reputation = reputation_service
         self._ws_assign = ws_assign_enabled
         self._running = False
 
@@ -73,9 +60,6 @@ class Scheduler:
         if not workers:
             return
 
-        # Pre-load reputation scores for all active workers
-        reputations: dict[str, float] = {}
-
         log.info(
             "active workers: %d, queued tasks: %d",
             len(workers),
@@ -86,34 +70,16 @@ class Scheduler:
             if task.is_terminal:
                 continue
 
-            compatible = self._policy.match(task, workers, reputations)
+            compatible = self._policy.match(task, workers)
             if not compatible:
                 continue
 
-            # Best worker: external first, idle first, high reputation first.
+            # Best worker: external first, idle first.
             worker = compatible[0]
             if worker.worker_id == "_embedded":
-                pass  # TEMP: allow for debugging � only for trusted/system tasks — only for trusted/system tasks
+                pass  # TEMP: allow for debugging
 
-            # Determine if this task should be challenged (double-executed)
-            should_challenge = False
-            challenge_probability = DEFAULT_CHALLENGE_RATE
-
-            if self._verification == "challenge" and len(compatible) >= 2:
-                if self._reputation:
-                    try:
-                        challenge_probability = await self._reputation.challenge_rate(
-                            worker.worker_id
-                        )
-                    except Exception:
-                        challenge_probability = DEFAULT_CHALLENGE_RATE
-                should_challenge = random.random() < challenge_probability
-
-            if should_challenge:
-                worker_b = compatible[1]
-                await self._assign_challenged(task, worker, worker_b)
-            else:
-                await self._assign_single(task, worker)
+            await self._assign_single(task, worker)
 
     async def _assign_single(self, task, worker):
         """Assign a task to a single worker (normal flow)."""

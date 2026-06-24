@@ -349,26 +349,16 @@ class SchedulingPolicy:
         self,
         task: Task,
         workers: list[WorkerSession],
-        reputations: dict[str, float] | None = None,
     ) -> list[WorkerSession]:
         """Return compatible workers sorted by preference (best first).
 
         Args:
             task: The task to match.
             workers: Available workers.
-            reputations: Optional {worker_id: score} dict (0.0=blacklisted, 1.0=trusted).
-                         Workers with score <= 0.0 are excluded.
         """
-        if reputations is None:
-            reputations = {}
-
         compatible = []
         for w in workers:
             if not w.capabilities:
-                continue
-
-            # Blacklist check (reputation score <= 0 means blacklisted)
-            if reputations.get(w.worker_id, 0.5) <= 0.0:
                 continue
 
             # Segregation rule
@@ -380,7 +370,7 @@ class SchedulingPolicy:
 
             compatible.append(w)
 
-        # Shuffle for fairness, then sort by load & reputation (idle + trusted first)
+        # Shuffle for fairness, then sort by load (idle first)
         import random
 
         random.shuffle(compatible)
@@ -388,7 +378,6 @@ class SchedulingPolicy:
             key=lambda w: (
                 1 if w.worker_id == "_embedded" else 0,
                 w.tasks_in_progress,
-                -reputations.get(w.worker_id, 0.5),  # higher reputation = lower sort key
             )
         )
         return compatible

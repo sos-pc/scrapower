@@ -51,7 +51,6 @@ CREATE TABLE IF NOT EXISTS workers (
     id               TEXT PRIMARY KEY,
     identity_key     TEXT,
     auth_level       INTEGER NOT NULL DEFAULT 0,
-    reputation_score REAL NOT NULL DEFAULT 0.0,
     capabilities_json TEXT,
     first_seen       TEXT NOT NULL DEFAULT (datetime('now')),
     last_seen        TEXT NOT NULL DEFAULT (datetime('now'))
@@ -122,7 +121,7 @@ async def _migrate(db: aiosqlite.Connection) -> None:
         "ALTER TABLE tasks ADD COLUMN error TEXT DEFAULT ''",
         # Add task_type and requirements_json for matching
         "ALTER TABLE tasks ADD COLUMN task_type TEXT DEFAULT 'wasm'",
-        "ALTER TABLE tasks ADD COLUMN requirements_json TEXT DEFAULT '{}'"
+        "ALTER TABLE tasks ADD COLUMN requirements_json TEXT DEFAULT '{}'",
     ]
     for sql in migrations:
         try:
