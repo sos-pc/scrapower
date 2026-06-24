@@ -210,7 +210,7 @@ async def handle_ws(
                         if stderr:
                             await _save_worker_logs_ws(msg["task_id"], stderr, prefix="ws-result")
 
-                            await task_service.complete(msg["task_id"], output_hash, token)
+                        await task_service.complete(msg["task_id"], output_hash, token)
 
             elif msg_type == "heartbeat":
                 # Rate limit: max 1 heartbeat per 2 seconds
