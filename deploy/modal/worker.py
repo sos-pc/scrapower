@@ -63,6 +63,7 @@ print(
 
 # -- Capabilities ----------------------------------------------------
 CAPABILITIES = {
+    "task_types": ["whisper", "python", "wasm"],
     "runtimes": ["wasm", "python"],
     "resources": {
         "cpu_cores": CPU_CORES,
