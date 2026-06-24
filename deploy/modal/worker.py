@@ -19,7 +19,9 @@ from pathlib import Path
 import aiohttp
 
 # -- Config from environment -----------------------------------------
-COORDINATOR_URL = os.environ.get("COORDINATOR_URL", "https://scrapower.talos-int.com")
+COORDINATOR_URL = os.environ.get("COORDINATOR_URL")
+if not COORDINATOR_URL:
+    raise RuntimeError("COORDINATOR_URL environment variable is required")
 API_KEY = os.environ.get("SCRAPOWER_API_KEY", "")
 WORKER_ID = f"modal-{uuid.uuid4().hex[:8]}"
 

@@ -28,12 +28,12 @@ import subprocess, sys, os
 proxy = "{proxy}"
 
 print("=== Test 1: resolve DNS ===", flush=True)
-r = subprocess.run(["python3", "-c", "import socket; print(socket.gethostbyname('scrapower.talos-int.com'))"], capture_output=True, text=True, timeout=10)
+r = subprocess.run(["python3", "-c", "import socket; print(socket.gethostbyname('your-coordinator.example.com'))"], capture_output=True, text=True, timeout=10)
 print(f"DNS: {{r.stdout.strip()}}", flush=True)
 
 print("=== Test 2: TCP connect port 1081 ===", flush=True)
 r = subprocess.run(["python3", "-c",
-    "import socket; s=socket.socket(); s.settimeout(5); s.connect(('scrapower.talos-int.com',1081)); print('OPEN'); s.close()"
+    "import socket; s=socket.socket(); s.settimeout(5); s.connect(('your-coordinator.example.com',1081)); print('OPEN'); s.close()"
 ], capture_output=True, text=True, timeout=10)
 print(f"TCP 1081: {{r.stdout.strip()}} err={{r.stderr.strip()[:200]}}", flush=True)
 

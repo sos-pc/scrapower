@@ -116,10 +116,7 @@ async def lifespan(app: FastAPI):
     # ── OAuth configuration ──────────────────────────────────────
     oauth_client_id = os.environ.get("SCRAPOWER_GITHUB_CLIENT_ID", "")
     oauth_client_secret = os.environ.get("SCRAPOWER_GITHUB_CLIENT_SECRET", "")
-    coordinator_url = os.environ.get(
-        "SCRAPOWER_COORDINATOR_URL",
-        "https://scrapower.talos-int.com",
-    )
+    coordinator_url = config.coordinator_url
     if oauth_client_id and oauth_client_secret:
         from .auth_oauth import configure_oauth
 
@@ -143,6 +140,7 @@ async def lifespan(app: FastAPI):
     import scrapower.coordinator.worker_gateway.router as router_mod
 
     router_mod.session_manager = manager
+
     # Bridge: zombie sessions -> immediate task requeue
     async def _on_zombie(session):
         await task_service.requeue_for_worker(session.worker_id)
@@ -201,7 +199,7 @@ async def lifespan(app: FastAPI):
     from .harvester.ephemeral import EphemeralHarvester
 
     providers: list[WorkerProvider] = []
-    coordinator_url = os.environ.get("SCRAPOWER_COORDINATOR_URL", "https://scrapower.talos-int.com")
+    coordinator_url = config.coordinator_url
     api_key = os.environ.get("SCRAPOWER_API_KEY", "")
 
     # -- Kaggle provider(s) --

@@ -87,7 +87,7 @@ haute capacité » de tout l'écosystème gratuit.
 |---------------|---------------|----------|
 | Dockerfile du coordinateur (multi-stage) | Un `Dockerfile` HF Spaces avec le worker natif | `deploy/hf-spaces/Dockerfile` |
 | `worker/client.py` | Un point d'entrée HF qui lance le worker | `deploy/hf-spaces/app.py` |
-| Connection WS vers `wss://scrapower.talos-int.com/worker/ws` | Rien — c'est une config | `README.md` HF Spaces |
+| Connection WS vers `wss://your-coordinator.example.com/worker/ws` | Rien — c'est une config | `README.md` HF Spaces |
 
 **Particularité HF Spaces :** HF fournit une URL publique. On peut exposer
 un worker WebSocket MAIS HF tue les processus inactifs. Il faut soit un

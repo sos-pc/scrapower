@@ -20,11 +20,11 @@ docker compose up -d --build
 
 Transcrire une vidéo :
 ```bash
-curl -X POST https://scrapower.talos-int.com/transcribe \
+curl -X POST $COORDINATOR_URL/transcribe \
   -H "X-API-Key: $API_KEY" \
   -d '{"url":"https://youtu.be/...","model":"turbo","format":"txt"}'
 
-curl https://scrapower.talos-int.com/results/{task_id} -H "X-API-Key: $API_KEY"
+curl $COORDINATOR_URL/results/{task_id} -H "X-API-Key: $API_KEY"
 ```
 
 ## Architecture

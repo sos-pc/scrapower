@@ -32,7 +32,7 @@ class ModalHarvester(WorkerProvider):
     def __init__(
         self,
         accounts: list[dict],
-        coordinator_url: str = "https://scrapower.talos-int.com",
+        coordinator_url: str = "",
         api_key: str = "",
         budget_monthly_usd: float = BUDGET_MONTHLY_USD,
         gpu_type: str = GPU_TYPE,
@@ -342,7 +342,7 @@ class ModalHarvester(WorkerProvider):
                         + os.environ.get("SCRAPOWER_WG_PASS", "")
                         + "@"
                         + os.environ.get(
-                            "SCRAPOWER_COORDINATOR_URL", "scrapower.talos-int.com"
+                            "SCRAPOWER_COORDINATOR_URL", "localhost"
                         ).replace("https://", "")
                         + ":1081",
                     }

@@ -40,7 +40,7 @@ on:
       coordinator_url:
         description: 'Coordinator URL'
         required: true
-        default: 'https://scrapower.talos-int.com'
+        default: 'https://your-coordinator.example.com'
       worker_id:
         description: 'Worker ID'
         required: false

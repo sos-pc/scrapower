@@ -6,7 +6,6 @@ on:
       coordinator_url:
         description: "Coordinator URL (HTTPS)"
         required: true
-        default: "https://scrapower.talos-int.com"
       worker_id:
         description: "Worker ID"
         required: false

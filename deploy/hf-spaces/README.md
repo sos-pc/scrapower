@@ -18,8 +18,8 @@ Dans les settings du Space, ajouter :
 
 | Variable | Valeur | Obligatoire |
 |----------|--------|-------------|
-| `COORDINATOR_URL` | `wss://scrapower.talos-int.com/worker/ws` | Oui |
-| `SCRAPOWER_API_KEY` | `sp-secure-key-2026` | Non (pour auth_level=1) |
+| `COORDINATOR_URL` | `wss://your-coordinator.example.com/worker/ws` | Oui |
+| `SCRAPOWER_API_KEY` | `your-api-key` | Non (pour auth_level=1) |
 | `WORKER_ID` | `hf-montpellier-01` | Non (auto-généré) |
 
 ### 3. Pusher les fichiers
@@ -39,7 +39,7 @@ Le Space build automatiquement et le worker se connecte au coordinateur.
 
 ```bash
 # Sur le coordinateur, vérifier que le worker est connecté
-curl https://scrapower.talos-int.com/stats | jq '.workers'
+curl https://your-coordinator.example.com/stats | jq '.workers'
 ```
 
 Le worker apparaît avec `ram_mb: 16384` et `availability_profile: "always_on"`.

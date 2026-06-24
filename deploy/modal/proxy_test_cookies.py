@@ -1,4 +1,5 @@
 import os
+
 """Modal proxy test WITH cookies."""
 
 import os
@@ -9,7 +10,7 @@ proxy = os.environ.get("WG_PROXY", "")
 # fetch cookies from coordinator
 import urllib.request
 
-coordinator = os.environ.get("COORDINATOR_URL", "https://scrapower.talos-int.com")
+coordinator = os.environ["COORDINATOR_URL"]
 cookies_hash = os.environ.get("COOKIES_HASH", "")
 
 print(

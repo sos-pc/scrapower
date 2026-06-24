@@ -1,6 +1,7 @@
 .PHONY: deploy test lint typecheck build docker-build docker-up docker-down docker-logs
 
 # ── Déploiement production ─────────────────────────────────────
+COORDINATOR_URL ?= http://localhost:8777
 SSH_KEY := ~/.ssh/clouscard-ghost.key
 SERVER  := ubuntu@130.110.242.56
 
@@ -12,9 +13,9 @@ deploy: build docker-build
 	scp -r -i $(SSH_KEY) worker-browser/ $(SERVER):~/scrapower/
 	ssh -i $(SSH_KEY) $(SERVER) "cd ~/scrapower && docker compose down 2>/dev/null; docker compose up -d --build"
 	@sleep 5
-	@curl -sk https://scrapower.talos-int.com/health
+	@curl -sS $(COORDINATOR_URL)/health
 	@echo ""
-	@echo "✓ Déployé — https://scrapower.talos-int.com"
+	@echo "✓ Déployé — $(COORDINATOR_URL)"
 
 # ── Qualité ────────────────────────────────────────────────────
 test:

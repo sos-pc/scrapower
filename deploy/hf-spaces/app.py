@@ -5,7 +5,7 @@ declares 16 GB RAM + CPU capabilities, and executes WASM tasks via wasmtime.
 
 Usage:
     Set env vars:
-        COORDINATOR_URL  — wss://scrapower.talos-int.com/worker/ws
+        COORDINATOR_URL  — required, e.g. wss://your-coordinator.example.com/worker/ws
         SCRAPOWER_API_KEY — optional, for auth_level >= 1
         WORKER_ID         — optional, defaults to "hf-{random}"
 """
@@ -24,7 +24,9 @@ sys.path.insert(0, "/app")
 from worker.client import WorkerClient
 from worker.runtimes.wasm import WasmRuntime
 
-COORDINATOR_URL = os.environ.get("COORDINATOR_URL", "wss://scrapower.talos-int.com/worker/ws")
+COORDINATOR_URL = os.environ.get("COORDINATOR_URL")
+if not COORDINATOR_URL:
+    raise RuntimeError("COORDINATOR_URL environment variable is required")
 API_KEY = os.environ.get("SCRAPOWER_API_KEY", "")
 WORKER_ID = os.environ.get("WORKER_ID", f"hf-{os.urandom(4).hex()}")
 

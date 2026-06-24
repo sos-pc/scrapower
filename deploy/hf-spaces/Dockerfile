@@ -17,7 +17,7 @@ COPY app.py /app/app.py
 
 EXPOSE 7860
 
-ENV COORDINATOR_URL="wss://scrapower.talos-int.com/worker/ws"
+# COORDINATOR_URL must be set via HF Spaces env vars (see README)
 ENV SCRAPOWER_API_KEY=""
 
 CMD ["python", "/app/app.py"]

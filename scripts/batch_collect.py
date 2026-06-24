@@ -18,8 +18,10 @@ import time
 import urllib.request
 from pathlib import Path
 
-COORDINATOR = os.environ.get("SCRAPOWER_COORDINATOR_URL", "https://scrapower.talos-int.com")
-API_KEY = os.environ.get("SCRAPOWER_API_KEY", "sp-secure-key-2026")
+COORDINATOR = os.environ.get("SCRAPOWER_COORDINATOR_URL")
+if not COORDINATOR:
+    raise RuntimeError("SCRAPOWER_COORDINATOR_URL environment variable is required")
+API_KEY = os.environ.get("SCRAPOWER_API_KEY", "")
 
 
 def poll_task(task_id: str) -> dict | None:

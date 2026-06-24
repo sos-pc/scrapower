@@ -93,9 +93,11 @@ async def transcribe(request: Request):
     db = request.app.state.db
     config = request.app.state.config
 
+    coordinator_url = config.coordinator_url
+
     async def _prepare():
         return await _prepare_whisper_input(
-            url, model, language, fmt, cookies_hash, db, config.blob_dir
+            url, model, language, fmt, cookies_hash, coordinator_url, db, config.blob_dir
         )
 
     asyncio.create_task(task_service.run_prepare(task_id, _prepare, log))
@@ -118,6 +120,7 @@ async def _prepare_whisper_input(
     language: str | None,
     fmt: str,
     cookies_hash: str,
+    coordinator_url: str,
     db,
     blob_dir: str,
 ) -> str:
@@ -126,7 +129,6 @@ async def _prepare_whisper_input(
 
     from ..blob_store import store_blob
 
-    coordinator_url = os.environ.get("SCRAPOWER_COORDINATOR_URL", "https://scrapower.talos-int.com")
     input_bytes = _json.dumps(
         {
             "url": url,
@@ -253,11 +255,10 @@ async def prepare_audio_fallback(task, db, config):
     log.info("fallback: audio stored hash=%s", audio_hash[:12])
 
     # 4. Create new input JSON with audio_hash (no url — worker uses Mode A)
-    coordinator_url = os.environ.get("SCRAPOWER_COORDINATOR_URL", "https://scrapower.talos-int.com")
     new_input = _json.dumps(
         {
             "audio_hash": audio_hash,
-            "coordinator_url": coordinator_url,
+            "coordinator_url": config.coordinator_url,
             "model": config_in.get("model", "turbo"),
             "language": config_in.get("language"),
             "format": config_in.get("format", "json"),

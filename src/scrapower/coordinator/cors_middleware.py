@@ -1,6 +1,6 @@
 """CORS middleware for Scrapower — allows cross-origin embed on any website.
 
-When a site includes <script src=\"https://scrapower.talos-int.com/embed.js\"></script>,
+When a site includes <script src=\"https://your-coordinator.example.com/embed.js\"></script>,
 the browser worker needs to call our API (blobs, WebSocket) from a different origin.
 This middleware adds the necessary CORS headers.
 """

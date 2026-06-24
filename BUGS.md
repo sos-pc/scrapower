@@ -12,9 +12,7 @@
 |---|----------|---------|----------|
 | A5 | Basse | `yt-dlp-ejs` encore dans Dockerfile | `Dockerfile` L27 |
 | A6 | Basse | Deno installé pour rien dans Dockerfile | `Dockerfile` L20-21 |
-| A4 | Basse | URL `scrapower.talos-int.com` hardcodée 16 fois | 16 fichiers |
 | A7 | Basse | `reputation.py` 100 lignes utilisées seulement par scheduler Mode A | `reputation.py` |
-| A11 | Basse | Makefile: `curl -sk` (TLS verify off) + path Windows | `Makefile` |
 
 ## 🟢 Watchlist
 

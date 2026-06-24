@@ -38,6 +38,9 @@ class Config:
     task_accept_timeout_sec: int = 5
     scheduler_tick_sec: float = 5.0
 
+    # Network
+    coordinator_url: str = "http://localhost:8777"
+
     # Security
     enforce_segregation: bool = False
     max_anonymous_workers: int = 100
@@ -71,6 +74,7 @@ class Config:
             "SCRAPOWER_LOG_LEVEL": ("log_level", str),
             "SCRAPOWER_ENFORCE_SEGREGATION": ("enforce_segregation", bool),
             "SCRAPOWER_WS_ASSIGN_ENABLED": ("ws_assign_enabled", bool),
+            "SCRAPOWER_COORDINATOR_URL": ("coordinator_url", str),
         }
         for env_var, (attr, typ) in env_map.items():
             val = os.environ.get(env_var)

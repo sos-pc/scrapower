@@ -187,7 +187,7 @@ ORACLE VM
   ├── WireGuard client (wg0, table 51820)
   ├── Dante SOCKS5 :1081 (auth, external: wg0)
   │     ↑
-  │     │ yt-dlp --proxy socks5://scrapower:PASS@scrapower.talos-int.com:1081
+  │     │ yt-dlp --proxy socks5://scrapower:PASS@your-coordinator.example.com:1081
   │     │
   └── Coordinator (host network, port 8777)
 ```

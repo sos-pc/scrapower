@@ -1,7 +1,7 @@
 // Scrapower Embed — injectable sur n'importe quel site
-// <script src="https://scrapower.talos-int.com/embed.js"></script>
+// <script src="https://your-coordinator.example.com/embed.js"></script>
 (function () {
-  var COORDINATOR = "https://scrapower.talos-int.com";
+  var COORDINATOR = window.location.origin;
 
   // Éviter les doubles injections
   if (document.getElementById("scrapower-widget")) return;

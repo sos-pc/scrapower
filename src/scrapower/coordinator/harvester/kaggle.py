@@ -26,7 +26,7 @@ class KaggleHarvester(WorkerProvider):
     def __init__(
         self,
         accounts: list[dict],
-        coordinator_url: str = "wss://scrapower.talos-int.com/worker/ws",
+        coordinator_url: str = "wss://your-coordinator.example.com/worker/ws",
         api_key: str = "",
         notebook_template: str | None = None,
     ):
@@ -193,10 +193,10 @@ class KaggleHarvester(WorkerProvider):
             if isinstance(src, list):
                 src = "".join(src)
             # Replace coordinator URL in the notebook template.
-            # Mode B uses HTTP (not WebSocket), e.g. https://scrapower.talos-int.com
+            # Mode B uses HTTP (not WebSocket), e.g. https://your-coordinator.example.com
             for pat in (
-                "https://scrapower.talos-int.com",
-                "wss://scrapower.talos-int.com/worker/ws",
+                "https://your-coordinator.example.com",
+                "wss://your-coordinator.example.com/worker/ws",
             ):
                 if pat in src:
                     src = src.replace(
@@ -205,7 +205,7 @@ class KaggleHarvester(WorkerProvider):
                     )
                     break
             src = src.replace('API_KEY = ""', f'API_KEY = "{self._api_key}"')
-            # Workers need the PUBLIC proxy URL (scrapower.talos-int.com:1081),
+            # Workers need the PUBLIC proxy URL (your-coordinator.example.com:1081),
             # not the coordinator's localhost alias. The public URL is reachable
             # from Kaggle/Modal servers; localhost is only for coordinator fallback.
             wg_proxy = os.environ.get("SCRAPOWER_WG_PROXY_PUBLIC", "") or os.environ.get(
@@ -220,7 +220,7 @@ class KaggleHarvester(WorkerProvider):
                     user, passwd = auth.split(":", 1)
                     host = host_port.rsplit(":", 1)[0]
                 except (ValueError, IndexError):
-                    user, passwd, host = "scrapower", "", "scrapower.talos-int.com"
+                    user, passwd, host = "scrapower", "", "your-coordinator.example.com"
                 src = src.replace('WG_USER = ""', f'WG_USER = "{user}"')
                 src = src.replace('WG_PASS = ""', f'WG_PASS = "{passwd}"')
                 src = src.replace('WG_HOST = ""', f'WG_HOST = "{host}"')

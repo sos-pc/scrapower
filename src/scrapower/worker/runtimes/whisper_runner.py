@@ -139,7 +139,7 @@ def main():
         url = config.get("url", "")
         audio_hash = config.get("audio_hash", "")
         coordinator_url = config.get("coordinator_url") or os.environ.get(
-            "SCRAPOWER_COORDINATOR_URL", "https://scrapower.talos-int.com"
+            "SCRAPOWER_COORDINATOR_URL", "http://localhost:8777"
         )
         model_name = config.get("model", "large-v3")
         language = config.get("language") or None
