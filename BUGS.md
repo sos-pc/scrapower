@@ -2,7 +2,7 @@
 
 ---
 
-## 🔴 Corrigés (session 2026-06-23)
+## 🔴 Corrigés (session 2026-06-24)
 
 | # | Problème | Fichier |
 |---|---------|----------|
@@ -15,6 +15,7 @@
 | ~~H1~~ | Budget Modal reset reboot → persist `kv_store` DB | `modal.py`, `main.py` |
 | ~~H2~~ | Dérive mensuelle budget → tracking local supprimé | `modal.py` |
 | ~~H3~~ | `_sandbox_started` orphelin → tracking local supprimé | `modal.py` |
+| ~~Refactor~~ | Archi 3 couches: task_type, _match_capabilities, API unifiée | `db.py`, `task_manager.py`, `domain.py`, `http_handler.py`, `client_api.py`, `transcribe_api.py`, `worker.py`, `sworker.ipynb` |
 
 ## 🟡 Restant
 
@@ -26,10 +27,10 @@
 | W1 | Faible | Logs workers sans rotation | `http_handler.py` |
 | W3 | Faible | Zombie watchdog + requeue parallèles | `session.py`, `domain.py` |
 
-## 🟢 Améliorations
+## 🟢 Nouveaux (session 2026-06-24)
 
-| # | Idée | Statut |
-|---|------|--------|
-| A1 | Billing API Modal | ✅ Fait |
-| A3 | COOLDOWN 60s | ✅ Fait |
-| A4 | Retirer fallback exit_code=2 | P2 |
+| # | Problème | Fichier |
+|---|---------|----------|
+| N1 | Harvester log "launch failed" sur cooldown/max (pas une erreur réelle) | `ephemeral.py` |
+| N2 | `HF_HUB_ENABLE_HF_TRANSFER` déprécié → `HF_XET_HIGH_PERFORMANCE` | `modal.py` |
+| N3 | `yt-dlp-ejs` installé dans sandbox Modal, jamais utilisé (dead dep) | `modal.py` |
