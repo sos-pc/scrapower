@@ -149,18 +149,29 @@ class ModalHarvester(WorkerProvider):
         return best_pct
 
     async def _billing_for_account(self, account: dict, start, end) -> float:
-        """Call modal.billing API for a single account. Returns total cost."""
+        """Call modal billing API for a single account. Returns total cost.
+
+        Uses modal.Workspace.billing.report (new API, 2026-06-18+).
+        Falls back to deprecated modal.billing.workspace_billing_report
+        on older SDK versions.
+        """
         import modal
 
         os.environ["MODAL_TOKEN_ID"] = account.get("token_id", "")
         os.environ["MODAL_TOKEN_SECRET"] = account.get("token_secret", "")
         try:
-            report = await modal.billing.workspace_billing_report.aio(
-                start=start, end=end, resolution="d"
-            )
+            workspace = await modal.Workspace.lookup.aio()
+            report = await workspace.billing.report.aio(start=start, end=end, resolution="d")
             return sum(float(item.get("cost", 0)) for item in report)
         except Exception:
-            return 0.0
+            try:
+                # Fallback for older Modal SDK
+                report = await modal.billing.workspace_billing_report.aio(
+                    start=start, end=end, resolution="d"
+                )
+                return sum(float(item.get("cost", 0)) for item in report)
+            except Exception:
+                return 0.0
 
     async def has_quota(self) -> bool:
         """Budget restant > 1%."""
@@ -183,9 +194,7 @@ class ModalHarvester(WorkerProvider):
             )
             return False
         if len(self._sandbox_ids) >= MAX_CONCURRENT:
-            log.info(
-                "modal max concurrent reached (%d/%d)", len(self._sandbox_ids), MAX_CONCURRENT
-            )
+            log.info("modal max concurrent reached (%d/%d)", len(self._sandbox_ids), MAX_CONCURRENT)
             return False
 
         try:
@@ -204,7 +213,6 @@ class ModalHarvester(WorkerProvider):
         except Exception as e:
             log.error("modal sandbox creation failed: %s", str(e)[:200])
             return False
-
 
     async def cleanup_stale(self) -> None:
         """Remove terminated sandboxes from local tracking list.
@@ -271,7 +279,9 @@ class ModalHarvester(WorkerProvider):
             quota_detail={
                 "accounts": len(self._accounts),
                 "budget_monthly_usd": self._budget_monthly,
-                "cost_per_hour": {"T4": 0.59, "L4": 0.80, "A10": 1.10, "L40S": 1.95}.get(self._gpu_type, 0.59),
+                "cost_per_hour": {"T4": 0.59, "L4": 0.80, "A10": 1.10, "L40S": 1.95}.get(
+                    self._gpu_type, 0.59
+                ),
             },
         )
 
