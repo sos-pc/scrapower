@@ -47,7 +47,6 @@ def _test_env(data_dir: str):
         "SCRAPOWER_SCHEDULER_TICK_SEC": "1",
         "SCRAPOWER_MAX_ANONYMOUS_WORKERS": "50",
         "SCRAPOWER_API_KEY": "test-api-key",
-        "SCRAPOWER_PULL_RATE_LIMIT_PER_IP": "100",
         "SCRAPOWER_EMBEDDED_WORKER": "0",
     }.items():
         old[k] = os.environ.get(k)

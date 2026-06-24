@@ -10,7 +10,6 @@
 
 | # | Priorité | Problème | Fichier |
 |---|----------|---------|----------|
-| A3 | Basse | Config morte `pull_rate_limit_per_ip` + `configure_rate_limit()` stub | `config.py`, `main.py`, `conftest.py` |
 | A5 | Basse | `yt-dlp-ejs` encore dans Dockerfile | `Dockerfile` L27 |
 | A6 | Basse | Deno installé pour rien dans Dockerfile | `Dockerfile` L20-21 |
 | A4 | Basse | URL `scrapower.talos-int.com` hardcodée 16 fois | 16 fichiers |

@@ -40,14 +40,6 @@ _RATE_ANON_LIMIT = 6  # pulls/min for anonymous (survival)
 _RATE_WINDOW_SEC = 60
 
 
-def configure_rate_limit(max_per_minute: int = 12) -> None:
-    """No-op — rate limits are now dual-mode (auth/anon).
-
-    Kept for backward compat with main.py lifespan.
-    Configurable limits can be added back via _RATE_AUTH_LIMIT / _RATE_ANON_LIMIT globals.
-    """
-
-
 def _check_pull_rate(key: str, max_per_minute: int) -> bool:
     """Return True if this key is under the rate limit."""
     now = time.time()
@@ -131,6 +123,7 @@ async def pull(request: Request, sessions: SessionManager):
     queued = await task_service.get_queued(limit=100)
     for task in queued:
         from ..domain import _match_capabilities  # lazy (circular import avoidance)
+
         if not _match_capabilities(task, capabilities):
             continue
 

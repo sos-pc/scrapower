@@ -41,7 +41,6 @@ class Config:
     # Security
     enforce_segregation: bool = False
     max_anonymous_workers: int = 100
-    pull_rate_limit_per_ip: int = 30  # per minute
 
     # Mode A (WebSocket push) — can be disabled when Mode B (HTTP pull) is primary
     ws_assign_enabled: bool = True
@@ -161,9 +160,6 @@ def _apply_toml(config: Config, data: dict[str, Any]) -> None:
         config.enforce_segregation = sec.get("enforce_segregation", config.enforce_segregation)
         config.max_anonymous_workers = sec.get(
             "max_anonymous_workers", config.max_anonymous_workers
-        )
-        config.pull_rate_limit_per_ip = sec.get(
-            "pull_rate_limit_per_ip", config.pull_rate_limit_per_ip
         )
 
     if "keepalive" in data:

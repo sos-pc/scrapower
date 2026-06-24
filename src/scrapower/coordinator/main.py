@@ -149,11 +149,6 @@ async def lifespan(app: FastAPI):
 
     zombie_task = asyncio.create_task(manager.zombie_watchdog(on_zombie=_on_zombie))
 
-    # Configure Mode B HTTP pull rate limit
-    from .worker_gateway.http_handler import configure_rate_limit
-
-    configure_rate_limit(config.pull_rate_limit_per_ip)
-
     # Task manager and scheduler
     task_manager = TaskManager(db)
     app.state.task_manager = task_manager
