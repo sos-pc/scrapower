@@ -1,8 +1,11 @@
-"""Worker Protocol v2.1 — typed message definitions.
+"""Worker Protocol v2.1 — typed message definitions for Mode A (WebSocket).
 
-Single source of truth for all coordinator ↔ worker messages.
-Used by: scheduler, ws_handler, http_handler, worker client, browser worker.
-"""
+Used by: scheduler (WS push), ws_handler (WS messages),
+embedded worker (local WASM).
+
+NOT used by Mode B (HTTP pull/submit) — that protocol uses
+raw JSON dicts in worker_gateway/http_handler.py because
+HTTP requests are stateless and don't need typed sessions."""
 
 from __future__ import annotations
 
