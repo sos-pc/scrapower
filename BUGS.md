@@ -4,34 +4,31 @@
 
 ## 🔴 Corrigés (session 2026-06-24)
 
-19 bugs corrigés. Voir commits.
+19 bugs corrigés + 4 dead code modules + 3 incohérences. Voir commits.
 
-## 🟡 Audit — Dead code
+## 🟡 À faire
 
-| # | Statut | Problème | Fichier |
-|---|--------|---------|----------|
-| D1 | ✅ Fait | Ancien harvester + providers | `harvester/` |
-| D2 | ✅ Fait | `worker_standalone.py` jamais importé | `cli/worker_standalone.py` |
-| D3 | ✅ Fait | `security_middleware.py` jamais importé | `coordinator/security_middleware.py` |
-| D4 | ✅ Fait | `router_mod.task_manager` setté mais plus lu | `main.py` |
-| A3 | ⬜ | `pull_rate_limit_per_ip` config morte + `configure_rate_limit()` appel mort | `config.py`, `main.py` |
-| A5 | ⬜ | `yt-dlp-ejs` encore dans Dockerfile (retiré de modal.py mais oublié ici) | `Dockerfile` |
-| A6 | ⬜ | Deno installé dans Dockerfile, 0 référence dans le code | `Dockerfile` |
+| # | Priorité | Problème | Fichier |
+|---|----------|---------|----------|
+| A3 | Basse | Config morte `pull_rate_limit_per_ip` + `configure_rate_limit()` stub | `config.py`, `main.py`, `conftest.py` |
+| A5 | Basse | `yt-dlp-ejs` encore dans Dockerfile | `Dockerfile` L27 |
+| A6 | Basse | Deno installé pour rien dans Dockerfile | `Dockerfile` L20-21 |
+| A4 | Basse | URL `scrapower.talos-int.com` hardcodée 16 fois | 16 fichiers |
+| A7 | Basse | `reputation.py` 100 lignes utilisées seulement par scheduler Mode A | `reputation.py` |
+| A11 | Basse | Makefile: `curl -sk` (TLS verify off) + path Windows | `Makefile` |
 
-## 🟡 Audit — Incohérences
-
-| # | Statut | Problème | Fichier |
-|---|--------|---------|----------|
-| I1 | ✅ Fait | Deux Provider ABC → résolu par D1 | — |
-| I2 | ✅ Fait | `protocol.py` Mode A only, pas Mode B | `protocol.py` |
-| I3 | ✅ Fait | Chaîne embedded_worker → conservé (fonctionnel) | — |
-| A4 | ⬜ | URL `scrapower.talos-int.com` hardcodée 16 fois | plusieurs |
-| A7 | ⬜ | `reputation.py` utilisé seulement par scheduler Mode A (quasi inactif) | `reputation.py` |
-
-## 🟢 Watchlist (pas des bugs, juste à surveiller)
+## 🟢 Watchlist
 
 | # | Note | Fichier |
 |---|------|---------|
-| W1 | `PythonRuntime` dans `python.py` jamais utilisé → gardé comme référence canonique | `worker/runtimes/python.py` |
-| W2 | Browser worker (static/) compilé dans Docker mais widget embed peu utilisé | `static/worker.js`, `static/sw.js` |
-| W3 | Challenge verification (scheduler) → double exécution, jamais activé en pratique | `scheduler.py` |
+| W1 | `PythonRuntime` jamais utilisé → gardé comme référence | `worker/runtimes/python.py` |
+| W2 | Browser worker compilé, widget embed peu utilisé | `static/` |
+| W3 | Challenge verification scheduler jamais activé | `scheduler.py` |
+
+## 🔒 Sécurité (corrigé)
+
+| # | Problème | Fichier |
+|---|---------|----------|
+| ~~A9~~ | Tokens Modal en clair | `scripts/modal_proxy_diag.py` |
+| ~~A10~~ | Password WG en clair | `deploy/modal/proxy_test.py`, `proxy_test_cookies.py` |
+| ~~N6~~ | Password WG dans logs worker | `whisper_runner.py` (corrigé + Kaggle notebook) |
