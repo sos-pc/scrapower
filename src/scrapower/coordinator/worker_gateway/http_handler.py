@@ -201,29 +201,6 @@ async def submit(request: Request, sessions: SessionManager):
             status_code=500,
         )
 
-    # Check if this task is part of a challenge (double-execution verification).
-    # resolve_challenge returns True if: no challenge exists, OR challenge matched.
-    try:
-        resolved = await task_service._tm.resolve_challenge(
-            task_id,
-            assignment_token,
-            output_hash,
-        )
-    except Exception:
-        log.exception("challenge resolution failed for %s", task_id[:12])
-        resolved = True  # Fallback: complete normally
-
-    if not resolved:
-        # Challenge still pending — second worker hasn't responded yet.
-        return JSONResponse(
-            {
-                "type": "submit_ack",
-                "task_id": task_id,
-                "accepted": False,
-                "reason": "challenge_pending",
-            }
-        )
-
     # Extract result metadata
     status = body.get("result", {}).get("execution_metadata", {}).get("exit_code", 0)
     stderr_info = body.get("result", {}).get("execution_metadata", {}).get("stderr", "")

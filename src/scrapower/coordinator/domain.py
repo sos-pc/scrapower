@@ -181,10 +181,6 @@ class TaskService:
         row = await cursor.fetchone()
         return row["n"] if row else 0
 
-    async def create_challenge(self, task_id: str, token_a: str, token_b: str) -> None:
-        """Create a challenge record for double-execution verification."""
-        return await self._tm.create_challenge(task_id, token_a, token_b)
-
     async def requeue_stale(self, silence_timeout_sec: float = 90) -> int:
         """Re-queue ASSIGNED tasks whose worker hasn't signalled recently.
 

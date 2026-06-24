@@ -200,11 +200,6 @@ async def handle_ws(
                                 TaskState.TIMEOUT,
                             )
                             continue
-                        # Check if this is a challenged task
-                        resolved = await task_service._tm.resolve_challenge(
-                            msg["task_id"], token, output_hash
-                        )
-
                         # Touch assigned_at — result submission is a liveness signal
                         await _touch_task(task_service, msg["task_id"], prefix="ws-result")
 
@@ -215,7 +210,6 @@ async def handle_ws(
                         if stderr:
                             await _save_worker_logs_ws(msg["task_id"], stderr, prefix="ws-result")
 
-                        if resolved:
                             await task_service.complete(msg["task_id"], output_hash, token)
 
             elif msg_type == "heartbeat":

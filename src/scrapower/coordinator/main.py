@@ -65,12 +65,6 @@ async def lifespan(app: FastAPI):
     app.state.db = db
     log.info("database initialized", path=config.db_path)
 
-    # Crypto: Fernet with per-deployment salt from SQLite
-    from .crypto_utils import init_fernet
-
-    init_fernet(config.db_path)
-    log.info("fernet initialized")
-
     # Seed blob store with whisper_runner.py so tasks can reference it
     from pathlib import Path as _Path
 
@@ -112,25 +106,6 @@ async def lifespan(app: FastAPI):
                     await asyncio.sleep(2)
                 else:
                     log.warning("vpn check failed: %s", str(e)[:100])
-
-    # ── OAuth configuration ──────────────────────────────────────
-    oauth_client_id = os.environ.get("SCRAPOWER_GITHUB_CLIENT_ID", "")
-    oauth_client_secret = os.environ.get("SCRAPOWER_GITHUB_CLIENT_SECRET", "")
-    coordinator_url = config.coordinator_url
-    if oauth_client_id and oauth_client_secret:
-        from .auth_oauth import configure_oauth
-
-        configure_oauth(oauth_client_id, oauth_client_secret, coordinator_url)
-        log.info(
-            "oauth configured",
-            provider="github",
-            callback=f"{coordinator_url}/auth/github/callback",
-        )
-    else:
-        log.warning(
-            "oauth not configured",
-            hint="set SCRAPOWER_GITHUB_CLIENT_ID and SCRAPOWER_GITHUB_CLIENT_SECRET",
-        )
 
     # Initialize session manager and zombie watchdog
     manager = SessionManager(
@@ -348,11 +323,6 @@ from .cors_middleware import CORSMiddleware
 app.add_middleware(CORSMiddleware)
 
 app.include_router(worker_router)
-
-# OAuth endpoints for connecting visitor accounts
-from .auth_oauth import router as oauth_router
-
-app.include_router(oauth_router)
 
 # Serve static files (browser worker)
 static_dir = Path(__file__).parent / "static"

@@ -64,37 +64,11 @@ CREATE TABLE IF NOT EXISTS events (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE TABLE IF NOT EXISTS challenges (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id    TEXT NOT NULL,
-    token_a    TEXT NOT NULL,
-    token_b    TEXT NOT NULL,
-    result_a   TEXT,
-    result_b   TEXT,
-    status     TEXT NOT NULL DEFAULT 'pending',
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    FOREIGN KEY (task_id) REFERENCES tasks(id)
-);
-
 CREATE INDEX IF NOT EXISTS idx_tasks_state ON tasks(state);
 CREATE INDEX IF NOT EXISTS idx_tasks_client ON tasks(client_id);
 CREATE INDEX IF NOT EXISTS idx_results_task ON results(task_id);
 CREATE INDEX IF NOT EXISTS idx_events_task ON events(task_id);
 CREATE INDEX IF NOT EXISTS idx_blobs_created ON blobs(created_at);
-CREATE INDEX IF NOT EXISTS idx_challenges_task ON challenges(task_id);
-
-CREATE TABLE IF NOT EXISTS provider_tokens (
-    visitor_id     TEXT NOT NULL,
-    provider       TEXT NOT NULL,
-    token_encrypted TEXT NOT NULL,
-    created_at     TEXT NOT NULL DEFAULT (datetime('now')),
-    PRIMARY KEY (visitor_id, provider)
-);
-
-CREATE TABLE IF NOT EXISTS oauth_states (
-    state      TEXT PRIMARY KEY,
-    created_at REAL NOT NULL
-);
 """
 
 

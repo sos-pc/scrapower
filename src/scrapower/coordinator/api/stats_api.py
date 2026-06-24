@@ -109,8 +109,6 @@ async def get_stats(request: Request):
 
             if wid.startswith("browser-"):
                 wtype = "browser"
-            elif wid.startswith("gh-"):
-                wtype = "github"
             elif wid == "_embedded":
                 wtype = "embedded"
 

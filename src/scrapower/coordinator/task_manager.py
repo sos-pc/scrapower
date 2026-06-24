@@ -205,7 +205,9 @@ class TaskManager:
                     else False,
                     error=row["error"] if "error" in row.keys() else "",
                     task_type=row["task_type"] if "task_type" in row.keys() else "wasm",
-                    requirements_json=row["requirements_json"] if "requirements_json" in row.keys() else "{}",
+                    requirements_json=row["requirements_json"]
+                    if "requirements_json" in row.keys()
+                    else "{}",
                     created_at=row["created_at"],
                     updated_at=row["updated_at"],
                 )
@@ -304,51 +306,3 @@ class TaskManager:
             )
         await self._db.commit()
         return await self.transition(task_id, TaskState.COMPLETED)
-
-    async def create_challenge(self, task_id: str, token_a: str, token_b: str) -> None:
-        """Create a challenge record for double-execution verification."""
-        await self._db.execute(
-            "INSERT INTO challenges (task_id, token_a, token_b) VALUES (?, ?, ?)",
-            (task_id, token_a, token_b),
-        )
-        await self._db.commit()
-
-    async def resolve_challenge(
-        self, task_id: str, assignment_token: str, output_hash: str
-    ) -> bool:
-        """Handle a challenge result. Returns True if challenge passed and task should complete."""
-        cursor = await self._db.execute(
-            "SELECT * FROM challenges WHERE task_id = ? AND status = 'pending'",
-            (task_id,),
-        )
-        row = await cursor.fetchone()
-        if not row:
-            return True  # No active challenge, regular flow — complete normally
-
-        # Determine if this is worker A or B
-        col = "result_a" if assignment_token == row["token_a"] else "result_b"
-        await self._db.execute(
-            f"UPDATE challenges SET {col} = ? WHERE task_id = ?",
-            (output_hash, task_id),
-        )
-        await self._db.commit()
-
-        # Check if both results are in
-        cursor = await self._db.execute("SELECT * FROM challenges WHERE task_id = ?", (task_id,))
-        row = await cursor.fetchone()
-        if row and row["result_a"] and row["result_b"]:
-            if row["result_a"] == row["result_b"]:
-                await self._db.execute(
-                    "UPDATE challenges SET status = 'matched' WHERE task_id = ?",
-                    (task_id,),
-                )
-                await self._db.commit()
-                return True  # Challenge passed!
-            else:
-                await self._db.execute(
-                    "UPDATE challenges SET status = 'mismatched' WHERE task_id = ?",
-                    (task_id,),
-                )
-                await self._db.commit()
-                return False  # Mismatch — task should be re-challenged
-        return False  # Waiting for second result
