@@ -143,7 +143,11 @@ async def lifespan(app: FastAPI):
     import scrapower.coordinator.worker_gateway.router as router_mod
 
     router_mod.session_manager = manager
-    zombie_task = asyncio.create_task(manager.zombie_watchdog())
+    # Bridge: zombie sessions -> immediate task requeue
+    async def _on_zombie(session):
+        await task_service.requeue_for_worker(session.worker_id)
+
+    zombie_task = asyncio.create_task(manager.zombie_watchdog(on_zombie=_on_zombie))
 
     # Configure Mode B HTTP pull rate limit
     from .worker_gateway.http_handler import configure_rate_limit

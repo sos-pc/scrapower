@@ -86,7 +86,10 @@ class SessionManager:
         return any(s.worker_id != "_embedded" and not s.is_zombie for s in self._sessions.values())
 
     async def zombie_watchdog(self, on_zombie=None):
-        """Background task that marks sessions as zombie when heartbeat stops.
+        """Detect dead WS sessions. DOES NOT handle task lifecycle.
+
+        Task requeue is handled by TaskService.requeue_stale (periodic scan)
+        and TaskService.requeue_for_worker (immediate, via on_zombie callback).
 
         Args:
             on_zombie: Optional async callback(session) when zombie detected.
