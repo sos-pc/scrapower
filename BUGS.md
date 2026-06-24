@@ -4,39 +4,34 @@
 
 ## 🔴 Corrigés (session 2026-06-24)
 
-| # | Problème |
-|---|---------|
-| ~~C1~~ | `NameError: started` |
-| ~~B1~~ | COOLDOWN 120→60s + logs |
-| ~~B1b~~ | Kaggle cooldown manquant |
-| ~~R1~~ | Rate limit pull → dual auth |
-| ~~W2~~ | error/has_logs/logs_url |
-| ~~R2~~ | Retry 5xx workers |
-| ~~H1-H3~~ | Budget Modal (persist + simplify) |
-| ~~Refactor~~ | Archi 3 couches |
-| ~~N1~~ | Launch failed fantôme |
-| ~~H6~~ | Caddy 502 (pas un bug) |
-| ~~N6~~ | Password WG en clair |
-| ~~N2/N3/N5~~ | Quick wins + sandbox |
-| ~~H5~~ | Logs cleanup vide |
-| ~~H4~~ | Injection task_service |
-| ~~N4~~ | Billing API migrate |
-| ~~W3~~ | Zombie → requeue bridge |
-| ~~W1~~ | Rotation logs 30j |
+19 bugs corrigés. Voir commits.
 
 ## 🟡 Audit — Dead code
 
-| # | Problème | Fichier | Lignes |
-|---|---------|----------|--------|
-| D1 | Ancien harvester + providers (seul `cli harvest` l'appelle) | `harvester/` entier | ~500 |
-| D2 | `worker_standalone.py` jamais importé | `cli/worker_standalone.py` | ~100 |
-| D3 | `security_middleware.py` jamais importé | `coordinator/security_middleware.py` | ~60 |
-| D4 | `router_mod.task_manager` setté mais plus lu | `main.py` | 1 |
+| # | Statut | Problème | Fichier |
+|---|--------|---------|----------|
+| D1 | ✅ Fait | Ancien harvester + providers | `harvester/` |
+| D2 | ✅ Fait | `worker_standalone.py` jamais importé | `cli/worker_standalone.py` |
+| D3 | ✅ Fait | `security_middleware.py` jamais importé | `coordinator/security_middleware.py` |
+| D4 | ✅ Fait | `router_mod.task_manager` setté mais plus lu | `main.py` |
+| A3 | ⬜ | `pull_rate_limit_per_ip` config morte + `configure_rate_limit()` appel mort | `config.py`, `main.py` |
+| A5 | ⬜ | `yt-dlp-ejs` encore dans Dockerfile (retiré de modal.py mais oublié ici) | `Dockerfile` |
+| A6 | ⬜ | Deno installé dans Dockerfile, 0 référence dans le code | `Dockerfile` |
 
 ## 🟡 Audit — Incohérences
 
-| # | Problème | Fichier |
-|---|---------|----------|
-| I1 | Deux `WorkerProvider` / `Provider` ABC coexistent | `harvester/providers/base.py` vs `coordinator/harvester/base.py` |
-| I2 | `protocol.py` définit messages Mode A, mais Mode B (primaire) ne les utilise pas | `protocol.py` |
-| I3 | Chaîne `embedded_worker → worker/client → worker/sandbox → runtimes` pour un worker WASM quasi inactif | `embedded_worker.py`, `worker/client.py`, `worker/sandbox.py` |
+| # | Statut | Problème | Fichier |
+|---|--------|---------|----------|
+| I1 | ✅ Fait | Deux Provider ABC → résolu par D1 | — |
+| I2 | ✅ Fait | `protocol.py` Mode A only, pas Mode B | `protocol.py` |
+| I3 | ✅ Fait | Chaîne embedded_worker → conservé (fonctionnel) | — |
+| A4 | ⬜ | URL `scrapower.talos-int.com` hardcodée 16 fois | plusieurs |
+| A7 | ⬜ | `reputation.py` utilisé seulement par scheduler Mode A (quasi inactif) | `reputation.py` |
+
+## 🟢 Watchlist (pas des bugs, juste à surveiller)
+
+| # | Note | Fichier |
+|---|------|---------|
+| W1 | `PythonRuntime` dans `python.py` jamais utilisé → gardé comme référence canonique | `worker/runtimes/python.py` |
+| W2 | Browser worker (static/) compilé dans Docker mais widget embed peu utilisé | `static/worker.js`, `static/sw.js` |
+| W3 | Challenge verification (scheduler) → double exécution, jamais activé en pratique | `scheduler.py` |

@@ -8,8 +8,8 @@ import subprocess
 import sys
 import time
 
-os.environ["MODAL_TOKEN_ID"] = "ak-GsE4d3NiXU20vF16vLoZsS"
-os.environ["MODAL_TOKEN_SECRET"] = "as-elrWsk9Hi472iAft5SLijR"
+os.environ.setdefault("MODAL_TOKEN_ID", os.environ.get("MODAL_TOKEN_ID", ""))
+os.environ.setdefault("MODAL_TOKEN_SECRET", os.environ.get("MODAL_TOKEN_SECRET", ""))
 
 import modal
 
@@ -18,10 +18,10 @@ app = modal.App.lookup("scrapower", create_if_missing=True)
 image = (
     modal.Image.from_registry("nvidia/cuda:12.4.0-runtime-ubuntu22.04", add_python="3.12")
     .apt_install("curl", "ffmpeg")
-    .pip_install("yt-dlp", "yt-dlp-ejs")
+    .pip_install("yt-dlp")
 )
 
-proxy = "socks5://scrapower:a2e07833e67d4724@scrapower.talos-int.com:1081"
+proxy = os.environ.get("SCRAPOWER_WG_PROXY_PUBLIC", "") or os.environ.get("SCRAPOWER_WG_PROXY", "")
 
 test_script = f'''
 import subprocess, sys, os
