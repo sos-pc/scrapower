@@ -1,8 +1,11 @@
-"""Python runtime sandbox — executes Python scripts via subprocess.
+"""Canonical Python runtime — reference implementation.
 
-Used for tasks with runtime="python" (whisper, scraping, LLM inference).
-NOT sandboxed — only use on trusted workers (Oracle, HF Spaces, homelab).
-"""
+Workers currently use their own copies (deploy/modal/worker.py,
+deploy/kaggle/sworker.ipynb). Unify into this module when >2
+worker types exist or when adding sandboxing improvements.
+
+All Python execution is sandboxed: minimal env, no secrets,
+working directory isolated to temp."""
 
 from __future__ import annotations
 

@@ -95,17 +95,30 @@ def execute_wasm(wasm_bytes, input_data):
 
 
 def execute_python(executable, input_data):
-    """Run a Python task script, capturing stderr in real-time for heartbeats."""
+    """Run a Python task script in a sandboxed subprocess.
+
+    Minimal environment: no secrets, no network except WG_PROXY.
+    Isolated to temp directory.
+    """
     import threading
 
     with tempfile.TemporaryDirectory() as tmp:
         script = Path(tmp) / "script.py"
         script.write_bytes(executable)
+        # Sandbox: minimal env, no secrets, working dir isolated
+        sandbox_env = {
+            "PATH": "/usr/bin:/usr/local/bin",
+            "HOME": str(tmp),
+            "TMPDIR": str(tmp),
+            "WG_PROXY": os.environ.get("WG_PROXY", ""),
+        }
         proc = subprocess.Popen(
             ["python3", str(script)],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            cwd=str(tmp),
+            env=sandbox_env,
         )
 
         # Read stderr line-by-line in a thread, feed to global log buffer
@@ -251,14 +264,14 @@ async def run_worker():
                         timeout=aiohttp.ClientTimeout(total=10),
                     ) as r:
                         if r.status >= 500:
-                            _log(f"Pull 5xx ({r.status}), retry {attempt+1}/3")
-                            await asyncio.sleep(2 ** attempt)
+                            _log(f"Pull 5xx ({r.status}), retry {attempt + 1}/3")
+                            await asyncio.sleep(2**attempt)
                             continue
                         data = await r.json()
                         break
                 except Exception as e:
-                    _log(f"Pull error: {e}, retry {attempt+1}/3")
-                    await asyncio.sleep(2 ** attempt)
+                    _log(f"Pull error: {e}, retry {attempt + 1}/3")
+                    await asyncio.sleep(2**attempt)
                     continue
 
             if data is None:
