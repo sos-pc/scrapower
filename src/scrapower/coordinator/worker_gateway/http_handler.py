@@ -67,27 +67,6 @@ def _check_pull_rate(key: str, max_per_minute: int) -> bool:
 # ── Matching logic (stateless, same rules as SchedulingPolicy) ──
 
 
-def _is_compatible(task, capabilities: dict) -> bool:
-    """Check if a worker's capabilities can execute this task."""
-    runtimes = capabilities.get("runtimes", ["wasm"])
-    if task.runtime not in runtimes:
-        return False
-
-    resources = capabilities.get("resources", {})
-    if resources.get("ram_mb", 0) < 128:
-        return False
-
-    if task.gpu_required and not resources.get("gpu", {}).get("supported", False):
-        return False
-
-    lifecycle = capabilities.get("lifecycle", {})
-    remaining = lifecycle.get("expected_remaining_sec")
-    if remaining and remaining < task.deadline_ms / 1000:
-        return False
-
-    return True
-
-
 # ── Endpoints ──────────────────────────────────────────────────
 
 
@@ -151,7 +130,8 @@ async def pull(request: Request, sessions: SessionManager):
     # Walk queued tasks (FIFO) and try to assign the first compatible one.
     queued = await task_service.get_queued(limit=100)
     for task in queued:
-        if not _is_compatible(task, capabilities):
+        from ..domain import _match_capabilities  # lazy (circular import avoidance)
+        if not _match_capabilities(task, capabilities):
             continue
 
         success, token = await task_service.assign(task.id, worker_id)

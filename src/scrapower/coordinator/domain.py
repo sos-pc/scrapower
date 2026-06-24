@@ -260,6 +260,40 @@ class TaskService:
         return cleaned
 
 
+def _match_capabilities(task, capabilities: dict) -> bool:
+    """Check if a worker's capabilities can execute this task."""
+    import json as _json
+
+    worker_types = capabilities.get("task_types") or capabilities.get("runtimes", [])
+    worker_runtimes = capabilities.get("runtimes", ["wasm"])
+    if task.task_type not in worker_types:
+        return False
+    if task.runtime not in worker_runtimes:
+        return False
+
+    if task.gpu_required and not capabilities.get("resources", {}).get("gpu", {}).get("supported", False):
+        return False
+
+    try:
+        reqs = _json.loads(task.requirements_json) if task.requirements_json else {}
+    except (_json.JSONDecodeError, TypeError):
+        reqs = {}
+    ram_req = max(reqs.get("ram_mb", 0), 128)  # floor: 128 MB minimum
+    if capabilities.get("resources", {}).get("ram_mb", 0) < ram_req:
+        return False
+
+    net_req = reqs.get("network")
+    if net_req == "outbound" and capabilities.get("network", {}).get("connectivity") != "outgoing_only":
+        return False
+
+    lifecycle = capabilities.get("lifecycle", {})
+    remaining = lifecycle.get("expected_remaining_sec")
+    if remaining and remaining < task.deadline_ms / 1000:
+        return False
+
+    return True
+
+
 class SchedulingPolicy:
     """Pure function: given a task and available workers, return
     the best candidates in preference order.
@@ -301,23 +335,7 @@ class SchedulingPolicy:
             if self._enforce_segregation and w.worker_id == task.client_id:
                 continue
 
-            # Runtime compatibility
-            if task.runtime not in w.capabilities.get("runtimes", []):
-                continue
-
-            # Resource check
-            resources = w.capabilities.get("resources", {})
-            if resources.get("ram_mb", 0) < 128:
-                continue
-
-            # GPU requirement
-            if task.gpu_required and not resources.get("gpu", {}).get("supported", False):
-                continue
-
-            # Lifecycle: don't assign long tasks to short-lived workers
-            lifecycle = w.capabilities.get("lifecycle", {})
-            remaining = lifecycle.get("expected_remaining_sec")
-            if remaining and remaining < task.deadline_ms / 1000:
+            if not _match_capabilities(task, w.capabilities):
                 continue
 
             compatible.append(w)
