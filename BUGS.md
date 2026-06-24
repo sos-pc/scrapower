@@ -2,35 +2,50 @@
 
 ---
 
-## 🔴 Corrigés (session 2026-06-24)
+## 🔴 Corrigés
 
-| # | Problème | Fichier |
-|---|---------|----------|
-| ~~C1~~ | `NameError: started` dans `remaining_pct()` | `modal.py` |
-| ~~B1~~ | `COOLDOWN_SEC` 120→60s + log debug cooldown/max | `modal.py`, `kaggle.py` |
-| ~~B1b~~ | Kaggle `launch_worker` sans cooldown check | `kaggle.py` |
-| ~~R1~~ | Rate limit pull partagé → dual-mode auth (worker_id/IP) | `http_handler.py`, `worker.py`, `sworker.ipynb` |
-| ~~W2~~ | `error` + `has_logs` + `logs_url` dans `GET /tasks/{id}` | `db.py`, `task_manager.py`, `domain.py`, `client_api.py` |
-| ~~R2~~ | Retry 5xx backoff 1s/2s/4s dans les workers | `worker.py`, `sworker.ipynb` |
-| ~~H1~~ | Budget Modal reset reboot → persist `kv_store` DB | `modal.py`, `main.py` |
-| ~~H2~~ | Dérive mensuelle budget → tracking local supprimé | `modal.py` |
-| ~~H3~~ | `_sandbox_started` orphelin → tracking local supprimé | `modal.py` |
-| ~~Refactor~~ | Archi 3 couches: task_type, _match_capabilities, API unifiée | `db.py`, `task_manager.py`, `domain.py`, `http_handler.py`, `client_api.py`, `transcribe_api.py`, `worker.py`, `sworker.ipynb` |
+| # | Problème |
+|---|---------|
+| ~~C1~~ | `NameError: started` dans `remaining_pct()` |
+| ~~B1~~ | `COOLDOWN_SEC` 120→60s + log debug cooldown/max |
+| ~~B1b~~ | Kaggle `launch_worker` sans cooldown check |
+| ~~R1~~ | Rate limit pull partagé → dual-mode auth |
+| ~~W2~~ | `error` + `has_logs` + `logs_url` dans tasks |
+| ~~R2~~ | Retry 5xx backoff workers |
+| ~~H1~~ | Budget Modal reset reboot → persist DB |
+| ~~H2~~ | Dérive mensuelle budget → tracking supprimé |
+| ~~H3~~ | `_sandbox_started` orphelin → tracking supprimé |
+| ~~Refactor~~ | Archi 3 couches: task_type, matching, API unifiée |
+| ~~N1~~ | Harvester "launch failed" fantôme → smart launch |
+| ~~H6~~ | Caddy 502 → pas un bug (redémarrages Docker, R2 gère) |
 
 ## 🟡 Restant
 
-| # | Sévérité | Problème | Fichier |
-|---|----------|---------|----------|
-| H4 | Faible | `_count_queued()` couplage fragile | `ephemeral.py` |
-| H5 | Faible | Pas de log cleanup vide | `modal.py`, `kaggle.py` |
-| H6 | Moyen | Caddy 502 (R2 masque, root cause à confirmer) | infra |
-| W1 | Faible | Logs workers sans rotation | `http_handler.py` |
-| W3 | Faible | Zombie watchdog + requeue parallèles | `session.py`, `domain.py` |
-
-## 🟢 Nouveaux (session 2026-06-24)
+### Quick fixes (1 ligne, 0 risque)
 
 | # | Problème | Fichier |
 |---|---------|----------|
-| N1 | Harvester log "launch failed" sur cooldown/max (pas une erreur réelle) | `ephemeral.py` |
 | N2 | `HF_HUB_ENABLE_HF_TRANSFER` déprécié → `HF_XET_HIGH_PERFORMANCE` | `modal.py` |
-| N3 | `yt-dlp-ejs` installé dans sandbox Modal, jamais utilisé (dead dep) | `modal.py` |
+| N3 | `yt-dlp-ejs` dead dep installé dans chaque sandbox | `modal.py` |
+| H5 | Pas de log quand cleanup ne trouve rien | `modal.py`, `kaggle.py` |
+
+### Petit refactor (< 20 lignes)
+
+| # | Problème | Fichier |
+|---|---------|----------|
+| H4 | `_count_queued()` importe `rmod.task_manager` en douce → injecter dans constructeur | `ephemeral.py` |
+| N4 | `modal.billing.workspace_billing_report()` → `workspace.billing.report()` | `modal.py` |
+
+### Refactor moyen
+
+| # | Problème | Fichier |
+|---|---------|----------|
+| W1 | Logs workers sans rotation ni rétention | `http_handler.py`, `domain.py` |
+| W3 | Zombie watchdog + requeue_stale systèmes parallèles | `session.py`, `domain.py` |
+
+### Reste à faire
+
+| # | Problème | Fichier |
+|---|---------|----------|
+| N5 | `python.py` doc: "trusted workers only" — mais Kaggle/Modal l'exécutent | `python.py` |
+| N6 | `whisper_runner.py` debug log: "WG_PROXY set: ...a2e07833e67d4724..." (password en clair) | `whisper_runner.py` |

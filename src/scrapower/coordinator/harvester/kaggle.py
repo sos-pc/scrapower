@@ -206,7 +206,19 @@ class KaggleHarvester(WorkerProvider):
                 "SCRAPOWER_WG_PROXY", ""
             )
             if wg_proxy:
-                src = src.replace('WG_PROXY = ""', f'WG_PROXY = "{wg_proxy}"')
+                # Never put the full proxy URL (with password) in the notebook source.
+                # Inject components separately, assembled at runtime by the worker.
+                try:
+                    rest = wg_proxy.split("://", 1)[1]
+                    auth, host_port = rest.split("@", 1)
+                    user, passwd = auth.split(":", 1)
+                    host = host_port.rsplit(":", 1)[0]
+                except (ValueError, IndexError):
+                    user, passwd, host = "scrapower", "", "scrapower.talos-int.com"
+                src = src.replace('WG_USER = ""', f'WG_USER = "{user}"')
+                src = src.replace('WG_PASS = ""', f'WG_PASS = "{passwd}"')
+                src = src.replace('WG_HOST = ""', f'WG_HOST = "{host}"')
+
             cell["source"] = src
 
         with tempfile.TemporaryDirectory() as tmp:
