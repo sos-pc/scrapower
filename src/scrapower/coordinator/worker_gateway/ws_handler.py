@@ -410,5 +410,9 @@ async def _save_worker_logs_ws(identifier: str, text: str, prefix: str = "ws") -
             f.write(text)
             if not text.endswith("\n"):
                 f.write("\n")
+        # Truncate to last 1000 lines
+        from .http_handler import _truncate_log
+
+        _truncate_log(log_path)
     except Exception:
         pass

@@ -236,28 +236,29 @@ class TaskService:
 
         now = _time.time()
         cursor = await self._tm._db.execute(
-            "UPDATE tasks SET state = ?, updated_at = ? "
-            "WHERE state = ? AND assigned_worker_id = ?",
+            "UPDATE tasks SET state = ?, updated_at = ? WHERE state = ? AND assigned_worker_id = ?",
             (TaskState.TIMEOUT, str(now), TaskState.ASSIGNED, worker_id),
         )
         await self._tm._db.commit()
         return cursor.rowcount
 
     async def cleanup_expired(
-        self, completed_ttl_sec: float = 86400, pending_ttl_sec: float = 3600
+        self, completed_ttl_sec: float = 2592000, pending_ttl_sec: float = 3600
     ) -> int:
-        """Delete expired tasks and release their blob references.
+        """Delete expired tasks, their log files, and release blob refs.
 
-        - COMPLETED/FAILED/CANCELLED > completed_ttl_sec → deleted, blob refs released
-        - PENDING > pending_ttl_sec → marked FAILED (download lost after restart)
+        - COMPLETED/FAILED/CANCELLED > completed_ttl_sec → deleted + log removed
+        - PENDING > pending_ttl_sec → marked FAILED
 
+        Default completed_ttl_sec: 2592000 (30 days).
         Returns number of tasks cleaned up."""
         import time as _time
+        from pathlib import Path as _Path
 
         now = _time.time()
         cleaned = 0
 
-        # Terminal tasks older than TTL → delete, release blob refs
+        # Terminal tasks older than TTL → delete, release blob refs, remove logs
         cursor = await self._tm._db.execute(
             """SELECT id, executable_hash, input_hash, output_hash FROM tasks
                WHERE state IN ('completed', 'failed', 'cancelled')
@@ -270,6 +271,13 @@ class TaskService:
                     await self._tm._db.execute(
                         "UPDATE blobs SET ref_count = MAX(0, ref_count - 1) WHERE hash = ?", (h,)
                     )
+            # Remove associated log file
+            try:
+                log_path = _Path("data/logs") / f"{row['id']}.log"
+                if log_path.exists():
+                    log_path.unlink()
+            except OSError:
+                pass
             await self._tm._db.execute("DELETE FROM tasks WHERE id = ?", (row["id"],))
             cleaned += 1
 
