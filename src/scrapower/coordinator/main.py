@@ -373,15 +373,15 @@ async def service_worker():
 client_api_router = create_client_router(require_auth)
 app.include_router(client_api_router)
 
-# Stats endpoint
+# Stats endpoint (requires auth)
 from .api.stats_api import router as stats_router
 
-app.include_router(stats_router)
+app.include_router(stats_router, dependencies=[Depends(require_auth)])
 
-# Transcription endpoint
+# Transcription endpoint (requires auth)
 from .api.transcribe_api import router as transcribe_router
 
-app.include_router(transcribe_router)
+app.include_router(transcribe_router, dependencies=[Depends(require_auth)])
 
 log = structlog.get_logger()
 
