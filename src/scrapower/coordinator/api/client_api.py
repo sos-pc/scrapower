@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -58,10 +59,12 @@ def create_client_router(require_auth: Callable | None = None) -> APIRouter:
             runtime=body.get("runtime", "wasm"),
             executable_hash=body.get("executable_hash", ""),
             input_hash=body.get("input_hash", ""),
+            task_type=body.get("type", "wasm"),
+            requirements_json=json.dumps(body.get("requirements", {})),
             gpu_required=body.get("gpu_required", False),
         )
 
-        return JSONResponse({"task_id": task_id, "status": "queued", "client_id": client_id})
+        return JSONResponse({"task_id": task_id, "status": "queued", "client_id": client_id, "type": body.get("type", "wasm")})
 
     @router.get("/tasks/{task_id}")
     async def get_task(task_id: str, request: Request):

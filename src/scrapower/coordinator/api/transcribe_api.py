@@ -82,6 +82,8 @@ async def transcribe(request: Request):
         runtime="python",
         executable_hash=WHISPER_RUNNER_HASH,
         input_hash="",  # placeholder, will be set after download
+        task_type="whisper",
+        requirements_json='{"gpu": true, "network": "outbound"}',
         gpu_required=True,
         deadline_ms=900000,
         initial_state="pending",
@@ -348,6 +350,8 @@ async def batch_transcribe(request: Request):
             runtime="python",
             executable_hash=WHISPER_RUNNER_HASH,
             input_hash="",
+            task_type="whisper",
+            requirements_json='{"gpu": true, "network": "outbound"}',
             gpu_required=True,
             deadline_ms=900000,
             initial_state="pending",
