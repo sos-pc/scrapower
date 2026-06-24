@@ -24,8 +24,9 @@ MIN_QUOTA_PCT = 5.0  # ne pas lancer si < 5% restant
 class EphemeralHarvester:
     """Pilote générique pour tous les WorkerProviders."""
 
-    def __init__(self, providers: list[WorkerProvider]):
+    def __init__(self, providers: list[WorkerProvider], task_service=None):
         self._providers = providers
+        self._task_service = task_service
         self._running = False
 
     async def run(self):
@@ -129,15 +130,7 @@ class EphemeralHarvester:
             )
 
     async def _count_queued(self) -> int:
-        """Compter les tâches en attente dans la DB."""
-        try:
-            import scrapower.coordinator.worker_gateway.router as rmod
-
-            tm = getattr(rmod, "task_manager", None)
-            if tm is None:
-                return 0
-            cursor = await tm._db.execute("SELECT COUNT(*) as n FROM tasks WHERE state = 'queued'")
-            row = await cursor.fetchone()
-            return row["n"] if row else 0
-        except Exception:
+        """Nombre de tâches en attente, via TaskService (injecté)."""
+        if self._task_service is None:
             return 0
+        return await self._task_service.count_queued()

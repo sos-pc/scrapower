@@ -173,6 +173,14 @@ class TaskService:
     async def get_queued(self, limit: int = 100) -> list[Task]:
         return await self._tm.get_queued(limit)
 
+    async def count_queued(self) -> int:
+        """Nombre de tâches en attente. COUNT(*), zéro objet chargé."""
+        cursor = await self._tm._db.execute(
+            "SELECT COUNT(*) as n FROM tasks WHERE state = 'queued'"
+        )
+        row = await cursor.fetchone()
+        return row["n"] if row else 0
+
     async def create_challenge(self, task_id: str, token_a: str, token_b: str) -> None:
         """Create a challenge record for double-execution verification."""
         return await self._tm.create_challenge(task_id, token_a, token_b)
@@ -271,7 +279,9 @@ def _match_capabilities(task, capabilities: dict) -> bool:
     if task.runtime not in worker_runtimes:
         return False
 
-    if task.gpu_required and not capabilities.get("resources", {}).get("gpu", {}).get("supported", False):
+    if task.gpu_required and not capabilities.get("resources", {}).get("gpu", {}).get(
+        "supported", False
+    ):
         return False
 
     try:
@@ -283,7 +293,10 @@ def _match_capabilities(task, capabilities: dict) -> bool:
         return False
 
     net_req = reqs.get("network")
-    if net_req == "outbound" and capabilities.get("network", {}).get("connectivity") != "outgoing_only":
+    if (
+        net_req == "outbound"
+        and capabilities.get("network", {}).get("connectivity") != "outgoing_only"
+    ):
         return False
 
     lifecycle = capabilities.get("lifecycle", {})
