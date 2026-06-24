@@ -1,10 +1,11 @@
+import os
 """Modal proxy test WITH cookies."""
 
 import os
 import subprocess
 import sys
 
-proxy = "socks5://scrapower:a2e07833e67d4724@scrapower.talos-int.com:1081"
+proxy = os.environ.get("WG_PROXY", "")
 # fetch cookies from coordinator
 import urllib.request
 

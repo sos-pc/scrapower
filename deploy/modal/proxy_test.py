@@ -1,9 +1,10 @@
+import os
 """Minimal Modal proxy test - runs yt-dlp and prints results."""
 
 import subprocess
 import sys
 
-proxy = "socks5://scrapower:a2e07833e67d4724@scrapower.talos-int.com:1081"
+proxy = os.environ.get("WG_PROXY", "")
 
 print("=== Test: yt-dlp with proxy ===", flush=True)
 r = subprocess.run(
