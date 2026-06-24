@@ -218,6 +218,24 @@ async def lifespan(app: FastAPI):
         except ImportError:
             log.warning("modal package not installed - skipping Modal provider")
 
+    # -- HuggingFace Spaces provider (CPU worker, persistent) --
+    hf_token = os.environ.get("HF_TOKEN", "")
+    hf_space_id = os.environ.get("HF_SPACE_ID", "")
+    if hf_token and hf_space_id:
+        try:
+            from .harvester.hf_spaces import HuggingFaceHarvester
+
+            providers.append(
+                HuggingFaceHarvester(
+                    hf_token=hf_token,
+                    space_id=hf_space_id,
+                    coordinator_url=coordinator_url,
+                    api_key=api_key,
+                )
+            )
+        except ImportError:
+            log.warning("huggingface_hub not installed - skipping HF Spaces provider")
+
     harvester_task: asyncio.Task | None = None
     if providers:
         harvester = EphemeralHarvester(providers, task_service=task_service)

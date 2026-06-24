@@ -1,3 +1,13 @@
+# HuggingFace Spaces worker — CPU-only Mode B worker for Scrapower.
+#
+# Design decisions:
+#   - No faster-whisper or yt-dlp: this worker targets CPU tasks
+#     (WASM, Python). GPU tasks go to Kaggle/Modal via capability matching.
+#   - wasmtime included for WASM runtime (fuel-metered sandbox).
+#   - aiohttp for HTTP pull/submit (Mode B protocol).
+#   - Python 3.12 slim for small image size (faster cold start).
+#   - Port 7860 exposed for HF Spaces health check requirement.
+
 FROM python:3.12-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -6,18 +16,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir aiohttp wasmtime faster-whisper yt-dlp
+# Only the dependencies this CPU worker actually uses.
+# Whisper/GPU deps are NOT installed — GPU tasks are routed to Kaggle/Modal.
+RUN pip install --no-cache-dir aiohttp wasmtime
 
-# Copy worker code (files are at the repo root in HF Spaces layout)
-# Pre-download Whisper tiny model (makes first task fast)
-RUN python -c "from faster_whisper import WhisperModel; WhisperModel('tiny', download_root='/tmp/whisper-models')"
-
+# Copy worker runtime files (from src/scrapower/worker/ in the repo).
+# The Harvester bundles these into the upload folder before deploying.
 COPY worker/ /app/worker/
 COPY app.py /app/app.py
 
 EXPOSE 7860
 
-# COORDINATOR_URL must be set via HF Spaces env vars (see README)
+# Env vars injected by Harvester as HF Space secrets:
+#   COORDINATOR_URL  — https://your-coordinator.example.com
+#   SCRAPOWER_API_KEY — for auth_level >= 1
 ENV SCRAPOWER_API_KEY=""
 
 CMD ["python", "/app/app.py"]
