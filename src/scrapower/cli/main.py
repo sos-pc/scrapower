@@ -35,12 +35,6 @@ def main():
     p.add_argument("--runtime", default="wasm")
     p.add_argument("--client-id", default="cli")
 
-    # harvest
-    p = sub.add_parser("harvest", help="Start the harvester (local workers)")
-    p.add_argument("--coordinator", default="ws://localhost:8777/worker/ws")
-    p.add_argument("--count", type=int, default=2, help="Number of local workers")
-    p.add_argument("--runtimes", default="wasm", help="Comma-separated")
-
     args = parser.parse_args()
 
     if args.command == "serve":
@@ -49,8 +43,6 @@ def main():
         asyncio.run(_worker(args))
     elif args.command == "submit":
         asyncio.run(_submit(args))
-    elif args.command == "harvest":
-        asyncio.run(_harvest(args))
     else:
         parser.print_help()
 
@@ -131,12 +123,6 @@ async def _submit(args):
 
         print("Timeout waiting for result")
 
-
-async def _harvest(args):
-    from ..harvester.core import Harvester
-    h = Harvester(args.coordinator, config_path="harvester.yaml")
-    print("Harvester starting (config: harvester.yaml)...")
-    await h.start()
 
 if __name__ == "__main__":
     main()

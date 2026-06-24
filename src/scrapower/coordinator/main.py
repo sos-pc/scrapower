@@ -157,8 +157,6 @@ async def lifespan(app: FastAPI):
     # Task manager and scheduler
     task_manager = TaskManager(db)
     app.state.task_manager = task_manager
-    router_mod.task_manager = task_manager  # type: ignore[assignment]
-
     # Reputation service (tracks worker trust based on challenge results)
     from .reputation import ReputationService
 

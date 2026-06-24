@@ -2,50 +2,41 @@
 
 ---
 
-## 🔴 Corrigés
+## 🔴 Corrigés (session 2026-06-24)
 
 | # | Problème |
 |---|---------|
-| ~~C1~~ | `NameError: started` dans `remaining_pct()` |
-| ~~B1~~ | `COOLDOWN_SEC` 120→60s + log debug cooldown/max |
-| ~~B1b~~ | Kaggle `launch_worker` sans cooldown check |
-| ~~R1~~ | Rate limit pull partagé → dual-mode auth |
-| ~~W2~~ | `error` + `has_logs` + `logs_url` dans tasks |
-| ~~R2~~ | Retry 5xx backoff workers |
-| ~~H1~~ | Budget Modal reset reboot → persist DB |
-| ~~H2~~ | Dérive mensuelle budget → tracking supprimé |
-| ~~H3~~ | `_sandbox_started` orphelin → tracking supprimé |
-| ~~Refactor~~ | Archi 3 couches: task_type, matching, API unifiée |
-| ~~N1~~ | Harvester "launch failed" fantôme → smart launch |
-| ~~H6~~ | Caddy 502 → pas un bug (redémarrages Docker, R2 gère) |
+| ~~C1~~ | `NameError: started` |
+| ~~B1~~ | COOLDOWN 120→60s + logs |
+| ~~B1b~~ | Kaggle cooldown manquant |
+| ~~R1~~ | Rate limit pull → dual auth |
+| ~~W2~~ | error/has_logs/logs_url |
+| ~~R2~~ | Retry 5xx workers |
+| ~~H1-H3~~ | Budget Modal (persist + simplify) |
+| ~~Refactor~~ | Archi 3 couches |
+| ~~N1~~ | Launch failed fantôme |
+| ~~H6~~ | Caddy 502 (pas un bug) |
+| ~~N6~~ | Password WG en clair |
+| ~~N2/N3/N5~~ | Quick wins + sandbox |
+| ~~H5~~ | Logs cleanup vide |
+| ~~H4~~ | Injection task_service |
+| ~~N4~~ | Billing API migrate |
+| ~~W3~~ | Zombie → requeue bridge |
+| ~~W1~~ | Rotation logs 30j |
 
-## 🟡 Restant
+## 🟡 Audit — Dead code
 
-### Quick fixes (1 ligne, 0 risque)
+| # | Problème | Fichier | Lignes |
+|---|---------|----------|--------|
+| D1 | Ancien harvester + providers (seul `cli harvest` l'appelle) | `harvester/` entier | ~500 |
+| D2 | `worker_standalone.py` jamais importé | `cli/worker_standalone.py` | ~100 |
+| D3 | `security_middleware.py` jamais importé | `coordinator/security_middleware.py` | ~60 |
+| D4 | `router_mod.task_manager` setté mais plus lu | `main.py` | 1 |
 
-| # | Problème | Fichier |
-|---|---------|----------|
-| N2 | `HF_HUB_ENABLE_HF_TRANSFER` déprécié → `HF_XET_HIGH_PERFORMANCE` | `modal.py` |
-| N3 | `yt-dlp-ejs` dead dep installé dans chaque sandbox | `modal.py` |
-| H5 | Pas de log quand cleanup ne trouve rien | `modal.py`, `kaggle.py` |
-
-### Petit refactor (< 20 lignes)
-
-| # | Problème | Fichier |
-|---|---------|----------|
-| H4 | `_count_queued()` importe `rmod.task_manager` en douce → injecter dans constructeur | `ephemeral.py` |
-| N4 | `modal.billing.workspace_billing_report()` → `workspace.billing.report()` | `modal.py` |
-
-### Refactor moyen
+## 🟡 Audit — Incohérences
 
 | # | Problème | Fichier |
 |---|---------|----------|
-| W1 | Logs workers sans rotation ni rétention | `http_handler.py`, `domain.py` |
-| W3 | Zombie watchdog + requeue_stale systèmes parallèles | `session.py`, `domain.py` |
-
-### Reste à faire
-
-| # | Problème | Fichier |
-|---|---------|----------|
-| N5 | `python.py` doc: "trusted workers only" — mais Kaggle/Modal l'exécutent | `python.py` |
-| N6 | `whisper_runner.py` debug log: "WG_PROXY set: ...a2e07833e67d4724..." (password en clair) | `whisper_runner.py` |
+| I1 | Deux `WorkerProvider` / `Provider` ABC coexistent | `harvester/providers/base.py` vs `coordinator/harvester/base.py` |
+| I2 | `protocol.py` définit messages Mode A, mais Mode B (primaire) ne les utilise pas | `protocol.py` |
+| I3 | Chaîne `embedded_worker → worker/client → worker/sandbox → runtimes` pour un worker WASM quasi inactif | `embedded_worker.py`, `worker/client.py`, `worker/sandbox.py` |
