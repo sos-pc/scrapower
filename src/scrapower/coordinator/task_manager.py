@@ -73,6 +73,8 @@ class Task:
     gpu_required: bool = False
     output_hash: str = ""
     error: str = ""
+    task_type: str = "wasm"
+    requirements_json: str = "{}"
     created_at: str = ""
     updated_at: str = ""
 
@@ -102,6 +104,8 @@ class TaskManager:
         runtime: str,
         executable_hash: str,
         input_hash: str,
+        task_type: str = "wasm",
+        requirements_json: str = "{}",
         max_retries: int = 3,
         deadline_ms: int = 60000,
         gpu_required: bool = False,
@@ -115,6 +119,8 @@ class TaskManager:
             runtime=runtime,
             executable_hash=executable_hash,
             input_hash=input_hash,
+            task_type=task_type,
+            requirements_json=requirements_json,
             max_retries=max_retries,
             deadline_ms=deadline_ms,
             gpu_required=gpu_required,
@@ -196,6 +202,8 @@ class TaskManager:
                     if "gpu_required" in row.keys()
                     else False,
                     error=row["error"] if "error" in row.keys() else "",
+                    task_type=row["task_type"] if "task_type" in row.keys() else "wasm",
+                    requirements_json=row["requirements_json"] if "requirements_json" in row.keys() else "{}",
                     created_at=row["created_at"],
                     updated_at=row["updated_at"],
                 )
