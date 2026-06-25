@@ -18,6 +18,8 @@
 | B4 | Caddy fix hors repo → snippet `deploy/caddy/scrapower.conf` + doc README | `deploy/caddy/`, `README.md` |
 | B2 | `_ensure_secrets()` appelé à chaque restart → retiré de Path A, appelé uniquement au premier déploiement | `hf_spaces.py` |
 | B3 | `workers_active` HF basé sur le stage → tracking réel via `SessionManager.touch_mode_b()` + `mode_b_active_count("hf-")` + `_touch_starting()` au lancement + `_ping_worker()` fallback | `session.py`, `http_handler.py`, `router.py`, `hf_spaces.py`, `main.py` |
+| H1 | Worker ne retentait pas le submit → upload+submit retry ×3 (1s) sur les 3 workers | `app.py`, `worker.py`, `sworker.ipynb` |
+| B8/B9 | Rate limit pull : fuite mémoire + accès anonyme → cleanup auto + 401 obligatoire | `http_handler.py` |
 
 ---
 
@@ -25,8 +27,6 @@
 
 | # | Problème | Fichier |
 |---|---------|----------|
-| **B8** | `_RATE_WINDOW` (rate limit pull) : dict sans TTL par entrée, purge seulement quand > 5000 entrées. Attaque par IPs random → dict gonfle jusqu'à 4999 indéfiniment. | `http_handler.py` |
-| **B9** | Pull endpoint accepte les requêtes anonymes à 6/min (backward compat). 500 IPs × 6/min = 3000 req/min, vecteur DoS. | `http_handler.py` |
 | **B10** | `workers_active` surcompté temporairement (90s) après un restart : 1 promesse + 1 pull réel coexistent. Cosmétique, pas de sur-lancement. | `hf_spaces.py` |
 
 ---
