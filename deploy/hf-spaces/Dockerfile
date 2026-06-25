@@ -22,7 +22,9 @@ RUN pip install --no-cache-dir aiohttp wasmtime
 
 # Copy worker runtime files (from src/scrapower/worker/ in the repo).
 # The Harvester bundles these into the upload folder before deploying.
-COPY worker/ /app/worker/
+# NOTE: app.py is standalone (no imports from worker/).
+# The worker/ directory was removed from the Docker build context
+# in 2026-06-24 — it only contained dead weight for this image.
 COPY app.py /app/app.py
 
 EXPOSE 7860

@@ -231,6 +231,7 @@ async def lifespan(app: FastAPI):
                     space_id=hf_space_id,
                     coordinator_url=coordinator_url,
                     api_key=api_key,
+                    session_manager=manager,
                 )
             )
         except ImportError:

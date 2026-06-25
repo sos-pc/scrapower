@@ -299,10 +299,19 @@ class TaskManager:
             "UPDATE tasks SET output_hash = ?, updated_at = ? WHERE id = ?",
             (output_hash, str(now), task_id),
         )
-        # Increment output blob ref_count so GC doesn't delete it
+        # Increment output blob ref_count so GC doesn't delete it.
+        # The rowcount also serves as an implicit existence check: if the
+        # worker never uploaded the blob (or uploaded a different one),
+        # rowcount=0 and we reject the submit — preventing ghost tasks
+        # where COMPLETED points to a nonexistent result.
         if output_hash:
-            await self._db.execute(
+            cursor = await self._db.execute(
                 "UPDATE blobs SET ref_count = ref_count + 1 WHERE hash = ?", (output_hash,)
             )
+            if cursor.rowcount == 0:
+                # Blob not found. Return False so the transaction rolls back
+                # (the UPDATE tasks above is discarded). Task stays ASSIGNED;
+                # requeue_stale will recover it after deadline_ms.
+                return False
         await self._db.commit()
         return await self.transition(task_id, TaskState.COMPLETED)

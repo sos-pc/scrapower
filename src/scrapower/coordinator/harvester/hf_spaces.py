@@ -60,6 +60,7 @@ class HuggingFaceHarvester(WorkerProvider):
         coordinator_url: str,
         api_key: str = "",
         deploy_dir: str | None = None,
+        session_manager=None,
     ):
         self._token = hf_token
         self._space_id = space_id
@@ -71,6 +72,8 @@ class HuggingFaceHarvester(WorkerProvider):
         self._api = HfApi(token=hf_token)
         self._deployed = False  # True after first successful deploy
         self._last_health_check: float = 0
+        self._space_url: str = ""  # Cached Space URL (populated on first use)
+        self._session_manager = session_manager  # For counting active HF workers
 
     @staticmethod
     def _find_deploy_dir() -> str:
@@ -82,9 +85,7 @@ class HuggingFaceHarvester(WorkerProvider):
         ]:
             if os.path.isdir(candidate):
                 return candidate
-        raise FileNotFoundError(
-            "HF Spaces deploy directory not found. Expected deploy/hf-spaces/"
-        )
+        raise FileNotFoundError("HF Spaces deploy directory not found. Expected deploy/hf-spaces/")
 
     # -- WorkerProvider interface ------------------------------------
 
@@ -111,30 +112,35 @@ class HuggingFaceHarvester(WorkerProvider):
         """Ensure a worker is running. Creates the Space on first call,
         wakes it on subsequent calls if sleeping.
 
-        Returns True if a worker is (or will be) running.
+        Returns True only when this call actually started/restarted
+        a worker (first deploy or wake). Returns False when the worker
+        is already running — the EphemeralHarvester should try another
+        provider instead of counting this as a successful launch.
         """
         if not self._deployed:
             return await self._first_deploy()
 
-        # Space exists — check if it needs waking
+        # Space exists — check if it needs waking.
+        # Only return True when we actually DO something.
         now = time.time()
         if now - self._last_health_check < HEALTH_CHECK_INTERVAL_SEC:
-            return True  # Checked recently, assume alive
+            return False  # Nothing to do, worker is already running
 
         self._last_health_check = now
         try:
             runtime = self._api.get_space_runtime(self._space_id)
             if runtime.stage == "RUNNING":
-                return True
+                return False  # Already running, nothing to launch
             if runtime.stage in ("BUILDING", "RUNNING_BUILDING", "APP_STARTING"):
                 log.info("hf: Space %s is %s — waiting", self._space_id, runtime.stage)
-                return True  # It's starting, will be ready soon
+                return False  # Still building, will be ready eventually
             if runtime.stage in ("SLEEPING", "PAUSED", "STOPPED"):
                 # Wake via HTTP GET (avoids Docker rebuild)
                 return await self._wake_space()
             log.warning("hf: Space %s in unexpected stage: %s", self._space_id, runtime.stage)
             # Try restart as fallback
             self._api.restart_space(self._space_id)
+            self._touch_starting()  # Worker is starting
             return True
         except Exception as e:
             log.warning("hf: Failed to check/restart Space: %s", e)
@@ -157,7 +163,10 @@ class HuggingFaceHarvester(WorkerProvider):
             provider_type="hf-spaces",
             gpu_type="none",
             remaining_pct=await self.remaining_pct(),
-            workers_active=1 if stage == "RUNNING" else 0,
+            workers_active=(
+                self._session_manager.mode_b_active_count("hf-") if self._session_manager else 0
+            )
+            or (1 if stage == "RUNNING" and await self._ping_worker() else 0),
             quota_detail={"stage": stage},
         )
 
@@ -165,7 +174,46 @@ class HuggingFaceHarvester(WorkerProvider):
 
     async def _first_deploy(self) -> bool:
         """Create Space repo, set secrets, upload code, wait for build.
-        Called exactly once per coordinator lifetime."""
+        If the Space already exists and is running, skips the upload
+        (coordinator restart — _deployed flag was lost)."""
+
+        # Check if Space already exists and is running (coordinator restart)
+        try:
+            info = self._api.space_info(self._space_id)
+            self._space_url = info.host  # Cache for _wake_space()
+            rt = self._api.get_space_runtime(self._space_id)
+            if rt.stage in ("RUNNING", "BUILDING", "RUNNING_BUILDING", "APP_STARTING"):
+                log.info(
+                    "hf: Space %s already exists (stage=%s) — skipping deploy",
+                    self._space_id,
+                    rt.stage,
+                )
+                self._deployed = True
+                self._last_health_check = time.time()
+                # Secrets were set during initial deploy and don't change
+                # on restart. To update them after changing .env, delete the
+                # HF Space and restart the coordinator (triggers Path B).
+                self._touch_starting()  # Signal: worker was already running
+                return True
+            # Stage not in the expected list (e.g. ERROR, STOPPED) —
+            # fall through to full deploy to try to recover.
+            log.warning(
+                "hf: Space %s in stage=%s — attempting full deploy",
+                self._space_id,
+                rt.stage,
+            )
+        except Exception:
+            # Space doesn't exist yet (expected on first deploy) or API
+            # unreachable. Fall through to Path B: create_repo(exist_ok=True)
+            # is idempotent — creates the Space on first deploy, fails fast
+            # if the API is truly down.
+            log.warning(
+                "hf: cannot check Space %s, will attempt full deploy",
+                self._space_id,
+                exc_info=True,
+            )
+            # Falls through to Path B
+
         log.info("hf: first deploy for %s", self._space_id)
 
         # 1. Create the Space repo (idempotent if exists)
@@ -180,34 +228,26 @@ class HuggingFaceHarvester(WorkerProvider):
             log.error("hf: failed to create Space repo: %s", e)
             return False
 
-        # 2. Set secrets (env vars the worker reads at runtime)
+        # Cache the Space URL now that the repo exists
         try:
-            self._api.add_space_secret(
-                self._space_id, "COORDINATOR_URL", self._coordinator_url
-            )
-            self._api.add_space_secret(
-                self._space_id, "SCRAPOWER_API_KEY", self._api_key
-            )
-        except Exception as e:
-            log.warning("hf: failed to set some secrets: %s", e)
-            # Non-fatal — secrets may already exist
+            info = self._api.space_info(self._space_id)
+            self._space_url = info.host
+        except Exception:
+            pass  # Will be lazy-populated in _wake_space if needed
+
+        # 2. Set secrets
+        await self._ensure_secrets()
 
         # 3. Prepare upload folder with worker runtime files
         with tempfile.TemporaryDirectory() as tmp:
             upload_dir = Path(tmp)
-            # Copy deploy files (Dockerfile, app.py, README.md)
+            # Copy deploy files (Dockerfile, app.py, README.md).
+            # The HF worker (app.py) is standalone — it doesn't import
+            # anything from worker/ so we don't bundle that directory.
             for fname in ["Dockerfile", "app.py", "README.md"]:
                 src = Path(self._deploy_dir) / fname
                 if src.exists():
                     shutil.copy2(src, upload_dir / fname)
-
-            # Copy worker runtime (needed by Dockerfile's COPY worker/)
-            worker_src = Path(self._deploy_dir).parent.parent / "src" / "scrapower" / "worker"
-            if worker_src.exists():
-                shutil.copytree(worker_src, upload_dir / "worker")
-            else:
-                log.error("hf: worker runtime not found at %s", worker_src)
-                return False
 
             # 4. Upload everything to the Space repo
             try:
@@ -230,16 +270,78 @@ class HuggingFaceHarvester(WorkerProvider):
 
         self._deployed = True
         self._last_health_check = time.time()
+        self._touch_starting()  # Worker is starting — signal the harvester
         log.info("hf: deploy complete for %s", self._space_id)
         return True
+
+    async def _ensure_secrets(self):
+        """Set secrets on the Space, cleaning up any colliding variables first.
+        HF Spaces forbids having both a variable and a secret with the same key."""
+        for key in ["COORDINATOR_URL", "SCRAPOWER_API_KEY"]:
+            try:
+                self._api.delete_space_variable(self._space_id, key)
+            except Exception:
+                pass  # Variable may not exist, that's fine
+            try:
+                self._api.add_space_secret(
+                    self._space_id,
+                    key,
+                    self._coordinator_url if key == "COORDINATOR_URL" else self._api_key,
+                )
+            except Exception as e:
+                log.warning("hf: failed to set secret %s: %s", key, e)
+
+    def _touch_starting(self):
+        """Signal the harvester that a worker is starting.
+
+        Inserts a temporary Mode B entry that counts toward
+        workers_active for 90s. If the real worker pulls before
+        the TTL expires, the real entry takes over. Otherwise
+        the promise expires and the harvester may launch again."""
+        if self._session_manager:
+            self._session_manager.touch_mode_b(f"hf-starting-{int(time.time())}")
+
+    async def _ping_worker(self) -> bool:
+        """Check whether the worker process is alive inside the Space.
+
+        GETs the health endpoint (port 7860). Returns True if the
+        instance responds 200 — meaning the Python worker process
+        is running, even if it hasn't pulled yet."""
+        space_url = self._space_url
+        if not space_url:
+            try:
+                info = self._api.space_info(self._space_id)
+                space_url = info.host
+                self._space_url = space_url
+            except Exception:
+                space_host = self._space_id.replace("/", "-") + ".hf.space"
+                space_url = f"https://{space_host}"
+        try:
+            async with aiohttp.ClientSession() as s:
+                async with s.get(space_url, timeout=aiohttp.ClientTimeout(total=5)) as r:
+                    return r.status == 200
+        except Exception:
+            return False
 
     async def _wake_space(self) -> bool:
         """Wake a sleeping Space by sending an HTTP GET to its health endpoint.
         This is faster than restart_space() which triggers a Docker rebuild.
-        HF doc: 'Anyone visiting your Space will restart it automatically.'"""
-        # Derive Space URL from space_id: username/repo-name → username-repo-name.hf.space
-        space_host = self._space_id.replace("/", "-") + ".hf.space"
-        space_url = f"https://{space_host}"
+        HF doc: 'Anyone visiting your Space will restart it automatically.'
+
+        Uses the cached Space URL (from space_info().host) when available.
+        Falls back to manual derivation from space_id if the cache is empty
+        (e.g., first deploy before space_info() was called)."""
+        space_url = self._space_url
+        if not space_url:
+            # Cache miss — fetch from API or derive manually
+            try:
+                info = self._api.space_info(self._space_id)
+                space_url = info.host
+                self._space_url = space_url
+            except Exception:
+                # Fallback: derive from space_id (old behavior)
+                space_host = self._space_id.replace("/", "-") + ".hf.space"
+                space_url = f"https://{space_host}"
 
         log.info("hf: waking Space %s via %s", self._space_id, space_url)
         try:
@@ -248,6 +350,7 @@ class HuggingFaceHarvester(WorkerProvider):
                     if r.status in (200, 503):
                         # 200 = already awake, 503 = waking up (HF returns this during cold start)
                         log.info("hf: Space wake OK (HTTP %s)", r.status)
+                        self._touch_starting()  # Worker is starting
                         return True
                     log.warning("hf: unexpected HTTP %s waking Space", r.status)
         except Exception as e:

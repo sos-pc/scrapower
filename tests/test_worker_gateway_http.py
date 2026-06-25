@@ -13,6 +13,7 @@ async def test_pull_no_tasks(http_client):
     """Worker pulls, no tasks available."""
     response = await http_client.post(
         "/worker/pull",
+        headers={"X-API-Key": "test-api-key"},
         json={
             "type": "pull",
             "version": "2.1",
@@ -47,6 +48,7 @@ async def test_pull_with_capabilities(http_client):
     """Worker pulls with capabilities, server accepts."""
     response = await http_client.post(
         "/worker/pull",
+        headers={"X-API-Key": "test-api-key"},
         json={
             "type": "pull",
             "version": "2.1",
@@ -104,6 +106,7 @@ async def test_pull_with_minimal_lifecycle(http_client):
     """Pull with very short remaining lifetime still works."""
     response = await http_client.post(
         "/worker/pull",
+        headers={"X-API-Key": "test-api-key"},
         json={
             "type": "pull",
             "version": "2.1",
@@ -136,6 +139,7 @@ async def test_rate_limit_pull(http_client):
     # First pull — should succeed
     response = await http_client.post(
         "/worker/pull",
+        headers={"X-API-Key": "test-api-key"},
         json={
             "type": "pull",
             "version": "2.1",
@@ -159,10 +163,10 @@ async def test_rate_limit_pull(http_client):
     )
     assert response.status_code == 200
 
-    # Immediate second pull might be rate-limited
-    # (config allows 100/min per IP, so should pass)
+    # Immediate second pull — still within 30/min limit
     response2 = await http_client.post(
         "/worker/pull",
+        headers={"X-API-Key": "test-api-key"},
         json={
             "type": "pull",
             "version": "2.1",

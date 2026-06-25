@@ -67,6 +67,26 @@ curl $COORDINATOR_URL/results/{task_id} -H "X-API-Key: $API_KEY"
 | GET | `/stats` | Capacité infrastructure |
 | GET | `/health` | Health check |
 
+## Déploiement
+
+### Reverse proxy (Caddy)
+
+Les workers externes (Kaggle, Modal, HF Spaces) accèdent au coordinateur via un reverse proxy HTTPS. Sans cette configuration, les workers reçoivent `connection refused`.
+
+Ajouter le bloc `deploy/caddy/scrapower.conf` à votre Caddyfile, en remplaçant `DOCKER_GATEWAY` par la gateway Docker appropriée (généralement `172.18.0.1`).
+
+```bash
+# Vérifier la gateway Docker :
+docker network inspect bridge | grep Gateway
+
+# Ajouter le bloc à la fin du Caddyfile :
+cat deploy/caddy/scrapower.conf >> /path/to/Caddyfile
+# Éditer pour remplacer DOCKER_GATEWAY
+
+# Reload :
+docker compose restart caddy
+```
+
 ## Licence
 
 MIT

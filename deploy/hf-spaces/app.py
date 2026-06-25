@@ -325,46 +325,60 @@ async def run_worker():
 
             _log(f"OK: {output_hash[:12]}...")
 
-            # ---- UPLOAD result blob ----
-            try:
-                async with session.put(
-                    f"{COORDINATOR_URL}/blobs?assignment_token={tok}",
-                    data=output,
-                    timeout=aiohttp.ClientTimeout(total=30),
-                ) as r:
-                    up = await r.json()
-                if not output_hash:
-                    output_hash = up.get("hash", "")
-            except Exception as e:
-                _log(f"Upload failed: {e}")
-                continue
+            # ---- UPLOAD + SUBMIT (with retry on transient failures) ----
+            #    Up to 3 attempts to handle blob races, network hiccups,
+            #    or coordinator-side rejections (S1 blob check). After 3
+            #    failures the task stays ASSIGNED and requeue_stale recovers.
+            submitted = False
+            for attempt in range(3):
+                # UPLOAD result blob
+                try:
+                    async with session.put(
+                        f"{COORDINATOR_URL}/blobs?assignment_token={tok}",
+                        data=output,
+                        timeout=aiohttp.ClientTimeout(total=30),
+                    ) as r:
+                        up = await r.json()
+                    output_hash = up.get("hash", output_hash)
+                except Exception as e:
+                    _log(f"Upload failed (attempt {attempt + 1}/3): {e}")
+                    await asyncio.sleep(1)
+                    continue
 
-            # ---- SUBMIT result ----
-            try:
-                async with session.post(
-                    f"{COORDINATOR_URL}/worker/submit",
-                    json={
-                        "type": "submit",
-                        "task_id": task["id"],
-                        "assignment_token": tok,
-                        "result": {
-                            "output_hash": output_hash,
-                            "execution_metadata": {
-                                "exit_code": exit_code,
-                                "stderr": worker_stderr,
+                # SUBMIT result
+                try:
+                    async with session.post(
+                        f"{COORDINATOR_URL}/worker/submit",
+                        json={
+                            "type": "submit",
+                            "task_id": task["id"],
+                            "assignment_token": tok,
+                            "result": {
+                                "output_hash": output_hash,
+                                "execution_metadata": {
+                                    "exit_code": exit_code,
+                                    "stderr": worker_stderr,
+                                },
                             },
                         },
-                    },
-                    timeout=aiohttp.ClientTimeout(total=10),
-                ) as r:
-                    result = await r.json()
-                accepted = result.get("accepted", False)
-                _log(f"Submit: accepted={accepted}")
-                if accepted:
-                    TOTAL_COMPLETED += 1
-                    _log(f"Total: {TOTAL_COMPLETED}")
-            except Exception as e:
-                _log(f"Submit failed: {e}")
+                        timeout=aiohttp.ClientTimeout(total=10),
+                    ) as r:
+                        result = await r.json()
+                    accepted = result.get("accepted", False)
+                    _log(f"Submit: accepted={accepted}")
+                    if accepted:
+                        TOTAL_COMPLETED += 1
+                        _log(f"Total: {TOTAL_COMPLETED}")
+                        submitted = True
+                        break
+                    _log(f"Submit rejected (attempt {attempt + 1}/3)")
+                except Exception as e:
+                    _log(f"Submit failed (attempt {attempt + 1}/3): {e}")
+
+                await asyncio.sleep(1)
+
+            if not submitted:
+                _log("Submit failed after 3 attempts — task will be requeued by stale check")
 
             await asyncio.sleep(POLL_INTERVAL_SEC)
 

@@ -22,7 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY pyproject.toml .
 RUN pip install --no-cache-dir \
     fastapi "uvicorn[standard]" pydantic aiosqlite aiofiles \
-    structlog aiohttp wasmtime cryptography kaggle faster-whisper yt-dlp modal
+    structlog aiohttp wasmtime cryptography kaggle faster-whisper yt-dlp modal huggingface_hub
 
 # Copy application source (package lives in src/scrapower/)
 COPY src/ src/

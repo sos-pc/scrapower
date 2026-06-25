@@ -68,6 +68,11 @@ async def worker_heartbeat(request: Request):
     token = body.get("assignment_token", "")
     logs = body.get("logs", "")
 
+    # Track Mode B liveness (heartbeats prove the worker is alive during
+    # long task execution, when it doesn't pull)
+    if session_manager:
+        session_manager.touch_mode_b(worker_id)
+
     # Always save logs for debugging
     if logs:
         save_id = task_id or worker_id

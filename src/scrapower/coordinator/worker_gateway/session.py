@@ -35,6 +35,9 @@ class SessionManager:
         self._sessions: dict[str, WorkerSession] = {}
         self._heartbeat_interval = heartbeat_interval_sec
         self._heartbeat_threshold = heartbeat_miss_threshold
+        # Mode B workers (HTTP pull) don't create sessions — we track
+        # them via a simple last_seen timestamp, updated on pull/heartbeat.
+        self._mode_b_workers: dict[str, float] = {}  # worker_id → last_seen
 
     def create(
         self, worker_id: str, ws: Any = None, auth_level: int = 0, peer_ip: str = ""
@@ -84,6 +87,33 @@ class SessionManager:
     def external_workers_connected(self) -> bool:
         """True if any non-embedded worker is connected."""
         return any(s.worker_id != "_embedded" and not s.is_zombie for s in self._sessions.values())
+
+    def touch_mode_b(self, worker_id: str) -> None:
+        """Record that a Mode B worker is alive (called on pull/heartbeat).
+
+        Mode B workers (Kaggle, Modal, HF Spaces) use stateless HTTP pull
+        instead of persistent WebSocket connections. This lightweight
+        tracking gives the harvester visibility into how many workers are
+        actually connected, without creating full sessions."""
+        self._mode_b_workers[worker_id] = time.time()
+
+    def mode_b_active_count(self, prefix: str = "", max_age_sec: float = 90) -> int:
+        """Count Mode B workers seen recently, optionally filtered by prefix.
+
+        Workers that haven't been seen in max_age_sec are purged and not
+        counted. The default 90s covers 3 heartbeat intervals (30s each)
+        during task execution, matching zombie_watchdog's logic."""
+        now = time.time()
+        stale = [wid for wid, ts in self._mode_b_workers.items() if now - ts > max_age_sec]
+        for wid in stale:
+            del self._mode_b_workers[wid]
+        if prefix:
+            return sum(
+                1
+                for wid, ts in self._mode_b_workers.items()
+                if wid.startswith(prefix) and now - ts <= max_age_sec
+            )
+        return len(self._mode_b_workers)
 
     async def zombie_watchdog(self, on_zombie=None):
         """Detect dead WS sessions. DOES NOT handle task lifecycle.

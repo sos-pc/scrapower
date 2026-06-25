@@ -31,12 +31,10 @@ from .session import SessionManager
 log = logging.getLogger(__name__)
 
 # ── Rate limiting ──────────────────────────────────────────────
-# Per-key sliding window. Authenticated workers (header X-API-Key)
-# get 30 pulls/min; anonymous workers get 6/min (survival mode
-# for workers deployed before auth was required).
+# Per-worker_id sliding window. Every worker must authenticate
+# with X-API-Key header. No anonymous access.
 _RATE_WINDOW: dict[str, list[float]] = {}
-_RATE_AUTH_LIMIT = 30  # pulls/min for authenticated workers
-_RATE_ANON_LIMIT = 6  # pulls/min for anonymous (survival)
+_RATE_AUTH_LIMIT = 30  # pulls/min per worker
 _RATE_WINDOW_SEC = 60
 
 
@@ -46,10 +44,10 @@ def _check_pull_rate(key: str, max_per_minute: int) -> bool:
     window = _RATE_WINDOW.get(key, [])
     cutoff = now - _RATE_WINDOW_SEC
     window = [t for t in window if t > cutoff]
-    _RATE_WINDOW[key] = window
-    # Purge stale entries lazily
-    if len(_RATE_WINDOW) > 5000:
-        _RATE_WINDOW.clear()
+    if window:
+        _RATE_WINDOW[key] = window
+    else:
+        _RATE_WINDOW.pop(key, None)  # Cleanup stale entries
     if len(window) >= max_per_minute:
         return False
     window.append(now)
@@ -88,16 +86,19 @@ async def pull(request: Request, sessions: SessionManager):
     client_ip = request.client.host if request.client else "unknown"
     authenticated = verify_api_key(request)
 
-    # Rate limit: authenticated workers tracked by worker_id (generous),
-    # anonymous by IP (survival mode for old workers not yet sending API key).
-    if authenticated:
-        worker_id = body.get("worker_id", f"auth-{client_ip}")
-        rate_key = worker_id
-        rate_max = _RATE_AUTH_LIMIT
-    else:
-        worker_id = body.get("worker_id", f"anon-{client_ip}")
-        rate_key = client_ip
-        rate_max = _RATE_ANON_LIMIT
+    if not authenticated:
+        return JSONResponse(
+            {
+                "type": "error",
+                "code": "UNAUTHORIZED",
+                "message": "API key required — add X-API-Key header",
+            },
+            status_code=401,
+        )
+
+    worker_id = body.get("worker_id", f"auth-{client_ip}")
+    rate_key = worker_id
+    rate_max = _RATE_AUTH_LIMIT
 
     if not _check_pull_rate(rate_key, rate_max):
         return JSONResponse(
@@ -114,6 +115,10 @@ async def pull(request: Request, sessions: SessionManager):
     worker_logs = body.get("logs", "")
     if worker_logs:
         await _save_worker_logs(worker_id, worker_logs, prefix="pull")
+
+    # Track Mode B liveness so the harvester knows this worker is alive
+    if sessions:
+        sessions.touch_mode_b(worker_id)
 
     task_service = getattr(request.app.state, "task_service", None)
     if not task_service:

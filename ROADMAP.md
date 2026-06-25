@@ -19,6 +19,14 @@
 - [x] **Auth** — `MODAL_ACCOUNTS` + `KAGGLE_ACCOUNTS` multi-comptes
 - [x] **Workers actifs** — 3 Kaggle + 2 Modal = 5 comptes GPU
 
+### HuggingFace Spaces (CPU worker)
+- [x] **`HuggingFaceHarvester`** — déploiement automatique (create_repo → secrets → upload_folder → restart), wake via HTTP GET, skip redeploy si déjà existant
+- [x] **`deploy/hf-spaces/app.py`** — worker Mode B CPU-only (WASM + Python), health server :7860, sandbox subprocess
+- [x] **`deploy/hf-spaces/Dockerfile`** — image minimale (wasmtime + aiohttp, pas de GPU)
+- [x] **Intégration Caddy** — reverse_proxy 172.18.0.1:8777 pour traffic externe (workers HF, Kaggle, Modal)
+- [x] **Capability matching** — HF déclare `gpu: {supported: false}`, le coordinateur route GPU → Kaggle/Modal, CPU → HF
+- [x] **Test réel** — tâche Python exécutée avec succès sur le worker HF (fa17e813 → hf-1cfa9ea8)
+
 ### Transcription
 - [x] **`POST /transcribe/batch`** — playlist → N tâches via yt-dlp --flat-playlist
 - [x] **Script collecte** — `scripts/batch_collect.py` poll + sauvegarde fichiers
@@ -47,6 +55,7 @@
 - [x] **Suivi worker heartbeat** — `requeue_stale` atomique 90s, touch `assigned_at` sur tous les signaux (pull/heartbeat/submit/WS), logs Mode A persistés, heartbeat Kaggle
 - [x] **Anti-pattern coordinator DL** — documenté comme TEMPORARY BANDAGE dans le code. Cible : workers DL eux-mêmes via WireGuard
 - [x] **`cleanup_stale` cross-compte** — Modal : `_sandbox_tokens` dict, itération tous tokens. Kaggle : `_kernel_refs` tracking local. Cleanup pour TOUS les providers (pas juste candidates)
+- [x] **Blob hash mismatch workers** — `output_hash` du script JSON ≠ sha256 des bytes uploadés. Fix : toujours utiliser le hash retourné par le blob store (`up.get("hash")`). Corrigé sur Modal, HF Spaces, Kaggle.
 - [ ] **`network.ip_reputation`** dans les capabilities — tag informatif "residential" | "datacenter" | "vpn" (non bloquant)
 - [ ] **Coordinateur décide au prepare** — si tous les workers sont `datacenter` → pré-DL audio (élimine gaspillage fallback)
 
