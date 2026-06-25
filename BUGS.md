@@ -62,6 +62,10 @@ Quand `complete()` échoue (token invalide, blob manquant, etc.), le worker ne r
 
 `ProviderStatus.workers_starting` + harvester-aware lifecycle. Bénéficierait à tous les providers. Refactor d'architecture.
 
+### H3 — Monitoring worker persistant
+
+Table `workers` supprimée (B13) car plus utilisée depuis la suppression de la réputation. À recréer si on veut un tracking qui survit au restart du coordinator : `worker_id`, `first_seen`, `last_seen`, `tasks_completed`, `provider`.
+
 ---
 
 ## 🔒 Sécurité (corrigé)

@@ -55,6 +55,8 @@ class ModalHarvester(WorkerProvider):
         self._db_path = db_path
         if db_path:
             self._load_state()
+        # Modal Clients per account (avoids os.environ mutation for thread safety)
+        self._clients: dict[str, Any] = {}  # token_id → modal.Client (lazy)
 
     # ── WorkerProvider interface ──────────────────────────────
 
@@ -149,29 +151,18 @@ class ModalHarvester(WorkerProvider):
         return best_pct
 
     async def _billing_for_account(self, account: dict, start, end) -> float:
-        """Call modal billing API for a single account. Returns total cost.
-
-        Uses modal.Workspace.billing.report (new API, 2026-06-18+).
-        Falls back to deprecated modal.billing.workspace_billing_report
-        on older SDK versions.
-        """
+        """Call modal billing API for a single account. Returns total cost."""
         import modal
 
-        os.environ["MODAL_TOKEN_ID"] = account.get("token_id", "")
-        os.environ["MODAL_TOKEN_SECRET"] = account.get("token_secret", "")
+        tid = account.get("token_id", "")
+        tsec = account.get("token_secret", "")
+        client = self._get_client(tid, tsec)
         try:
-            workspace = await modal.Workspace.lookup.aio()
-            report = await workspace.billing.report.aio(start=start, end=end, resolution="d")
+            ws = modal.Workspace.from_context(client=client)
+            report = await ws.billing.report.aio(start=start, end=end, resolution="d")
             return sum(float(item.get("cost", 0)) for item in report)
         except Exception:
-            try:
-                # Fallback for older Modal SDK
-                report = await modal.billing.workspace_billing_report.aio(
-                    start=start, end=end, resolution="d"
-                )
-                return sum(float(item.get("cost", 0)) for item in report)
-            except Exception:
-                return 0.0
+            return 0.0
 
     async def has_quota(self) -> bool:
         """Budget restant > 1%."""
@@ -218,9 +209,8 @@ class ModalHarvester(WorkerProvider):
         """Remove terminated sandboxes from local tracking list.
 
         Iterates ALL account tokens to find sandboxes — Modal's API is
-        scoped to the current os.environ token, so a sandbox created with
-        account A is invisible to account B. We check every token.
-        """
+        scoped per account, so a sandbox created with account A is
+        invisible to account B. We check every token via its own Client."""
         self._save_state()
         if not self._sandbox_ids:
             log.debug("modal cleanup: 0 sandboxes tracked")
@@ -239,10 +229,11 @@ class ModalHarvester(WorkerProvider):
 
             for tid, tsec in all_tokens:
                 try:
-                    os.environ["MODAL_TOKEN_ID"] = tid
-                    os.environ["MODAL_TOKEN_SECRET"] = tsec
-                    app = await modal.App.lookup.aio("scrapower", create_if_missing=False)
-                    async for sb_info in modal.Sandbox.list.aio(app_id=app.app_id):
+                    client = self._get_client(tid, tsec)
+                    app = await modal.App.lookup.aio(
+                        "scrapower", create_if_missing=False, client=client
+                    )
+                    async for sb_info in modal.Sandbox.list.aio(app_id=app.app_id, client=client):
                         alive.add(sb_info.object_id)
                 except Exception:
                     continue  # token might be invalid or account deleted
@@ -287,6 +278,17 @@ class ModalHarvester(WorkerProvider):
 
     # ── Internal ──────────────────────────────────────────────
 
+    def _get_client(self, token_id: str, token_secret: str):
+        """Return or create a Modal Client for this account.
+
+        Avoids mutating os.environ — each account gets its own
+        Client, making Modal operations thread-safe."""
+        if token_id not in self._clients:
+            import modal
+
+            self._clients[token_id] = modal.Client.from_credentials(token_id, token_secret)
+        return self._clients[token_id]
+
     def _next_account(self) -> dict:
         a = self._accounts[self._round % len(self._accounts)]
         self._round += 1
@@ -304,10 +306,11 @@ class ModalHarvester(WorkerProvider):
         import modal
 
         account = self._next_account()
-        os.environ["MODAL_TOKEN_ID"] = account["token_id"]
-        os.environ["MODAL_TOKEN_SECRET"] = account["token_secret"]
+        tid = account["token_id"]
+        tsec = account["token_secret"]
+        client = self._get_client(tid, tsec)
 
-        app = await modal.App.lookup.aio("scrapower", create_if_missing=True)
+        app = await modal.App.lookup.aio("scrapower", create_if_missing=True, client=client)
 
         # Read worker script content
         worker_code = open(worker_path).read()
@@ -333,6 +336,7 @@ class ModalHarvester(WorkerProvider):
             idle_timeout=IDLE_TIMEOUT,
             cpu=4,
             memory=30720,  # 30 GB RAM
+            client=client,
             secrets=[
                 modal.Secret.from_dict(
                     {
@@ -341,9 +345,9 @@ class ModalHarvester(WorkerProvider):
                         "WG_PROXY": "socks5://scrapower:"
                         + os.environ.get("SCRAPOWER_WG_PASS", "")
                         + "@"
-                        + os.environ.get(
-                            "SCRAPOWER_COORDINATOR_URL", "localhost"
-                        ).replace("https://", "")
+                        + os.environ.get("SCRAPOWER_COORDINATOR_URL", "localhost").replace(
+                            "https://", ""
+                        )
                         + ":1081",
                     }
                 )
