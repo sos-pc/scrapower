@@ -2,6 +2,51 @@
 
 ---
 
+## 🔥 Session en cours (2026-06-25)
+
+### Objectif : Débugger le cycle transcription batch (playlist Hegel, 2h/vidéo)
+
+### Constat initial
+- Mode B (WG proxy, cookies disabled) fonctionne pour vidéos courtes (19s)
+- Vidéos longues (>5 min) : worker tué → retranscription → boucle
+- Impossible de savoir pourquoi le submit échoue (logs muets)
+
+### Chronologie
+
+| Étape | Action | Résultat |
+|-------|--------|----------|
+| 1 | Ajout logs diagnostic dans `complete()` et `submit()` (commit `e09b5c3`) | ✅ Déployé, prêt à capturer |
+| 2 | Test batch 2 vidéos | ❌ Worker Modal tué à 300s (`KeyboardInterrupt`) |
+| 3 | Analyse logs Modal (compte piot.jeremie) | Transcription 209 segments puis kill externe |
+| 4 | Recherche doc Modal | GPU Sandboxes = préemptibles. `timeout` peut être ignoré. |
+| 5 | Découverte P1 — Harvester choisit HF (CPU) pour tâches GPU | Bloque tout test Modal |
+
+### 🔴 P0 — Modal tue les GPU sandboxes à 300s
+- **Observé** : Sandbox `modal-5196945d` tuée par `KeyboardInterrupt` 5 min après création
+- **Code** : `timeout=21600` (6h) dans `modal.py:23`, mais kill à 300s
+- **Cause** : Doc Modal → GPU Sandboxes préemptibles. Paramètre `timeout` ignoré ou surchargé.
+- **Solution proposée** : Checkpoints dans `whisper_runner.py` — sauver progression, sortir proprement sur SIGINT
+- **État** : En attente (bloqué par P1)
+
+### 🟠 P1 — Harvester choisit HF (CPU) pour tâches GPU
+- **3 sous-bugs** :
+  - **P1a** : `remaining_pct()` ment à 100% quand `_deployed=False` — `hf_spaces.py:169`
+  - **P1b** : `_first_deploy()` fait redeploy complet pour PAUSED/SLEEPING/STOPPED — `hf_spaces.py:183`
+  - **P1c** : `total_active` compte HF pour tâches GPU → skip launch — `ephemeral.py:85`
+- **Solution P1a+P1b** : Ajouter `SLEEPING, PAUSED, STOPPED` aux stages reconnus (4 lignes)
+- **Solution P1c** : Filtrer `total_active` par compatibilité tâche (15 lignes)
+- **État** : ✅ P1a+P1b corrigés. P1c et refactor en attente.
+
+### 🔮 Refactor nécessaire (identifié)
+- **R1** : `_deployed` est volatil → persister en DB (comme `_budget_cache` Modal)
+- **R2** : Les listes de stages sont dupliquées dans `remaining_pct()`, `_first_deploy()`, `launch_worker()` → constante partagée `_STAGES_EXISTS`
+- **R3** : `_first_deploy()` Path A retourne `True` alors qu'il n'a rien lancé → fausser le compte du harvester
+
+### 🟡 P2 — HF ghost après restart
+- Même cause que P1a+P1b. Corrigé par la même solution.
+
+---
+
 ## 🔴 Corrigés (session 2026-06-24/25)
 
 | # | Bug | Fichiers |

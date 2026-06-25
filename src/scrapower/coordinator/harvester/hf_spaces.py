@@ -96,7 +96,7 @@ class HuggingFaceHarvester(WorkerProvider):
         try:
             runtime = self._api.get_space_runtime(self._space_id)
             # SLEEPING is fine — we'll wake it on next launch_worker()
-            if runtime.stage in ("RUNNING", "SLEEPING", "APP_STARTING"):
+            if runtime.stage in ("RUNNING", "SLEEPING", "APP_STARTING", "PAUSED"):
                 return 100.0
             if runtime.stage in ("BUILDING", "RUNNING_BUILDING"):
                 return 50.0  # Building — not ready yet but progressing
@@ -180,7 +180,15 @@ class HuggingFaceHarvester(WorkerProvider):
             info = self._api.space_info(self._space_id)
             self._space_url = info.host  # Cache for _wake_space()
             rt = self._api.get_space_runtime(self._space_id)
-            if rt.stage in ("RUNNING", "BUILDING", "RUNNING_BUILDING", "APP_STARTING"):
+            if rt.stage in (
+                "RUNNING",
+                "BUILDING",
+                "RUNNING_BUILDING",
+                "APP_STARTING",
+                "SLEEPING",
+                "PAUSED",
+                "STOPPED",
+            ):
                 log.info(
                     "hf: Space %s already exists (stage=%s) — skipping deploy",
                     self._space_id,
