@@ -341,6 +341,8 @@ async def batch_transcribe(request: Request):
 
     videos = videos[:max_videos]
 
+    coordinator_url = config.coordinator_url
+
     # 2. Create a task per video
     tasks = []
     for v in videos:
@@ -360,7 +362,7 @@ async def batch_transcribe(request: Request):
 
         async def _prepare(url=v["url"]):
             return await _prepare_whisper_input(
-                url, model, language, fmt, cookies_hash, db, config.blob_dir
+                url, model, language, fmt, cookies_hash, coordinator_url, db, config.blob_dir
             )
 
         asyncio.create_task(task_service.run_prepare(task_id, _prepare, log))
