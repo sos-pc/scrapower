@@ -48,38 +48,6 @@ class KaggleHarvester(WorkerProvider):
                 return c
         raise FileNotFoundError("Kaggle notebook template not found")
 
-    async def _get_quota(self) -> dict | None:
-        """Get GPU quota for the next account (peek, don't consume)."""
-        if not self._accounts:
-            return None
-        account = self._accounts[self._round % len(self._accounts)]
-        try:
-            env = os.environ.copy()
-            env["KAGGLE_API_TOKEN"] = account["token"]
-            proc = await asyncio.create_subprocess_exec(
-                "kaggle",
-                "quota",
-                "--csv",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env,
-            )
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
-            if proc.returncode != 0:
-                return None
-            for line in stdout.decode().strip().split("\n")[1:]:
-                parts = line.split(",")
-                if len(parts) >= 4 and parts[0] == "GPU":
-                    return {
-                        "username": account["username"],
-                        "used_h": float(parts[1].rstrip("h")),
-                        "remaining_h": float(parts[2].rstrip("h")),
-                        "total_h": float(parts[3].rstrip("h")),
-                    }
-        except Exception:
-            pass
-        return None
-
     async def _cleanup_old_kernels(self):
         """Delete dead/orphaned kernels.
 

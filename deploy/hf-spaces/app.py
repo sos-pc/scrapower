@@ -336,7 +336,9 @@ async def run_worker():
                     async with session.put(
                         f"{COORDINATOR_URL}/blobs?assignment_token={tok}",
                         data=output,
-                        timeout=aiohttp.ClientTimeout(total=30),
+                        timeout=aiohttp.ClientTimeout(
+                            total=min(300, max(30, 10 + len(output) // 50_000))
+                        ),
                     ) as r:
                         up = await r.json()
                     output_hash = up.get("hash", output_hash)

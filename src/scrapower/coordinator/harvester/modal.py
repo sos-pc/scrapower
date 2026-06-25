@@ -21,7 +21,7 @@ MAX_CONCURRENT = 3  # max simultaneous sandboxes per provider
 GPU_TYPE = "T4"  # default GPU — $0.59/h on Modal Starter
 GPU_VRAM_MB = 16384
 SANDBOX_TIMEOUT = 6 * 3600  # 6h max per sandbox
-IDLE_TIMEOUT = 600  # 10 min idle → auto-terminate (whisper needs 3-5 min of silence)
+IDLE_TIMEOUT = 1800  # 30 min idle → terminate (covers long whisper + upload retries)
 WORKER_SCRIPT = "deploy/modal/worker.py"
 BUDGET_MONTHLY_USD = 30.0  # Modal Starter free credits per account
 
