@@ -36,38 +36,8 @@ created_at     TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE TABLE IF NOT EXISTS results (
-    id          TEXT PRIMARY KEY,
-    task_id     TEXT NOT NULL,
-    worker_id   TEXT NOT NULL,
-    status      TEXT NOT NULL,
-    output_hash TEXT,
-    metadata_json TEXT,
-    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-    FOREIGN KEY (task_id) REFERENCES tasks(id)
-);
-
-CREATE TABLE IF NOT EXISTS workers (
-    id               TEXT PRIMARY KEY,
-    identity_key     TEXT,
-    auth_level       INTEGER NOT NULL DEFAULT 0,
-    capabilities_json TEXT,
-    first_seen       TEXT NOT NULL DEFAULT (datetime('now')),
-    last_seen        TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS events (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id    TEXT,
-    event_type TEXT NOT NULL,
-    payload_json TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
 CREATE INDEX IF NOT EXISTS idx_tasks_state ON tasks(state);
 CREATE INDEX IF NOT EXISTS idx_tasks_client ON tasks(client_id);
-CREATE INDEX IF NOT EXISTS idx_results_task ON results(task_id);
-CREATE INDEX IF NOT EXISTS idx_events_task ON events(task_id);
 CREATE INDEX IF NOT EXISTS idx_blobs_created ON blobs(created_at);
 """
 
@@ -87,6 +57,15 @@ async def init_db(db_path: str | Path) -> aiosqlite.Connection:
 async def _migrate(db: aiosqlite.Connection) -> None:
     """Apply incremental schema migrations (safe to run repeatedly)."""
     migrations = [
+        # Drop legacy tables (reputation, GitHub OAuth, challenges, unused schema)
+        "DROP TABLE IF EXISTS results",
+        "DROP TABLE IF EXISTS workers",
+        "DROP TABLE IF EXISTS events",
+        "DROP TABLE IF EXISTS challenges",
+        "DROP TABLE IF EXISTS oauth_states",
+        "DROP TABLE IF EXISTS provider_tokens",
+        "DROP INDEX IF EXISTS idx_results_task",
+        "DROP INDEX IF EXISTS idx_events_task",
         # Add deadline_ms for long-running tasks (Mode B)
         "ALTER TABLE tasks ADD COLUMN deadline_ms INTEGER NOT NULL DEFAULT 60000",
         # Add max_retries column (used by task lifecycle)
