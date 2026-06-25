@@ -140,7 +140,6 @@ class HuggingFaceHarvester(WorkerProvider):
             log.warning("hf: Space %s in unexpected stage: %s", self._space_id, runtime.stage)
             # Try restart as fallback
             self._api.restart_space(self._space_id)
-            self._touch_starting()  # Worker is starting
             return True
         except Exception as e:
             log.warning("hf: Failed to check/restart Space: %s", e)
@@ -165,8 +164,7 @@ class HuggingFaceHarvester(WorkerProvider):
             remaining_pct=await self.remaining_pct(),
             workers_active=(
                 self._session_manager.mode_b_active_count("hf-") if self._session_manager else 0
-            )
-            or (1 if stage == "RUNNING" and await self._ping_worker() else 0),
+            ),
             quota_detail={"stage": stage},
         )
 
@@ -193,7 +191,6 @@ class HuggingFaceHarvester(WorkerProvider):
                 # Secrets were set during initial deploy and don't change
                 # on restart. To update them after changing .env, delete the
                 # HF Space and restart the coordinator (triggers Path B).
-                self._touch_starting()  # Signal: worker was already running
                 return True
             # Stage not in the expected list (e.g. ERROR, STOPPED) —
             # fall through to full deploy to try to recover.
@@ -270,7 +267,6 @@ class HuggingFaceHarvester(WorkerProvider):
 
         self._deployed = True
         self._last_health_check = time.time()
-        self._touch_starting()  # Worker is starting — signal the harvester
         log.info("hf: deploy complete for %s", self._space_id)
         return True
 
@@ -290,16 +286,6 @@ class HuggingFaceHarvester(WorkerProvider):
                 )
             except Exception as e:
                 log.warning("hf: failed to set secret %s: %s", key, e)
-
-    def _touch_starting(self):
-        """Signal the harvester that a worker is starting.
-
-        Inserts a temporary Mode B entry that counts toward
-        workers_active for 90s. If the real worker pulls before
-        the TTL expires, the real entry takes over. Otherwise
-        the promise expires and the harvester may launch again."""
-        if self._session_manager:
-            self._session_manager.touch_mode_b(f"hf-starting-{int(time.time())}")
 
     async def _ping_worker(self) -> bool:
         """Check whether the worker process is alive inside the Space.
@@ -350,7 +336,6 @@ class HuggingFaceHarvester(WorkerProvider):
                     if r.status in (200, 503):
                         # 200 = already awake, 503 = waking up (HF returns this during cold start)
                         log.info("hf: Space wake OK (HTTP %s)", r.status)
-                        self._touch_starting()  # Worker is starting
                         return True
                     log.warning("hf: unexpected HTTP %s waking Space", r.status)
         except Exception as e:
