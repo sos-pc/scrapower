@@ -23,6 +23,15 @@
 
 ---
 
+## 🔴 P0 — À faire (découverts pendant l'audit)
+
+| # | Problème | Fichier |
+|---|---------|----------|
+| ~~B11~~ | ~~`requeue_stale()` bypass `transition()` → tâches coincées en TIMEOUT~~ → corrigé : utilise `transition(TIMEOUT)`. 2 tâches coincées nettoyées. | `domain.py` |
+| **B12** | Blob `ref_count` toujours ≥ 1 → `run_gc()` lent (6h, TTL 7j). 742 MB accumulés. Acceptable mais à surveiller. | `blob_store.py`, `domain.py` |
+
+---
+
 ## 🟢 P2 — À faire
 
 | # | Problème | Fichier |

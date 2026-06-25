@@ -184,12 +184,10 @@ class TaskService:
     async def requeue_stale(self, silence_timeout_sec: float = 90) -> int:
         """Re-queue ASSIGNED tasks whose worker hasn't signalled recently.
 
-        Atomic single-UPDATE with WHERE on assigned_at — no TOCTOU race.
-        Works for Mode A and Mode B: pull, heartbeat (HTTP + WS), submit,
-        and task_accept all reset assigned_at.
-
-        A worker that heartbeats every 30s keeps its task alive indefinitely.
-        A worker that crashes is detected within 90s.
+        Uses transition(TIMEOUT) which handles can_retry, retries++,
+        token cleanup, and routes to QUEUED or FAILED. The TIMEOUT
+        state is never actually persisted — transition() redirects
+        to QUEUED (retry) or FAILED (max retries exhausted).
 
         Args:
             silence_timeout_sec: seconds without any signal before timeout.
@@ -200,25 +198,23 @@ class TaskService:
 
         now = _time.time()
         cursor = await self._tm._db.execute(
-            """UPDATE tasks SET state = ?, updated_at = ?
-               WHERE state = ? AND assigned_at < ?""",
-            (
-                TaskState.TIMEOUT,
-                str(now),
-                TaskState.ASSIGNED,
-                str(now - silence_timeout_sec),
-            ),
+            "SELECT id FROM tasks WHERE state = ? AND assigned_at < ?",
+            (TaskState.ASSIGNED, str(now - silence_timeout_sec)),
         )
-        await self._tm._db.commit()
-        if cursor.rowcount:
+        rows = await cursor.fetchall()
+        count = 0
+        for row in rows:
+            if await self._tm.transition(row["id"], TaskState.TIMEOUT):
+                count += 1
+        if count:
             import logging
 
             logging.getLogger(__name__).info(
                 "requeued %d stale tasks (silence > %ds)",
-                cursor.rowcount,
+                count,
                 silence_timeout_sec,
             )
-        return cursor.rowcount
+        return count
 
     async def requeue_for_worker(self, worker_id: str) -> int:
         """Requeue all tasks assigned to a dead worker.
