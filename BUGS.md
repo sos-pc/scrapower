@@ -20,13 +20,20 @@
 | 3 | Analyse logs Modal (compte piot.jeremie) | Transcription 209 segments puis kill externe |
 | 4 | Recherche doc Modal | GPU Sandboxes = préemptibles. `timeout` peut être ignoré. |
 | 5 | Découverte P1 — Harvester choisit HF (CPU) pour tâches GPU | ✅ P1a+P1b corrigés (`9d29370`), P1c en attente |
+- **État** : ✅ P1a+P1b+P1c corrigés. Mais tous les providers GPU sont hors budget — test impossible.
 
 ### 🔴 P0 — Modal tue les GPU sandboxes à 300s
 - **Observé** : Sandbox `modal-5196945d` tuée par `KeyboardInterrupt` 5 min après création
 - **Code** : `timeout=21600` (6h) dans `modal.py:23`, mais kill à 300s
 - **Cause** : Doc Modal → GPU Sandboxes préemptibles. Paramètre `timeout` ignoré ou surchargé.
+- **Blocage** : Les 2 comptes Modal ont dépassé leur spend limit → plus de sandbox possible
 - **Solution proposée** : Checkpoints dans `whisper_runner.py` — sauver progression, sortir proprement sur SIGINT
-- **État** : En attente (bloqué par P1)
+- **État** : En attente (plus de crédit Modal)
+
+### 🔴 P3 — Comptes Modal hors budget
+- **Observé** : `Workspace has exceeded its spend limit` sur les DEUX comptes
+- **Impact** : Aucun worker GPU Modal ne peut être lancé
+- **Action** : Vérifier le billing, attendre le reset mensuel, ou recharger
 
 ### 🟠 P1 — Harvester choisit HF (CPU) pour tâches GPU
 - **3 sous-bugs** :
