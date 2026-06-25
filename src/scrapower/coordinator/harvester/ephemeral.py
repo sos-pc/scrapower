@@ -50,11 +50,18 @@ class EphemeralHarvester:
         total_active = 0
         status_lines: list[str] = []
 
+        # Vérifier si toutes les tâches en attente nécessitent un GPU.
+        # Si oui, on ne compte pas les providers CPU-only dans total_active
+        # (ils ne peuvent pas traiter ces tâches, donc ils ne sont pas "actifs").
+        gpu_only = await self._gpu_only_queued()
+
         for p in self._providers:
             try:
                 remaining = await p.remaining_pct()
                 status = await p.status()
-                total_active += status.workers_active
+                # Ne pas compter les workers CPU-only si toutes les tâches sont GPU
+                if not (gpu_only and status.gpu_type == "none"):
+                    total_active += status.workers_active
                 status_lines.append(
                     f"{status.name}({remaining:.0f}%, {status.workers_active} active)"
                 )
@@ -134,3 +141,26 @@ class EphemeralHarvester:
         if self._task_service is None:
             return 0
         return await self._task_service.count_queued()
+
+    async def _gpu_only_queued(self) -> bool:
+        """Vrai si toutes les tâches en attente nécessitent un GPU.
+
+        Si aucune tâche en attente, retourne False (conservateur).
+        Utilisé pour ne pas compter les workers CPU-only dans total_active
+        quand ils ne peuvent de toute façon pas traiter les tâches."""
+        if self._task_service is None:
+            return False
+        cursor = await self._task_service._tm._db.execute(
+            "SELECT COUNT(*) as n FROM tasks WHERE state = 'queued' AND gpu_required = 0"
+        )
+        row = await cursor.fetchone()
+        cpu_count = row["n"] if row else 0
+        if cpu_count > 0:
+            return False  # Au moins une tâche CPU → ne pas filtrer
+        # Vérifier qu'il y a AU MOINS une tâche GPU
+        cursor = await self._task_service._tm._db.execute(
+            "SELECT COUNT(*) as n FROM tasks WHERE state = 'queued'"
+        )
+        row = await cursor.fetchone()
+        total = row["n"] if row else 0
+        return total > 0  # GPU-only si au moins une tâche et zéro CPU

@@ -19,7 +19,7 @@
 | 2 | Test batch 2 vidéos | ❌ Worker Modal tué à 300s (`KeyboardInterrupt`) |
 | 3 | Analyse logs Modal (compte piot.jeremie) | Transcription 209 segments puis kill externe |
 | 4 | Recherche doc Modal | GPU Sandboxes = préemptibles. `timeout` peut être ignoré. |
-| 5 | Découverte P1 — Harvester choisit HF (CPU) pour tâches GPU | Bloque tout test Modal |
+| 5 | Découverte P1 — Harvester choisit HF (CPU) pour tâches GPU | ✅ P1a+P1b corrigés (`9d29370`), P1c en attente |
 
 ### 🔴 P0 — Modal tue les GPU sandboxes à 300s
 - **Observé** : Sandbox `modal-5196945d` tuée par `KeyboardInterrupt` 5 min après création
