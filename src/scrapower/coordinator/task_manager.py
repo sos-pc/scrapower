@@ -7,6 +7,7 @@ Each task has a unique assignment_token per assignment attempt to prevent races.
 
 from __future__ import annotations
 
+import logging
 import time
 import uuid
 from dataclasses import dataclass
@@ -286,13 +287,27 @@ class TaskManager:
         """Mark a task as validated. Verifies assignment_token if provided."""
         # Always verify token (reject if missing or mismatched)
         if not assignment_token:
+            logging.getLogger(__name__).warning(
+                "complete rejected: empty token task=%s", task_id[:12]
+            )
             return False
         cursor = await self._db.execute(
             "SELECT current_assignment_token FROM tasks WHERE id = ?",
             (task_id,),
         )
         row = await cursor.fetchone()
-        if not row or row["current_assignment_token"] != assignment_token:
+        if not row:
+            logging.getLogger(__name__).warning(
+                "complete rejected: task not found task=%s", task_id[:12]
+            )
+            return False
+        if row["current_assignment_token"] != assignment_token:
+            logging.getLogger(__name__).warning(
+                "complete rejected: token mismatch task=%s db=%s... submit=%s...",
+                task_id[:12],
+                (row["current_assignment_token"] or "none")[:12],
+                assignment_token[:12],
+            )
             return False
         now = time.time()
         cursor = await self._db.execute(
@@ -312,6 +327,11 @@ class TaskManager:
                 # Blob not found. Return False so the transaction rolls back
                 # (the UPDATE tasks above is discarded). Task stays ASSIGNED;
                 # requeue_stale will recover it after deadline_ms.
+                logging.getLogger(__name__).warning(
+                    "complete rejected: blob not found task=%s hash=%s",
+                    task_id[:12],
+                    output_hash[:12],
+                )
                 return False
         await self._db.commit()
         return await self.transition(task_id, TaskState.COMPLETED)

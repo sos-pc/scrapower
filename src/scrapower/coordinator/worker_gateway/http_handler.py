@@ -244,6 +244,12 @@ async def submit(request: Request, sessions: SessionManager):
     if success:
         log.info("mode-b submit: completed %s hash=%s", task_id[:12], output_hash[:12])
     else:
+        log.warning(
+            "mode-b submit: REJECTED task=%s hash=%s token=%s...",
+            task_id[:12],
+            output_hash[:12],
+            assignment_token[:12] if assignment_token else "none",
+        )
         # Touch assigned_at — even on reject, the submit proves the worker was alive.
         # If the token was already consumed (race with requeue), this is harmless.
         try:
