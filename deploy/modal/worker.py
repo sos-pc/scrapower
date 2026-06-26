@@ -102,12 +102,9 @@ def execute_python(executable, input_data):
     Minimal environment: no secrets, no network except WG_PROXY.
     Isolated to temp directory.
     """
-    import threading
-
     with tempfile.TemporaryDirectory() as tmp:
         script = Path(tmp) / "script.py"
         script.write_bytes(executable)
-        # Sandbox: minimal env, no secrets, working dir isolated
         sandbox_env = {
             "PATH": "/usr/bin:/usr/local/bin",
             "HOME": str(tmp),
@@ -123,29 +120,20 @@ def execute_python(executable, input_data):
             env=sandbox_env,
         )
 
-        # Read stderr line-by-line in a thread, feed to global log buffer
-        stderr_lines: list[str] = []
-
-        def _read_stderr():
-            for line in proc.stderr:
-                decoded = line.decode(errors="replace").rstrip()
-                stderr_lines.append(decoded)
-                _log(f"[sub] {decoded}")
-
-        stderr_thread = threading.Thread(target=_read_stderr, daemon=True)
-        stderr_thread.start()
-        _log("[sub] stderr reader started")
-
-        # Write input and close stdin (blocks until process exits or timeout)
+        # communicate() safely reads both stdout and stderr to completion.
+        # No thread needed — avoids deadlock with concurrent pipe reads.
         try:
-            stdout_data, _ = proc.communicate(input=input_data, timeout=600)
+            stdout_data, stderr_data = proc.communicate(input=input_data, timeout=600)
         except subprocess.TimeoutExpired:
             proc.kill()
-            stdout_data, _ = proc.communicate()
+            stdout_data, stderr_data = proc.communicate()
             _log("[sub] TIMEOUT after 600s")
-        stderr_thread.join(timeout=5)
         exit_code = proc.returncode
-        stderr_str = "\n".join(stderr_lines)
+        stderr_str = stderr_data.decode(errors="replace") if stderr_data else ""
+        # Feed stderr lines to global log buffer
+        for line in stderr_str.split("\n"):
+            if line.strip():
+                _log(f"[sub] {line.strip()}")
         try:
             result = json.loads(stdout_data.decode())
             output = result.get("output_bytes", stdout_data)
