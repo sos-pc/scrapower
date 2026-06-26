@@ -156,26 +156,19 @@ def execute_python(executable, input_data):
             cwd=str(tmp),
             env=sandbox_env,
         )
-        # Stream stderr to log buffer for live debugging
-        stderr_lines: list[str] = []
-
-        def _read_stderr():
-            for line in proc.stderr:
-                decoded = line.decode(errors="replace").rstrip()
-                stderr_lines.append(decoded)
-                _log(f"[sub] {decoded}")
-
-        stderr_thread = threading.Thread(target=_read_stderr, daemon=True)
-        stderr_thread.start()
+        # communicate() safely reads both stdout and stderr to completion.
+        # No thread needed — avoids deadlock with concurrent pipe reads.
         try:
-            stdout_data, _ = proc.communicate(input=input_data, timeout=600)
+            stdout_data, stderr_data = proc.communicate(input=input_data, timeout=600)
         except subprocess.TimeoutExpired:
             proc.kill()
-            stdout_data, _ = proc.communicate()
+            stdout_data, stderr_data = proc.communicate()
             _log("[sub] TIMEOUT after 600s")
-        stderr_thread.join(timeout=5)
         exit_code = proc.returncode
-        stderr_str = "\n".join(stderr_lines)
+        stderr_str = stderr_data.decode(errors="replace") if stderr_data else ""
+        for line in stderr_str.split("\n"):
+            if line.strip():
+                _log(f"[sub] {line.strip()}")
         # Parse JSON output (whisper_runner format) or fall back to raw
         try:
             result = json.loads(stdout_data.decode())
