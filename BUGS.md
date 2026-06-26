@@ -61,6 +61,9 @@ enfin des requêtes HTTP. Le fix final :
 | P3 | Comptes Modal hors budget | Spend limit à 0$ | Relevé sur piot.jeremie | ✅ |
 | P4 | Heartbeat 0 requête envoyée | `global _LOG_TASK_ID` manquant + event loop bloqué | urllib + thread + global | ✅ |
 | P5 | `requeue_stale()` invalide le token Mode B | Scheduler Mode A appelle `requeue_stale()` toutes les 5s | Mode A supprimé, `_maintenance_loop` (15s) + heartbeat fix | ✅ |
+| P6 | Worker deadlock après transcription | Thread `_read_stderr` concurrence `communicate()` sur pipe stderr → `finally` jamais atteint, heartbeat infini | Supprimer `_read_stderr`, utiliser stderr de `communicate()` | ✅ Modal + HF |
+| P7 | Notebook Kaggle incomplet | `sworker.ipynb` contient seulement le code submit retry, pas de pull loop / execute / heartbeat | Réécrire le notebook (ou le générer depuis le harvester) avec le code worker complet | ⚠️ À planifier |
+| P8 | Transcription réussie mais submit rejeté → retranscription complète | Worker jette le résultat si submit échoue, refait download + transcription | Cacher résultat par task_id, retry upload+submit seulement | ⚠️ À planifier |
 
 ### 🔮 Refactor — Suppression Mode A (à faire)
 
