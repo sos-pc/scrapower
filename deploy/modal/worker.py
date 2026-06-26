@@ -236,9 +236,12 @@ async def _heartbeat(session, interval=30):
                 },
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as r:
-                await r.json()
-        except Exception:
-            pass  # heartbeat is best-effort
+                ack = await r.json()
+            if not ack.get("task_valid"):
+                _log("Heartbeat: task reassigned, aborting")
+                _LOG_TASK_ID = ""  # stop transcription loop
+        except Exception as e:
+            _log(f"Heartbeat failed: {e}")
 
 
 async def run_worker():

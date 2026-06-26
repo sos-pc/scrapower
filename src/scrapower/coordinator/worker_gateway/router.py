@@ -92,8 +92,15 @@ async def worker_heartbeat(request: Request):
                 )
                 await task_service._tm._db.commit()
                 task_valid = True
+                import logging
+
+                logging.getLogger(__name__).debug("heartbeat touch task=%s", task_id[:12])
         except Exception:
-            pass  # best-effort: logs are already saved
+            import logging
+
+            logging.getLogger(__name__).exception(
+                "heartbeat DB update failed task=%s", task_id[:12]
+            )
 
     return JSONResponse(
         {
