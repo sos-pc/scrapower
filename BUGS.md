@@ -14,12 +14,9 @@ Le Scheduler Mode A appelait `requeue_stale()` toutes les 5s → invalidait
 le token des workers Mode B → submit rejeté → boucle. Suppression complète
 du Mode A (commits `65324e7`, `1daba3e`, `517a848`).
 
-### ⚠️ Reste à faire — Optimisation
-Si la transcription réussit (exit_code=0) mais le submit échoue (token expiré,
-tâche annulée), le worker jette le résultat et re-transcrit depuis zéro.
-→ Gaspillage GPU (ex: Hegel transcrit 2 fois, 247s + 225s de T4).
-→ À faire : le worker devrait cacher le résultat par task_id et ne refaire
-  que upload+submit sur les pulls suivants, pas la transcription.
+### ⚠️ Reste à faire
+
+Voir P7 et P8 dans le tableau ci-dessous.
 
 ### Chronologie complète
 
@@ -41,7 +38,13 @@ tâche annulée), le worker jette le résultat et re-transcrit depuis zéro.
 | 14 | Heartbeat : thread synchrone urllib (bypass event loop) | `f3660cb` | ✅ 3 heartbeats reçus ! Fonctionne ! |
 | 15 | Découverte : `task_valid=false` au 1er heartbeat — token déjà invalide | — | Le scheduler Mode A appelle `requeue_stale()` toutes les 5s et invalide le token |
 | 16 | Audit complet des dépendances Mode A | — | 8 fichiers à supprimer, 11 à modifier |
-| 17 | Plan de suppression Mode A + boucle maintenance unifiée | — | En cours |
+| 17 | Suppression Mode A : 9 fichiers supprimés, 6 modifiés | `65324e7` | ✅ Déployé — `_maintenance_loop` remplace Scheduler |
+| 18 | Clean CLI + conftest Mode A | `65324e7` | ✅ `_worker` supprimé, `live_server` retiré |
+| 19 | Heartbeat fix : `current_assignment_token` absent du `get()` | `1daba3e` | ✅ `task_valid=true` confirmé |
+| 20 | Supprimer fallback coordinator (yt-dlp, `_download_audio`, `prepare_audio_fallback`) | `1daba3e` | ✅ Worker download autonome via WG_PROXY |
+| 21 | Fix worker deadlock : `_read_stderr` thread vs `communicate()` | `517a848` | ✅ Modal fixé |
+| 22 | Fix même deadlock sur HF Spaces | `e11b950` | ✅ HF fixé |
+| 23 | Documenter P6, P7, P8 | `619b885` | ✅ |
 
 ### 🎯 Résultat clé : La heartbeat fonctionne
 
@@ -64,14 +67,6 @@ enfin des requêtes HTTP. Le fix final :
 | P6 | Worker deadlock après transcription | Thread `_read_stderr` concurrence `communicate()` sur pipe stderr → `finally` jamais atteint, heartbeat infini | Supprimer `_read_stderr`, utiliser stderr de `communicate()` | ✅ Modal + HF |
 | P7 | Notebook Kaggle incomplet | `sworker.ipynb` contient seulement le code submit retry, pas de pull loop / execute / heartbeat | Réécrire le notebook (ou le générer depuis le harvester) avec le code worker complet | ⚠️ À planifier |
 | P8 | Transcription réussie mais submit rejeté → retranscription complète | Worker jette le résultat si submit échoue, refait download + transcription | Cacher résultat par task_id, retry upload+submit seulement | ⚠️ À planifier |
-
-### 🔮 Refactor — Suppression Mode A (à faire)
-
-Raison : le scheduler Mode A appelle `requeue_stale()` toutes les 5s,
-invalidant les tokens des workers Mode B. Mode A n'a plus aucun worker
-actif. Le supprimer élimine le conflit et ~1000 lignes de code mort.
-
-Plan : voir ci-dessous.
 
 ---
 
