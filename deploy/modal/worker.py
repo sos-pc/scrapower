@@ -222,6 +222,7 @@ def _heartbeat_sync():
     import json as _json
     import urllib.request
 
+    global _LOG_TASK_ID
     while _LOG_TASK_ID:
         logs = _drain_logs()
         print(f"[HB] sending heartbeat for {_LOG_TASK_ID[:12]}...", flush=True)
