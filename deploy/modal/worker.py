@@ -219,24 +219,28 @@ def _run_task_sync(executable, input_data, rt):
 
 async def _heartbeat(session, interval=30):
     """Periodically send logs to coordinator during task execution."""
+    import aiohttp as _aiohttp
+
     while _LOG_TASK_ID:
         logs = _drain_logs()
+        print(f"[HB] sending heartbeat for {_LOG_TASK_ID[:12]}...", flush=True)
         try:
-            async with session.post(
-                f"{COORDINATOR_URL}/worker/heartbeat",
-                json={
-                    "type": "heartbeat",
-                    "worker_id": WORKER_ID,
-                    "task_id": _LOG_TASK_ID,
-                    "assignment_token": _LOG_TOKEN,
-                    "logs": logs,
-                },
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as r:
-                ack = await r.json()
-            if not ack.get("task_valid"):
-                _log("Heartbeat: task reassigned, aborting")
-                _LOG_TASK_ID = ""
+            async with _aiohttp.ClientSession() as hb_session:
+                async with hb_session.post(
+                    f"{COORDINATOR_URL}/worker/heartbeat",
+                    json={
+                        "type": "heartbeat",
+                        "worker_id": WORKER_ID,
+                        "task_id": _LOG_TASK_ID,
+                        "assignment_token": _LOG_TOKEN,
+                        "logs": logs,
+                    },
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as r:
+                    ack = await r.json()
+                if not ack.get("task_valid"):
+                    _log("Heartbeat: task reassigned, aborting")
+                    _LOG_TASK_ID = ""
         except Exception as e:
             _log(f"Heartbeat failed: {e}")
         await asyncio.sleep(interval)
@@ -316,6 +320,7 @@ async def run_worker():
             _LOG_TASK_ID = task["id"]
             _LOG_TOKEN = tok
             hb_task = asyncio.create_task(_heartbeat(session))
+            print(f"[HB] heartbeat task created for {task['id'][:12]}", flush=True)
 
             worker_stderr = ""
             output = b""
