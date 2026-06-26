@@ -2,55 +2,61 @@
 
 ---
 
-## 🔥 Session en cours (2026-06-25)
+## 🔥 Session 2026-06-26 — Diagnostic batch + heartbeat + refactor Mode A
 
-### Objectif : Débugger le cycle transcription batch (playlist Hegel, 2h/vidéo)
+### Objectif initial
+Débugger le cycle de transcription batch (playlist Hegel, vidéos 1-2h).
+Les tâches bouclent : transcription OK → submit rejeté → retour en queued →
+re-transcription depuis zéro → boucle infinie.
 
-### Constat initial
-- Mode B (WG proxy, cookies disabled) fonctionne pour vidéos courtes (19s)
-- Vidéos longues (>5 min) : worker tué → retranscription → boucle
-- Impossible de savoir pourquoi le submit échoue (logs muets)
+### Chronologie complète
 
-### Chronologie
+| Étape | Action | Commit | Résultat |
+|-------|--------|--------|----------|
+| 1 | Ajout logs diagnostic dans `complete()` et `submit()` | `e09b5c3` | ✅ Déployé |
+| 2 | Test batch 2 vidéos | — | ❌ Worker Modal tué à 300s (KeyboardInterrupt) |
+| 3 | Analyse logs Modal (sandbox piot.jeremie) | — | Transcription 209 segments puis kill externe |
+| 4 | Recherche doc Modal | — | GPU Sandboxes = préemptibles ; timeout peut être ignoré |
+| 5 | Découverte : logs diagnostic révèlent "token mismatch" | — | `complete rejected: token mismatch db=none` — le submit est rejeté car le token a été invalidé par `requeue_stale()` |
+| 6 | P1a+P1b — `remaining_pct()` et `_first_deploy()` gèrent PAUSED/SLEEPING/STOPPED | `9d29370` | ✅ Harvester ne fait plus de redeploy inutile |
+| 7 | P1c — `total_active` exclut CPU-only pour tâches GPU | `9e0d6fc` | ✅ Harvester ne bloque plus sur HF |
+| 8 | Découverte P3 — les 2 comptes Modal ont spend limit à 0$ | — | L'utilisateur avait mis les limites à 0 par peur d'être débité |
+| 9 | L'utilisateur relève la limite du compte piot.jeremie | — | ✅ Modal fonctionne à nouveau |
+| 10 | Ajout logs erreur heartbeat (coordinator + worker) | `50b1872` | ✅ `except:pass` remplacé par `log.exception` |
+| 11 | Heartbeat : send immédiat (pas de sleep avant 1er envoi) | `db7ae34` | Toujours 0 heartbeat reçu |
+| 12 | Heartbeat : session aiohttp dédiée (pas la session partagée) | `dcbaafb` | Toujours 0 heartbeat reçu |
+| 13 | Heartbeat : `global _LOG_TASK_ID` manquant → crash Python | `4032c26` | ✅ 1er heartbeat reçu ! |
+| 14 | Heartbeat : thread synchrone urllib (bypass event loop) | `f3660cb` | ✅ 3 heartbeats reçus ! Fonctionne ! |
+| 15 | Découverte : `task_valid=false` au 1er heartbeat — token déjà invalide | — | Le scheduler Mode A appelle `requeue_stale()` toutes les 5s et invalide le token |
+| 16 | Audit complet des dépendances Mode A | — | 8 fichiers à supprimer, 11 à modifier |
+| 17 | Plan de suppression Mode A + boucle maintenance unifiée | — | En cours |
 
-| Étape | Action | Résultat |
-|-------|--------|----------|
-| 1 | Ajout logs diagnostic dans `complete()` et `submit()` (commit `e09b5c3`) | ✅ Déployé, prêt à capturer |
-| 2 | Test batch 2 vidéos | ❌ Worker Modal tué à 300s (`KeyboardInterrupt`) |
-| 3 | Analyse logs Modal (compte piot.jeremie) | Transcription 209 segments puis kill externe |
-| 4 | Recherche doc Modal | GPU Sandboxes = préemptibles. `timeout` peut être ignoré. |
-| 5 | Découverte P1 — Harvester choisit HF (CPU) pour tâches GPU | ✅ P1a+P1b corrigés (`9d29370`), P1c en attente |
-- **État** : ✅ P1a+P1b+P1c corrigés. Mais tous les providers GPU sont hors budget — test impossible.
+### 🎯 Résultat clé : La heartbeat fonctionne
 
-### 🔴 P0 — Modal tue les GPU sandboxes à 300s
-- **Observé** : Sandbox `modal-5196945d` tuée par `KeyboardInterrupt` 5 min après création
-- **Code** : `timeout=21600` (6h) dans `modal.py:23`, mais kill à 300s
-- **Cause** : Doc Modal → GPU Sandboxes préemptibles. Paramètre `timeout` ignoré ou surchargé.
-- **Blocage** : Les 2 comptes Modal ont dépassé leur spend limit → plus de sandbox possible
-- **Solution proposée** : Checkpoints dans `whisper_runner.py` — sauver progression, sortir proprement sur SIGINT
-- **État** : En attente (plus de crédit Modal)
+Après 4 itérations (commits `50b1872` → `f3660cb`), la heartbeat Mode B envoie
+enfin des requêtes HTTP. Le fix final :
+- `global _LOG_TASK_ID` dans `_heartbeat_sync()` (le bug racine)
+- `urllib.request` dans un thread dédié (pas aiohttp, pas l'event loop)
+- Premier envoi immédiat (pas de sleep 30s avant)
+- Annulation heartbeat APRÈS upload+submit (pas dans le finally)
 
-### 🔴 P3 — Comptes Modal hors budget
-- **Observé** : `Workspace has exceeded its spend limit` sur les DEUX comptes
-- **Impact** : Aucun worker GPU Modal ne peut être lancé
-- **Action** : Vérifier le billing, attendre le reset mensuel, ou recharger
+### 🔴 Problèmes découverts et leur résolution
 
-### 🟠 P1 — Harvester choisit HF (CPU) pour tâches GPU
-- **3 sous-bugs** :
-  - **P1a** : `remaining_pct()` ment à 100% quand `_deployed=False` — `hf_spaces.py:169`
-  - **P1b** : `_first_deploy()` fait redeploy complet pour PAUSED/SLEEPING/STOPPED — `hf_spaces.py:183`
-  - **P1c** : `total_active` compte HF pour tâches GPU → skip launch — `ephemeral.py:85`
-- **Solution P1a+P1b** : Ajouter `SLEEPING, PAUSED, STOPPED` aux stages reconnus (4 lignes)
-- **Solution P1c** : Filtrer `total_active` par compatibilité tâche (15 lignes)
-- **État** : ✅ P1a+P1b corrigés. P1c et refactor en attente.
+| # | Problème | Root cause | Fix | État |
+|---|---------|-----------|-----|------|
+| P0 | Modal tue GPU sandboxes à 300s | GPU Sandboxes préemptibles | Checkpoints whisper_runner (planifié) | ⚠️ En attente |
+| P1 | Harvester choisit HF (CPU) pour GPU | `remaining_pct()` ment, `_first_deploy()` inutile, `total_active` pas filtré | 3 sous-bugs corrigés | ✅ |
+| P3 | Comptes Modal hors budget | Spend limit à 0$ | Relevé sur piot.jeremie | ✅ |
+| P4 | Heartbeat 0 requête envoyée | `global _LOG_TASK_ID` manquant + event loop bloqué | urllib + thread + global | ✅ |
+| P5 | `requeue_stale()` invalide le token Mode B | Scheduler Mode A appelle `requeue_stale()` toutes les 5s | Supprimer Mode A (en cours) | 🔴 En cours |
 
-### 🔮 Refactor nécessaire (identifié)
-- **R1** : `_deployed` est volatil → persister en DB (comme `_budget_cache` Modal)
-- **R2** : Les listes de stages sont dupliquées dans `remaining_pct()`, `_first_deploy()`, `launch_worker()` → constante partagée `_STAGES_EXISTS`
-- **R3** : `_first_deploy()` Path A retourne `True` alors qu'il n'a rien lancé → fausser le compte du harvester
+### 🔮 Refactor — Suppression Mode A (à faire)
 
-### 🟡 P2 — HF ghost après restart
-- Même cause que P1a+P1b. Corrigé par la même solution.
+Raison : le scheduler Mode A appelle `requeue_stale()` toutes les 5s,
+invalidant les tokens des workers Mode B. Mode A n'a plus aucun worker
+actif. Le supprimer élimine le conflit et ~1000 lignes de code mort.
+
+Plan : voir ci-dessous.
 
 ---
 
