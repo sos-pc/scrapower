@@ -217,33 +217,46 @@ def _run_task_sync(executable, input_data, rt):
         sys.stderr = old_stderr
 
 
-async def _heartbeat(session, interval=30):
-    """Periodically send logs to coordinator during task execution."""
-    import aiohttp as _aiohttp
+def _heartbeat_sync():
+    """Send one heartbeat synchronously (runs in a thread, no event loop)."""
+    import json as _json
+    import urllib.request
 
     while _LOG_TASK_ID:
         logs = _drain_logs()
         print(f"[HB] sending heartbeat for {_LOG_TASK_ID[:12]}...", flush=True)
         try:
-            async with _aiohttp.ClientSession() as hb_session:
-                async with hb_session.post(
-                    f"{COORDINATOR_URL}/worker/heartbeat",
-                    json={
-                        "type": "heartbeat",
-                        "worker_id": WORKER_ID,
-                        "task_id": _LOG_TASK_ID,
-                        "assignment_token": _LOG_TOKEN,
-                        "logs": logs,
-                    },
-                    timeout=aiohttp.ClientTimeout(total=10),
-                ) as r:
-                    ack = await r.json()
-                if not ack.get("task_valid"):
-                    _log("Heartbeat: task reassigned, aborting")
-                    _LOG_TASK_ID = ""
+            data = _json.dumps(
+                {
+                    "type": "heartbeat",
+                    "worker_id": WORKER_ID,
+                    "task_id": _LOG_TASK_ID,
+                    "assignment_token": _LOG_TOKEN,
+                    "logs": logs,
+                }
+            ).encode()
+            req = urllib.request.Request(
+                f"{COORDINATOR_URL}/worker/heartbeat",
+                data=data,
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                ack = _json.loads(resp.read())
+            if not ack.get("task_valid"):
+                _log("Heartbeat: task reassigned, aborting")
+                _LOG_TASK_ID = ""
         except Exception as e:
             _log(f"Heartbeat failed: {e}")
-        await asyncio.sleep(interval)
+        time.sleep(30)
+
+
+async def _heartbeat(session, interval=30):
+    """Periodically send logs via synchronous thread (bypasses event loop)."""
+    import concurrent.futures
+
+    loop = asyncio.get_running_loop()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        await loop.run_in_executor(pool, _heartbeat_sync)
 
 
 async def run_worker():
