@@ -23,33 +23,6 @@ class TaskService:
         self._tm = task_manager
         self._db = db
         self._config = config
-        self._fallback_handlers: dict[str, object] = {}
-
-    def register_fallback(self, executable_hash: str, handler) -> None:
-        """Register a fallback handler for a specific executable hash.
-
-        When a worker returns exit_code=2 (DOWNLOAD_FAILED), the handler
-        is called with (task, db, config) to prepare the task for retry.
-        """
-        self._fallback_handlers[executable_hash] = handler
-
-    async def trigger_fallback(self, task_id: str) -> bool:
-        """Trigger the fallback for this task's executable.
-
-        Returns True if triggered, False if no handler registered.
-        """
-        import logging
-
-        log = logging.getLogger(__name__)
-        task = await self.get(task_id)
-        if not task:
-            return False
-        handler = self._fallback_handlers.get(task.executable_hash)
-        if not handler:
-            return False
-        log.info("fallback triggered for %s", task_id[:12])
-        await handler(task, self._db, self._config)
-        return True
 
     async def submit(
         self,

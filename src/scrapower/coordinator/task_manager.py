@@ -170,9 +170,13 @@ class TaskManager:
             client_id=row["client_id"],
             state=TaskState(row["state"]),
             retries=row["retries"],
+            current_assignment_token=row["current_assignment_token"]
+            if "current_assignment_token" in row.keys()
+            else None,
             assigned_worker_id=row["assigned_worker_id"]
             if "assigned_worker_id" in row.keys()
             else None,
+            assigned_at=float(row["assigned_at"]) if row["assigned_at"] else None,
             gpu_required=bool(row["gpu_required"]) if "gpu_required" in row.keys() else False,
             executable_hash=row["executable_hash"] if "executable_hash" in row.keys() else "",
             input_hash=row["input_hash"] if "input_hash" in row.keys() else "",

@@ -1,7 +1,7 @@
 """Transcription API — submit video URLs for distributed Whisper transcription.
 
-Audio download happens async on the coordinator (which has real internet),
-then the task is queued for workers that don't need external network access.
+Workers download audio directly via WireGuard SOCKS5 proxy (WG_PROXY).
+The coordinator is a lightweight orchestrator — no yt-dlp, no audio download.
 """
 
 from __future__ import annotations
@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import tempfile
 import uuid
 from pathlib import Path
 
@@ -37,16 +36,6 @@ def _compute_whisper_hash() -> str:
 WHISPER_RUNNER_HASH = _compute_whisper_hash()
 
 log = logging.getLogger(__name__)
-
-# === TEMPORARY BANDAGE (v0.4-v0.5) ===================================
-# Coordinator-side audio download via yt-dlp. NOT the target architecture.
-# TARGET: Workers download via homelab WireGuard SOCKS5 proxy (WG_PROXY).
-# The coordinator is a lightweight orchestrator, not a download node.
-# Remove _download_audio() and prepare_audio_fallback() once WireGuard
-# is confirmed stable on all worker types (Modal, Kaggle, HF Spaces).
-# =======================================================================
-# Limit concurrent yt-dlp downloads to avoid saturating Oracle bandwidth
-_download_sem = asyncio.Semaphore(2)
 
 
 @router.post("")
@@ -141,140 +130,6 @@ async def _prepare_whisper_input(
     ).encode()
 
     return await store_blob(db, blob_dir, input_bytes)
-
-
-async def _download_audio(url: str, cookies_hash: str, db, blob_dir: str) -> bytes:
-    """[TEMPORARY BANDAGE] Download audio on coordinator via yt-dlp.
-
-    TARGET: Workers download themselves via homelab WireGuard proxy.
-    This function will be REMOVED once WG_PROXY is stable on all workers.
-    """
-    import urllib.request
-
-    DIRECT_EXTS = (".wav", ".mp3", ".m4a", ".ogg", ".flac", ".opus", ".aac", ".weba")
-    is_direct = any(url.lower().endswith(e) for e in DIRECT_EXTS)
-
-    if is_direct:
-        with tempfile.NamedTemporaryFile(suffix=".audio", delete=False) as tmp:
-            urllib.request.urlretrieve(url, tmp.name)
-            data = Path(tmp.name).read_bytes()
-            Path(tmp.name).unlink()
-            return data
-    async with _download_sem:
-        from ..blob_store import get_blob
-
-        with tempfile.TemporaryDirectory() as tmp:
-            workdir = Path(tmp)
-
-            # Write cookies if provided
-            cookies_path = None
-            if cookies_hash:
-                cookies_path = str(workdir / "cookies.txt")
-                cookies_bytes = await get_blob(db, blob_dir, cookies_hash)
-                if cookies_bytes:
-                    Path(cookies_path).write_bytes(cookies_bytes)
-
-            tmpl = str(workdir / "%(id)s.%(ext)s")
-            args = [
-                "yt-dlp",
-                "-f",
-                "bestaudio/best",
-                "-o",
-                tmpl,
-                "--no-playlist",
-                "--no-warnings",
-                "--extractor-retries",
-                "3",
-                "--retries",
-                "3",
-            ]
-            # Route YouTube through homelab WireGuard VPN (primary) or CyberGhost (fallback)
-            wg_proxy = os.environ.get("SCRAPOWER_WG_PROXY", "")
-            vpn_proxy = os.environ.get("SCRAPOWER_VPN_PROXY", "")
-            proxy = wg_proxy or vpn_proxy
-            if proxy:
-                args += ["--proxy", proxy]
-            if cookies_path:
-                args += ["--cookies", cookies_path]
-            args.append(url)
-
-            proc = await asyncio.create_subprocess_exec(
-                *args,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            try:
-                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
-            except asyncio.TimeoutError:
-                proc.kill()
-                raise Exception("yt-dlp timed out after 300s")
-
-            if proc.returncode != 0:
-                err = stderr.decode()[:1000] if stderr else "unknown error"
-                raise Exception(f"yt-dlp failed: {err}")
-
-            for f in workdir.iterdir():
-                if f.suffix in (".m4a", ".opus", ".webm", ".mp3", ".wav"):
-                    return f.read_bytes()
-
-            raise Exception("No audio file found after yt-dlp download")
-
-
-async def prepare_audio_fallback(task, db, config):
-    """[TEMPORARY BANDAGE] Download audio on coordinator when worker fails.
-
-    Called on exit_code=2 (DOWNLOAD_FAILED). Downloads audio via VPN,
-    stores as blob, updates task input_hash.
-
-    TARGET: Workers download themselves via homelab WireGuard proxy.
-    This function will be REMOVED once WG_PROXY is stable on all workers.
-    """
-    import json as _json
-
-    from ..blob_store import get_blob, store_blob
-
-    log = logging.getLogger(__name__)
-
-    # 1. Parse current input to extract URL and cookies_hash
-    input_data = await get_blob(db, config.blob_dir, task.input_hash)
-    if not input_data:
-        raise Exception(f"Input blob not found: {task.input_hash[:12]}")
-    config_in = _json.loads(input_data.decode())
-    url = config_in.get("url", "")
-    cookies_hash = config_in.get("cookies_hash", "")
-    if not url:
-        raise Exception("No URL in task input — cannot prepare fallback")
-
-    log.info("fallback: downloading audio for %s", task.id[:12])
-
-    # 2. Download audio via coordinator (VPN + native format, no ffmpeg)
-    audio_bytes = await _download_audio(url, cookies_hash, db, config.blob_dir)
-
-    # 3. Store audio as blob
-    audio_hash = await store_blob(db, config.blob_dir, audio_bytes)
-    log.info("fallback: audio stored hash=%s", audio_hash[:12])
-
-    # 4. Create new input JSON with audio_hash (no url — worker uses Mode A)
-    new_input = _json.dumps(
-        {
-            "audio_hash": audio_hash,
-            "coordinator_url": config.coordinator_url,
-            "model": config_in.get("model", "turbo"),
-            "language": config_in.get("language"),
-            "format": config_in.get("format", "json"),
-        }
-    ).encode()
-
-    # 5. Store new input and update task
-    new_input_hash = await store_blob(db, config.blob_dir, new_input)
-    import time
-
-    await db.execute(
-        "UPDATE tasks SET input_hash = ?, updated_at = ? WHERE id = ?",
-        (new_input_hash, str(time.time()), task.id),
-    )
-    await db.commit()
-    log.info("fallback: task %s updated with audio_hash=%s", task.id[:12], audio_hash[:12])
 
 
 @router.post("/update-cookies")

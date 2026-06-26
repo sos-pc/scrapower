@@ -213,17 +213,8 @@ async def submit(request: Request, sessions: SessionManager):
     if stderr_info:
         await _save_worker_logs(task_id, stderr_info)
 
-    # Reject empty/error results — mark TIMEOUT so they requeue (same as WS handler)
+    # Reject empty/error results — mark TIMEOUT so they requeue
     if not output_hash or status != 0:
-        # exit_code 2 = DOWNLOAD_FAILED: trigger fallback before requeue
-        # [TEMPORARY BANDAGE] Falls back to coordinator-side yt-dlp.
-        # TARGET: Workers use WG_PROXY to download themselves.
-        # Remove this fallback once WireGuard is stable on all workers.
-        if status == 2 and task_service:
-            try:
-                await task_service.trigger_fallback(task_id)
-            except Exception:
-                log.exception("fallback failed for %s", task_id[:12])
         log.warning(
             "mode-b submit: empty/error result, marking TIMEOUT: task=%s exit_code=%s",
             task_id[:12],
