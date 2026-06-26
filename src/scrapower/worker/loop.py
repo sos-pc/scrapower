@@ -1,0 +1,308 @@
+"""Worker loop — Mode B HTTP pull/submit for Scrapower.
+
+Connects to a coordinator, pulls tasks, executes them via pluggable
+runtimes, submits results, and sends heartbeats during execution.
+Auto-stops after idle timeout to save resources.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import concurrent.futures
+import io
+import json as _json
+import os
+import sys
+import time
+import urllib.request
+from typing import Any
+
+import aiohttp
+
+from .runtimes.python import execute_python
+from .runtimes.wasm import execute_wasm
+
+
+class WorkerLoop:
+    """Main worker loop: pull → execute → upload → submit → repeat.
+
+    Configuration is passed at construction time. Call `run()` to start.
+    """
+
+    def __init__(
+        self,
+        *,
+        worker_id: str,
+        coordinator_url: str,
+        api_key: str = "",
+        capabilities: dict[str, Any],
+        poll_interval_sec: int = 3,
+        idle_timeout_sec: int = 120,
+        heartbeat_interval_sec: int = 30,
+    ):
+        self.worker_id = worker_id
+        self.coordinator_url = coordinator_url.rstrip("/")
+        self.api_key = api_key
+        self.capabilities = capabilities
+        self.poll_interval_sec = poll_interval_sec
+        self.idle_timeout_sec = idle_timeout_sec
+        self.heartbeat_interval_sec = heartbeat_interval_sec
+
+        # Log buffer: accumulates stderr during execution, flushed on
+        # pull/heartbeat. Enables debugging stuck workers.
+        self._log_lines: list[str] = []
+        self._log_task_id: str = ""
+        self._log_token: str = ""
+
+        # Stats
+        self.total_completed: int = 0
+        self._last_task_time: float = time.time()
+
+    # -- Logging --------------------------------------------------------
+
+    def _log(self, msg: str) -> None:
+        """Append to memory buffer, print to stdout."""
+        line = f"{time.strftime('%H:%M:%S')} {msg}"
+        self._log_lines.append(line)
+        if len(self._log_lines) > 200:
+            del self._log_lines[:-100]
+        print(line)
+
+    def _drain_logs(self) -> str:
+        """Return recent logs for transmission to coordinator."""
+        if not self._log_lines:
+            return ""
+        chunk = "\n".join(self._log_lines[-50:])
+        self._log_lines.clear()
+        return chunk
+
+    # -- Task execution --------------------------------------------------
+
+    @staticmethod
+    def _run_task_sync(
+        executable: bytes, input_data: bytes, rt: str, log_fn: object
+    ) -> tuple[bytes, str, int, str]:
+        """Execute task synchronously in a thread. Captures stderr for heartbeat."""
+        # Redirect stderr to capture print() output from subprocess
+        stderr_capture = io.StringIO()
+        old_stderr = sys.stderr
+        sys.stderr = stderr_capture
+        try:
+            if rt == "python":
+                result = execute_python(executable, input_data, log_fn=log_fn)
+            else:
+                result = execute_wasm(executable, input_data)
+            # Flush captured stderr into log buffer
+            captured = stderr_capture.getvalue()
+            if captured:
+                for line in captured.split("\n"):
+                    if line.strip():
+                        log_fn(f"[sub] {line.strip()}")
+            return result
+        finally:
+            sys.stderr = old_stderr
+
+    # -- Heartbeat (synchronous, runs in a thread) -----------------------
+
+    def _heartbeat_sync(self) -> None:
+        """Send heartbeat every N seconds. Exits when _log_task_id is cleared."""
+        while self._log_task_id:
+            logs = self._drain_logs()
+            print(f"[HB] sending heartbeat for {self._log_task_id[:12]}...", flush=True)
+            try:
+                data = _json.dumps(
+                    {
+                        "type": "heartbeat",
+                        "worker_id": self.worker_id,
+                        "task_id": self._log_task_id,
+                        "assignment_token": self._log_token,
+                        "logs": logs,
+                    }
+                ).encode()
+                req = urllib.request.Request(
+                    f"{self.coordinator_url}/worker/heartbeat",
+                    data=data,
+                    headers={"Content-Type": "application/json"},
+                )
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    ack = _json.loads(resp.read())
+                if not ack.get("task_valid"):
+                    self._log("Heartbeat: task reassigned, aborting")
+                    self._log_task_id = ""
+            except Exception as e:
+                self._log(f"Heartbeat failed: {e}")
+            time.sleep(self.heartbeat_interval_sec)
+
+    async def _heartbeat(self, session: aiohttp.ClientSession) -> None:
+        """Run heartbeat synchronously in a thread (bypasses event loop)."""
+        loop = asyncio.get_running_loop()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            await loop.run_in_executor(pool, self._heartbeat_sync)
+
+    # -- Main loop -------------------------------------------------------
+
+    async def run(self) -> None:
+        """Pull → execute → upload → submit → repeat. Exits on idle timeout."""
+        self._log(f"Polling {self.coordinator_url}/worker/pull every {self.poll_interval_sec}s...")
+
+        async with aiohttp.ClientSession() as session:
+            while True:
+                # Drain buffered logs before pull
+                logs_chunk = self._drain_logs()
+
+                # PULL (retry on 5xx / transient errors)
+                data = None
+                for attempt in range(3):
+                    try:
+                        async with session.post(
+                            f"{self.coordinator_url}/worker/pull",
+                            json={
+                                "type": "pull",
+                                "worker_id": self.worker_id,
+                                "capabilities": self.capabilities,
+                                "logs": logs_chunk,
+                            },
+                            headers=({"X-API-Key": self.api_key} if self.api_key else {}),
+                            timeout=aiohttp.ClientTimeout(total=10),
+                        ) as r:
+                            if r.status >= 500:
+                                self._log(f"Pull 5xx ({r.status}), retry {attempt + 1}/3")
+                                await asyncio.sleep(2**attempt)
+                                continue
+                            data = await r.json()
+                            break
+                    except Exception as e:
+                        self._log(f"Pull error: {e}, retry {attempt + 1}/3")
+                        await asyncio.sleep(2**attempt)
+                        continue
+
+                if data is None:
+                    self._log("Pull failed after 3 retries")
+                    await asyncio.sleep(self.poll_interval_sec)
+                    continue
+
+                task = data.get("task")
+                if not task:
+                    if time.time() - self._last_task_time > self.idle_timeout_sec:
+                        self._log(f"Idle for {self.idle_timeout_sec}s — stopping to save credits")
+                        break
+                    await asyncio.sleep(self.poll_interval_sec)
+                    continue
+
+                # EXECUTE
+                self._last_task_time = time.time()
+                tid = task["id"][:12]
+                tok = task["assignment_token"]
+                rt = task.get("runtime", "wasm")
+                self._log(f"Task: {tid}... (runtime={rt})")
+
+                # Download blobs
+                try:
+                    async with session.get(
+                        f"{self.coordinator_url}/blobs/{task['payload']['executable_hash']}",
+                        timeout=aiohttp.ClientTimeout(total=30),
+                    ) as r:
+                        executable = await r.read()
+                    async with session.get(
+                        f"{self.coordinator_url}/blobs/{task['payload']['input_hash']}",
+                        timeout=aiohttp.ClientTimeout(total=30),
+                    ) as r:
+                        input_data = await r.read()
+                except Exception as e:
+                    self._log(f"Blob download failed: {e}")
+                    continue
+
+                # Start heartbeat during task execution
+                self._log_task_id = task["id"]
+                self._log_token = tok
+                hb_task = asyncio.create_task(self._heartbeat(session))
+                print(f"[HB] heartbeat task created for {task['id'][:12]}", flush=True)
+
+                worker_stderr = ""
+                output = b""
+                output_hash = ""
+                exit_code = 1
+                try:
+                    loop = asyncio.get_running_loop()
+                    result = await loop.run_in_executor(
+                        None,
+                        self._run_task_sync,
+                        executable,
+                        input_data,
+                        rt,
+                        self._log,
+                    )
+                    output, output_hash, exit_code, worker_stderr = result
+                except Exception as e:
+                    worker_stderr = f"{type(e).__name__}: {e}"
+                    self._log(f"Error: {worker_stderr}")
+                finally:
+                    self._log_task_id = ""
+                    self._log_token = ""
+
+                self._log(f"OK: {output_hash[:12]}... exit_code={exit_code}")
+
+                # UPLOAD + SUBMIT — retry up to 3 times
+                submitted = False
+                for attempt in range(3):
+                    # Upload result blob
+                    try:
+                        async with session.put(
+                            f"{self.coordinator_url}/blobs?assignment_token={tok}",
+                            data=output,
+                            timeout=aiohttp.ClientTimeout(
+                                total=min(300, max(30, 10 + len(output) // 50_000))
+                            ),
+                        ) as r:
+                            up = await r.json()
+                        output_hash = up.get("hash", output_hash)
+                    except Exception as e:
+                        self._log(f"Blob upload failed (attempt {attempt + 1}/3): {e}")
+                        await asyncio.sleep(1)
+                        continue
+
+                    # Submit result
+                    try:
+                        async with session.post(
+                            f"{self.coordinator_url}/worker/submit",
+                            json={
+                                "type": "submit",
+                                "task_id": task["id"],
+                                "assignment_token": tok,
+                                "result": {
+                                    "output_hash": output_hash,
+                                    "execution_metadata": {
+                                        "exit_code": exit_code,
+                                        "stderr": worker_stderr,
+                                    },
+                                },
+                            },
+                            timeout=aiohttp.ClientTimeout(total=10),
+                        ) as r:
+                            result = await r.json()
+                        accepted = result.get("accepted", False)
+                        self._log(f"Submit: accepted={accepted}")
+                        if accepted:
+                            self.total_completed += 1
+                            self._log(f"Total completed: {self.total_completed}")
+                            submitted = True
+                            break
+                        self._log(f"Submit rejected (attempt {attempt + 1}/3)")
+                    except Exception as e:
+                        self._log(f"Submit failed (attempt {attempt + 1}/3): {e}")
+
+                    await asyncio.sleep(1)
+
+                if not submitted:
+                    self._log(
+                        "Submit failed after 3 attempts — task will be requeued by stale check"
+                    )
+
+                # Stop heartbeat (task execution is done)
+                hb_task.cancel()
+                try:
+                    await hb_task
+                except asyncio.CancelledError:
+                    pass
+
+                await asyncio.sleep(self.poll_interval_sec)

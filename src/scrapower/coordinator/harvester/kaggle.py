@@ -154,44 +154,36 @@ class KaggleHarvester(WorkerProvider):
         with open(self._notebook_template) as f:
             nb = json.load(f)
 
+        # Replace placeholders in notebook cells
         for cell in nb.get("cells", []):
             if cell.get("cell_type") != "code":
                 continue
             src = cell.get("source", "")
             if isinstance(src, list):
                 src = "".join(src)
-            # Replace coordinator URL in the notebook template.
-            # Mode B uses HTTP (not WebSocket), e.g. https://your-coordinator.example.com
-            for pat in (
-                "https://your-coordinator.example.com",
-                "wss://your-coordinator.example.com/worker/ws",
-            ):
-                if pat in src:
-                    src = src.replace(
-                        f'COORDINATOR_URL = "{pat}"',
-                        f'COORDINATOR_URL = "{self._coordinator_url}"',
-                    )
-                    break
-            src = src.replace('API_KEY = ""', f'API_KEY = "{self._api_key}"')
-            # Workers need the PUBLIC proxy URL (your-coordinator.example.com:1081),
-            # not the coordinator's localhost alias. The public URL is reachable
-            # from Kaggle/Modal servers; localhost is only for coordinator fallback.
+
+            src = src.replace("{{COORDINATOR_URL}}", self._coordinator_url)
+            src = src.replace("{{API_KEY}}", self._api_key)
+
+            # Inject WireGuard proxy components (never the full URL with password)
             wg_proxy = os.environ.get("SCRAPOWER_WG_PROXY_PUBLIC", "") or os.environ.get(
                 "SCRAPOWER_WG_PROXY", ""
             )
             if wg_proxy:
-                # Never put the full proxy URL (with password) in the notebook source.
-                # Inject components separately, assembled at runtime by the worker.
                 try:
                     rest = wg_proxy.split("://", 1)[1]
                     auth, host_port = rest.split("@", 1)
                     user, passwd = auth.split(":", 1)
                     host = host_port.rsplit(":", 1)[0]
                 except (ValueError, IndexError):
-                    user, passwd, host = "scrapower", "", "your-coordinator.example.com"
-                src = src.replace('WG_USER = ""', f'WG_USER = "{user}"')
-                src = src.replace('WG_PASS = ""', f'WG_PASS = "{passwd}"')
-                src = src.replace('WG_HOST = ""', f'WG_HOST = "{host}"')
+                    user, passwd, host = "", "", ""
+                src = src.replace("{{WG_USER}}", user)
+                src = src.replace("{{WG_PASS}}", passwd)
+                src = src.replace("{{WG_HOST}}", host)
+            else:
+                src = src.replace("{{WG_USER}}", "")
+                src = src.replace("{{WG_PASS}}", "")
+                src = src.replace("{{WG_HOST}}", "")
 
             cell["source"] = src
 

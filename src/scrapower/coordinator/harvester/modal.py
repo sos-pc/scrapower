@@ -22,7 +22,6 @@ GPU_TYPE = "T4"  # default GPU — $0.59/h on Modal Starter
 GPU_VRAM_MB = 16384
 SANDBOX_TIMEOUT = 6 * 3600  # 6h max per sandbox
 IDLE_TIMEOUT = 1800  # 30 min idle → terminate (covers long whisper + upload retries)
-WORKER_SCRIPT = "deploy/modal/worker.py"
 BUDGET_MONTHLY_USD = 30.0  # Modal Starter free credits per account
 
 
@@ -189,8 +188,7 @@ class ModalHarvester(WorkerProvider):
             return False
 
         try:
-            worker_path = self._find_worker_script()
-            sb = await self._create_sandbox(worker_path)
+            sb = await self._create_sandbox()
             self._last_start[next_tid] = time.time()
             self._sandbox_ids.append(sb.object_id)
             # Track which account's token created this sandbox (for cross-account cleanup)
@@ -296,13 +294,11 @@ class ModalHarvester(WorkerProvider):
 
     @staticmethod
     def _find_worker_script() -> str:
-        for path in [WORKER_SCRIPT, f"../{WORKER_SCRIPT}", f"/app/{WORKER_SCRIPT}"]:
-            if os.path.exists(path):
-                return path
-        raise FileNotFoundError(f"Modal worker script not found: {WORKER_SCRIPT}")
+        """Return path to worker entrypoint (no longer used — kept for reference)."""
+        return "deploy/modal/worker.py"
 
-    async def _create_sandbox(self, worker_path: str):
-        """Create a Modal Sandbox running the worker script."""
+    async def _create_sandbox(self):
+        """Create a Modal Sandbox running the worker package."""
         import modal
 
         account = self._next_account()
@@ -312,23 +308,20 @@ class ModalHarvester(WorkerProvider):
 
         app = await modal.App.lookup.aio("scrapower", create_if_missing=True, client=client)
 
-        # Read worker script content
-        worker_code = open(worker_path).read()
-
-        # Build image with dependencies + CUDA for GPU
-        # Use CUDA base image so faster-whisper can use the GPU
+        # Build image with dependencies + CUDA for GPU + worker package
         image = (
             modal.Image.from_registry("nvidia/cuda:12.4.0-runtime-ubuntu22.04", add_python="3.12")
             .apt_install("ffmpeg")
-            .pip_install("aiohttp", "faster-whisper", "yt-dlp")
-            .env({"HF_XET_HIGH_PERFORMANCE": "1"})
+            .pip_install("aiohttp", "faster-whisper", "yt-dlp", "wasmtime")
+            .add_local_dir("src/scrapower/worker", "/opt/scrapower/worker")
+            .env({"HF_XET_HIGH_PERFORMANCE": "1", "PYTHONPATH": "/opt"})
         )
 
-        # Create sandbox with worker script as entrypoint
+        # Create sandbox — runs the worker package directly
         sb = await modal.Sandbox.create.aio(
             "python",
-            "-c",
-            worker_code,
+            "-m",
+            "scrapower.worker.entry",
             app=app,
             image=image,
             gpu=self._gpu_type,
