@@ -24,8 +24,6 @@ from .blob_store import blob_exists, get_blob, run_gc, store_blob
 from .config import Config, load_config
 from .db import init_db
 from .domain import TaskService
-from .embedded_worker import EmbeddedWorker
-from .scheduler import Scheduler
 from .security import rate_limit, require_auth, verify_api_key
 from .task_manager import TaskManager
 from .worker_gateway.router import router as worker_router
@@ -107,7 +105,7 @@ async def lifespan(app: FastAPI):
                 else:
                     log.warning("vpn check failed: %s", str(e)[:100])
 
-    # Initialize session manager and zombie watchdog
+    # Initialize session manager (Mode B worker tracking only)
     manager = SessionManager(
         heartbeat_interval_sec=config.heartbeat_interval_sec,
         heartbeat_miss_threshold=config.heartbeat_miss_threshold,
@@ -116,13 +114,7 @@ async def lifespan(app: FastAPI):
 
     router_mod.session_manager = manager
 
-    # Bridge: zombie sessions -> immediate task requeue
-    async def _on_zombie(session):
-        await task_service.requeue_for_worker(session.worker_id)
-
-    zombie_task = asyncio.create_task(manager.zombie_watchdog(on_zombie=_on_zombie))
-
-    # Task manager and scheduler
+    # Task manager
     task_manager = TaskManager(db)
     app.state.task_manager = task_manager
     task_service = TaskService(task_manager, db, config)
@@ -134,33 +126,11 @@ async def lifespan(app: FastAPI):
 
     task_service.register_fallback(WHISPER_RUNNER_HASH, prepare_audio_fallback)
 
-    # Purge orphaned assignments at startup (workers disconnected during restart)
+    # Purge orphaned assignments at startup (tasks left assigned by dead workers)
     await _purge_orphaned_assignments(db, log)
 
-    scheduler = Scheduler(
-        task_service=task_service,
-        session_manager=manager,
-        tick_sec=config.scheduler_tick_sec,
-        enforce_segregation=config.enforce_segregation,
-        verification_mode=config.default_verification_mode,
-        ws_assign_enabled=config.ws_assign_enabled,
-    )
-    sched_task = asyncio.create_task(scheduler.run())
-
-    # Embedded worker (can be disabled via SCRAPOWER_EMBEDDED_WORKER=0 for tests)
-    if os.environ.get("SCRAPOWER_EMBEDDED_WORKER", "1") not in ("0", "false", "no"):
-        from ..worker.runtimes.wasm import WasmRuntime
-
-        embedded = EmbeddedWorker(f"ws://127.0.0.1:{config.port}/worker/ws", WasmRuntime())
-        embed_task = asyncio.create_task(embedded.start())
-    else:
-        embed_task = None
-
-    # Start GC background task
-    gc_task = asyncio.create_task(_gc_loop(config, db))
-
-    # Start cleanup loop (release expired tasks, free blob refs)
-    cleanup_task = asyncio.create_task(_cleanup_loop(task_service, log))
+    # Start maintenance loop (requeue stale + cleanup expired tasks)
+    maint_task = asyncio.create_task(_maintenance_loop(task_service, log))
 
     # Ephemeral harvester — manages all GPU worker providers (Kaggle, Modal, ...)
     from .harvester.base import WorkerProvider
@@ -237,6 +207,9 @@ async def lifespan(app: FastAPI):
         except ImportError:
             log.warning("huggingface_hub not installed - skipping HF Spaces provider")
 
+    # Start GC background task
+    gc_task = asyncio.create_task(_gc_loop(config, db))
+
     harvester_task: asyncio.Task | None = None
     if providers:
         harvester = EphemeralHarvester(providers, task_service=task_service)
@@ -249,20 +222,15 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        for t in (gc_task, zombie_task, sched_task, harvester_task, cleanup_task):
-            t.cancel()
-        if embed_task is not None:
-            embed_task.cancel()
-        for t in (gc_task, zombie_task, sched_task, harvester_task, cleanup_task):
-            try:
-                await t
-            except asyncio.CancelledError:
-                pass
-        if embed_task is not None:
-            try:
-                await embed_task
-            except asyncio.CancelledError:
-                pass
+        for t in (gc_task, maint_task, harvester_task):
+            if t is not None:
+                t.cancel()
+        for t in (gc_task, maint_task, harvester_task):
+            if t is not None:
+                try:
+                    await t
+                except asyncio.CancelledError:
+                    pass
         if db:
             await db.close()
         log.info("scrapower coordinator shut down")
@@ -313,6 +281,31 @@ async def _gc_loop(config: Config, db) -> None:
                 log.info("gc completed", deleted_blobs=deleted)
         except Exception:
             log.exception("gc failed")
+
+
+async def _maintenance_loop(task_service, log) -> None:
+    """Recover stale tasks and clean up expired ones.
+
+    Runs every 15 seconds:
+      - requeue_stale(): recover ASSIGNED tasks with no heartbeat for 90s
+      - cleanup_expired(): delete old COMPLETED/FAILED tasks (every 5 min)"""
+    tick = 0
+    while True:
+        await asyncio.sleep(15)
+        tick += 1
+        try:
+            count = await task_service.requeue_stale()
+            if count:
+                log.info("requeued %d stale tasks", count)
+        except Exception:
+            log.exception("requeue_stale failed")
+        if tick % 20 == 0:  # every 5 minutes
+            try:
+                cleaned = await task_service.cleanup_expired()
+                if cleaned:
+                    log.info("cleanup completed", cleaned_tasks=cleaned)
+            except Exception:
+                log.exception("cleanup failed")
 
 
 async def _cleanup_loop(task_service, log) -> None:

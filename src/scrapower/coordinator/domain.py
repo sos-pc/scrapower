@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from .config import Config
 from .task_manager import Task, TaskManager, TaskState
-from .worker_gateway.session import WorkerSession
 
 
 class TaskService:
@@ -324,52 +323,3 @@ def _match_capabilities(task, capabilities: dict) -> bool:
         return False
 
     return True
-
-
-class SchedulingPolicy:
-    """Pure function: given a task and available workers, return
-    the best candidates in preference order.
-
-    This is extracted from Scheduler._match so it can be tested
-    without a running server.
-    """
-
-    def __init__(self, enforce_segregation: bool = False):
-        self._enforce_segregation = enforce_segregation
-
-    def match(
-        self,
-        task: Task,
-        workers: list[WorkerSession],
-    ) -> list[WorkerSession]:
-        """Return compatible workers sorted by preference (best first).
-
-        Args:
-            task: The task to match.
-            workers: Available workers.
-        """
-        compatible = []
-        for w in workers:
-            if not w.capabilities:
-                continue
-
-            # Segregation rule
-            if self._enforce_segregation and w.worker_id == task.client_id:
-                continue
-
-            if not _match_capabilities(task, w.capabilities):
-                continue
-
-            compatible.append(w)
-
-        # Shuffle for fairness, then sort by load (idle first)
-        import random
-
-        random.shuffle(compatible)
-        compatible.sort(
-            key=lambda w: (
-                1 if w.worker_id == "_embedded" else 0,
-                w.tasks_in_progress,
-            )
-        )
-        return compatible

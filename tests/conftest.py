@@ -1,23 +1,17 @@
 """Test fixtures for scrapower coordinator.
 
 HTTP tests use httpx.ASGITransport (direct ASGI, no network).
-WebSocket tests use a real uvicorn server on a random port.
 """
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import os
-import socket
 import sys
-import threading
-import time
-from collections.abc import AsyncGenerator, Generator
+from collections.abc import AsyncGenerator
 from pathlib import Path
 
 import pytest
-import uvicorn
 from httpx import ASGITransport, AsyncClient
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -26,12 +20,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 # ──────────────────────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────────────────────
-
-
-def _free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
 
 
 @contextlib.contextmanager
@@ -44,10 +32,8 @@ def _test_env(data_dir: str):
         "SCRAPOWER_HEARTBEAT_INTERVAL_SEC": "1",
         "SCRAPOWER_HEARTBEAT_MISS_THRESHOLD": "2",
         "SCRAPOWER_TASK_ACCEPT_TIMEOUT_SEC": "2",
-        "SCRAPOWER_SCHEDULER_TICK_SEC": "1",
         "SCRAPOWER_MAX_ANONYMOUS_WORKERS": "50",
         "SCRAPOWER_API_KEY": "test-api-key",
-        "SCRAPOWER_EMBEDDED_WORKER": "0",
     }.items():
         old[k] = os.environ.get(k)
         os.environ[k] = v
@@ -100,63 +86,6 @@ async def http_client(app) -> AsyncGenerator[AsyncClient, None]:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
-
-
-# ──────────────────────────────────────────────────────────────
-# Live uvicorn server (for WebSocket tests)
-# ──────────────────────────────────────────────────────────────
-
-
-@pytest.fixture(scope="module")
-def live_data_dir(tmp_path_factory) -> str:
-    """Module-scoped data directory so each test module's live_server
-    gets a clean database (avoids cross-module zombie task contamination)."""
-    d = tmp_path_factory.mktemp("scrapower_live") / "data"
-    d.mkdir()
-    (d / "blobs").mkdir()
-    return str(d)
-
-
-@pytest.fixture(scope="module")
-def live_server(live_data_dir) -> Generator[str, None, None]:
-    """Start a real uvicorn server on a random port. Yields ws:// URL."""
-    port = _free_port()
-
-    # Keep _test_env active for the entire server lifetime,
-    # otherwise env vars are restored before lifespan runs.
-    env_ctx = _test_env(live_data_dir)
-    env_ctx.__enter__()
-    server = None
-    t = None
-    try:
-        try:
-            app = _import_app(live_data_dir)
-        except Exception as e:
-            pytest.fail(f"Failed to import app: {e}")
-
-        config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
-        server = uvicorn.Server(config)
-        ready = threading.Event()
-
-        def _run():
-            async def serve():
-                ready.set()
-                await server.serve()
-
-            asyncio.run(serve())
-
-        t = threading.Thread(target=_run, daemon=True)
-        t.start()
-        ready.wait(timeout=5)
-        time.sleep(0.3)
-
-        yield f"ws://127.0.0.1:{port}"
-    finally:
-        if server is not None:
-            server.should_exit = True
-        if t is not None:
-            t.join(timeout=3)
-        env_ctx.__exit__(None, None, None)
 
 
 # ──────────────────────────────────────────────────────────────

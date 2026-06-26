@@ -1,4 +1,4 @@
-"""Scrapower CLI — serve, worker, submit."""
+"""Scrapower CLI — serve, submit."""
 
 from __future__ import annotations
 
@@ -21,12 +21,6 @@ def main():
     p.add_argument("--port", type=int, default=8777)
     p.add_argument("--data-dir", default="data")
 
-    # worker
-    p = sub.add_parser("worker", help="Start a native worker")
-    p.add_argument("--coordinator", default="ws://localhost:8777/worker/ws")
-    p.add_argument("--worker-id", default=None)
-    p.add_argument("--runtimes", default="wasm", help="Comma-separated")
-
     # submit
     p = sub.add_parser("submit", help="Submit a task")
     p.add_argument("--wasm", required=True, help="Path to .wasm file")
@@ -39,8 +33,6 @@ def main():
 
     if args.command == "serve":
         asyncio.run(_serve(args))
-    elif args.command == "worker":
-        asyncio.run(_worker(args))
     elif args.command == "submit":
         asyncio.run(_submit(args))
     else:
@@ -62,16 +54,6 @@ async def _serve(args):
     server = uvicorn.Server(config)
     print(f"Coordinator running at http://{args.host}:{args.port}")
     await server.serve()
-
-
-async def _worker(args):
-    from scrapower.worker.client import WorkerClient
-
-    runtimes = args.runtimes.split(",") if args.runtimes else ["wasm"]
-    worker_id = args.worker_id or f"cli-{uuid.uuid4().hex[:6]}"
-    worker = WorkerClient(args.coordinator, worker_id=worker_id, runtimes=runtimes)
-    print(f"Worker {worker_id} connecting to {args.coordinator}...")
-    await worker.run()
 
 
 async def _submit(args):

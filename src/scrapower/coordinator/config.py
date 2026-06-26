@@ -36,17 +36,12 @@ class Config:
     heartbeat_interval_sec: int = 10
     heartbeat_miss_threshold: int = 3
     task_accept_timeout_sec: int = 5
-    scheduler_tick_sec: float = 5.0
 
     # Network
     coordinator_url: str = "http://localhost:8777"
 
     # Security
-    enforce_segregation: bool = False
     max_anonymous_workers: int = 100
-
-    # Mode A (WebSocket push) — can be disabled when Mode B (HTTP pull) is primary
-    ws_assign_enabled: bool = True
 
     # Keepalive
     keepalive_enabled: bool = True
@@ -72,8 +67,6 @@ class Config:
             "SCRAPOWER_MAX_TASK_RETRIES": ("max_task_retries", int),
             "SCRAPOWER_BLOB_TTL_DAYS": ("blob_ttl_days", int),
             "SCRAPOWER_LOG_LEVEL": ("log_level", str),
-            "SCRAPOWER_ENFORCE_SEGREGATION": ("enforce_segregation", bool),
-            "SCRAPOWER_WS_ASSIGN_ENABLED": ("ws_assign_enabled", bool),
             "SCRAPOWER_COORDINATOR_URL": ("coordinator_url", str),
         }
         for env_var, (attr, typ) in env_map.items():
@@ -157,11 +150,7 @@ def _apply_toml(config: Config, data: dict[str, Any]) -> None:
         config.task_accept_timeout_sec = wg.get(
             "task_accept_timeout_sec", config.task_accept_timeout_sec
         )
-        config.scheduler_tick_sec = wg.get("scheduler_tick_sec", config.scheduler_tick_sec)
-
-    if "security" in data:
         sec = data["security"]
-        config.enforce_segregation = sec.get("enforce_segregation", config.enforce_segregation)
         config.max_anonymous_workers = sec.get(
             "max_anonymous_workers", config.max_anonymous_workers
         )

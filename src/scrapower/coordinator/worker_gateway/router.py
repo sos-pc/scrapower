@@ -1,15 +1,12 @@
-"""Worker Gateway router — WebSocket + HTTP endpoints."""
+"""Worker Gateway router — HTTP endpoints (Mode B)."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-from fastapi import APIRouter, Request, WebSocket
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from .http_handler import _save_worker_logs, pull, submit
 from .session import SessionManager
-from .ws_handler import handle_ws
 
 router = APIRouter()
 
@@ -19,15 +16,9 @@ task_manager = None  # set by coordinator lifespan
 task_service = None  # type: ignore[assignment]
 
 
-@router.websocket("/worker/ws")
-async def worker_ws(ws: WebSocket):
-    """Mode A: Persistent WebSocket connection."""
-    await handle_ws(ws, session_manager, task_service)  # type: ignore[arg-type]
-
-
 @router.post("/worker/pull")
 async def worker_pull(request: Request):
-    """Mode B: Ephemeral HTTP pull."""
+    """Worker polls for a task via HTTP pull."""
     return await pull(request, session_manager)  # type: ignore[arg-type]
 
 

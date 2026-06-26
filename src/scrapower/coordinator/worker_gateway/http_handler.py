@@ -1,8 +1,7 @@
 """HTTP handler for Worker Protocol Mode B.
 
-Stateless pull/submit cycle for ephemeral workers (Kaggle, Lambda, Cloud Run).
-This is now the PRIMARY task dispatch protocol. WebSocket Mode A is retained
-for browser workers and challenge double-execution.
+Stateless pull/submit cycle for ephemeral workers (Kaggle, Modal, HF Spaces).
+This is the ONLY task dispatch protocol.
 
 Flow:
   Worker                     Coordinator
@@ -253,8 +252,6 @@ async def submit(request: Request, sessions: SessionManager):
         # Touch assigned_at — even on reject, the submit proves the worker was alive.
         # If the token was already consumed (race with requeue), this is harmless.
         try:
-            from .ws_handler import _touch_task
-
             await _touch_task(task_service, task_id, prefix="submit")
         except Exception:
             pass
@@ -267,6 +264,21 @@ async def submit(request: Request, sessions: SessionManager):
             "credit_earned": 1 if success else 0,
         }
     )
+
+
+async def _touch_task(task_service, task_id: str, prefix: str = "") -> None:
+    """Reset assigned_at on a task — any worker signal = liveness proof.
+
+    Called by: submit (Mode B). Best-effort: exceptions are silently ignored."""
+    try:
+        now = str(time.time())
+        await task_service._tm._db.execute(
+            "UPDATE tasks SET assigned_at = ?, updated_at = ? WHERE id = ?",
+            (now, now, task_id),
+        )
+        await task_service._tm._db.commit()
+    except Exception:
+        pass
 
 
 async def _save_worker_logs(task_id: str, stderr: str, prefix: str = "submit"):
