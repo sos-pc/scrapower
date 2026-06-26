@@ -220,9 +220,6 @@ def _run_task_sync(executable, input_data, rt):
 async def _heartbeat(session, interval=30):
     """Periodically send logs to coordinator during task execution."""
     while _LOG_TASK_ID:
-        await asyncio.sleep(interval)
-        if not _LOG_TASK_ID:
-            break
         logs = _drain_logs()
         try:
             async with session.post(
@@ -239,9 +236,10 @@ async def _heartbeat(session, interval=30):
                 ack = await r.json()
             if not ack.get("task_valid"):
                 _log("Heartbeat: task reassigned, aborting")
-                _LOG_TASK_ID = ""  # stop transcription loop
+                _LOG_TASK_ID = ""
         except Exception as e:
             _log(f"Heartbeat failed: {e}")
+        await asyncio.sleep(interval)
 
 
 async def run_worker():
@@ -335,11 +333,6 @@ async def run_worker():
             finally:
                 _LOG_TASK_ID = ""
                 _LOG_TOKEN = ""
-                hb_task.cancel()
-                try:
-                    await hb_task
-                except asyncio.CancelledError:
-                    pass
 
             _log(f"OK: {output_hash[:12]}... exit_code={exit_code}")
 
@@ -395,6 +388,13 @@ async def run_worker():
 
             if not submitted:
                 _log("Submit failed after 3 attempts — task will be requeued by stale check")
+
+            # Stop heartbeat now that upload+submit is done
+            hb_task.cancel()
+            try:
+                await hb_task
+            except asyncio.CancelledError:
+                pass
 
             await asyncio.sleep(POLL_INTERVAL_SEC)
 
