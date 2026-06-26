@@ -1,112 +1,107 @@
 # Roadmap Scrapower
 
-> Agrégateur de calcul distribué — friction zéro, browser + Kaggle + Modal + HF Spaces.
+> Agrégateur de calcul distribué — friction zéro, Kaggle + Modal + HF Spaces.
 
 ---
 
 ## ✅ v0.5 — Harvester unifié & Modal (JUIN 2026)
 
-### Harvester unifié
-- [x] **`WorkerProvider` ABC** — interface commune pour tous les providers éphémères
-- [x] **`EphemeralHarvester`** — boucle génétique : quota check → launch → cleanup
-- [x] **Quota en pourcentage** — `remaining_pct()` comparable entre toutes les sources
-- [x] **Tri par capacité restante** — le compte le moins entamé en priorité
-- [x] **KaggleHarvester → `WorkerProvider`** — décoré sans casser l'existant
-
-### Modal
-- [x] **ModalHarvester** — Sandbox.create() GPU T4 + CUDA, idle_timeout=2min, round-robin
-- [x] **`deploy/modal/worker.py`** — Mode B avec exit_code, auto-détection GPU
-- [x] **Auth** — `MODAL_ACCOUNTS` + `KAGGLE_ACCOUNTS` multi-comptes
-- [x] **Workers actifs** — 3 Kaggle + 2 Modal = 5 comptes GPU
-
-### HuggingFace Spaces (CPU worker)
-- [x] **`HuggingFaceHarvester`** — déploiement automatique (create_repo → secrets → upload_folder → restart), wake via HTTP GET, skip redeploy si déjà existant
-- [x] **`deploy/hf-spaces/app.py`** — worker Mode B CPU-only (WASM + Python), health server :7860, sandbox subprocess
-- [x] **`deploy/hf-spaces/Dockerfile`** — image minimale (wasmtime + aiohttp, pas de GPU)
-- [x] **Intégration Caddy** — reverse_proxy 172.18.0.1:8777 pour traffic externe (workers HF, Kaggle, Modal)
-- [x] **Capability matching** — HF déclare `gpu: {supported: false}`, le coordinateur route GPU → Kaggle/Modal, CPU → HF
-- [x] **Test réel** — tâche Python exécutée avec succès sur le worker HF (fa17e813 → hf-1cfa9ea8)
-
-### Transcription
-- [x] **`POST /transcribe/batch`** — playlist → N tâches via yt-dlp --flat-playlist
-- [x] **Script collecte** — `scripts/batch_collect.py` poll + sauvegarde fichiers
-
-### Déjà fait en v0.4
-- [x] Mode B HTTP pull/submit, flux universel Mode B→Mode A, exit_code propagation
-- [x] Transcription Whisper turbo, téléchargement natif (zéro ffmpeg)
-- [x] VPN CyberGhost, cookies YouTube (fenêtre privée)
-- [x] Isolation client, auth worker, sécurité
+- [x] `WorkerProvider` ABC + `EphemeralHarvester` — quota check → launch → cleanup
+- [x] `ModalHarvester` — Sandbox T4 GPU, idle_timeout, round-robin multi-comptes
+- [x] `HuggingFaceHarvester` — déploiement auto, wake HTTP, CPU-only
+- [x] `KaggleHarvester` — kernels GPU T4, cooldown, cleanup cross-compte
+- [x] Mode B HTTP pull/submit — tous les workers
+- [x] `POST /transcribe` + `/transcribe/batch` — playlist → N tâches
+- [x] Capability matching — GPU → Kaggle/Modal, CPU → HF
+- [x] Auth multi-comptes — `MODAL_ACCOUNTS` + `KAGGLE_ACCOUNTS`
 
 ---
 
 ## ✅ v0.6 — Homelab VPN + fiabilisation (JUIN 2026)
 
-### Homelab VPN exit node (priorité P0)
-- [x] **WireGuard server sur homelab** — IP résidentielle pour tous les workers
-- [x] **Tunnel SOCKS5 Oracle** — Dante proxy port 1081, fix iptables mangle SYN-ACK, URL publique
-- [x] **Fallback CyberGhost** — conservé comme secours sur port 1080
-- [x] **Port UDP 443** — réutilise le port déjà forwardé sur la box (pas de nouveau port)
-
-**Impact** : Modal, Kaggle, et tout futur worker peuvent télécharger depuis YouTube sans blocage. Plus besoin de fallback coordinateur.
-
-### Corrections phase de test (P0 — en cours)
-- [x] **iptables mangle fix** — `--sport 1081 -j MARK --set-mark 0xca6c` (SYN-ACK bloqués)
-- [x] **`deadline_ms` dans INSERT** — corrigé, les tâches ont bien 900000ms maintenant
-- [x] **Suivi worker heartbeat** — `requeue_stale` atomique 90s, touch `assigned_at` sur tous les signaux (pull/heartbeat/submit/WS), logs Mode A persistés, heartbeat Kaggle
-- [x] **Anti-pattern coordinator DL** — documenté comme TEMPORARY BANDAGE dans le code. Cible : workers DL eux-mêmes via WireGuard
-- [x] **`cleanup_stale` cross-compte** — Modal : `_sandbox_tokens` dict, itération tous tokens. Kaggle : `_kernel_refs` tracking local. Cleanup pour TOUS les providers (pas juste candidates)
-- [x] **Blob hash mismatch workers** — `output_hash` du script JSON ≠ sha256 des bytes uploadés. Fix : toujours utiliser le hash retourné par le blob store (`up.get("hash")`). Corrigé sur Modal, HF Spaces, Kaggle.
-- [ ] **`network.ip_reputation`** dans les capabilities — tag informatif "residential" | "datacenter" | "vpn" (non bloquant)
-- [ ] **Coordinateur décide au prepare** — si tous les workers sont `datacenter` → pré-DL audio (élimine gaspillage fallback)
-
-### Corrections P1 (prochaine session)
-- [x] **`COOLDOWN_SEC`** 120→60s pour Modal, log debug cooldown/max concurrent ✅
-- [x] **Kaggle cooldown** — ajouté (manquait, `_last_start` jamais utilisé) ✅
-- [x] **`last_error` + logs** — colonne `error` dans la DB, `has_logs` + `logs_url` dans `GET /tasks/{id}` ✅
-- [x] **Rate limit pull** — dual-mode: auth (`worker_id` 30/min) vs anon (IP 6/min survival) ✅
-- [ ] **Debug Kaggle inactif** — vérifier pourquoi les kernels Kaggle ne pull pas pendant les tests
-- [ ] **Fallback automatique** — quand worker retourne exit_code=2, trigger_fallback sans attendre le cycle complet
-
-### Corrections P2 (v0.7+)
-- [ ] **`remaining_pct()` Modal** — tracker le budget $30 réel (décrémenter au lancement de sandbox)
-- [ ] **Priorité harvester** — si Modal saturé (sandboxes zombies), basculer automatiquement sur Kaggle
-- [ ] **Tâche timeout → retry intelligent** — ne pas réassigner au même type de worker si échec réseau
-- [ ] **Rotation + rétention logs** — `data/logs/{id}.log` : garder les 1000 dernières lignes par tâche, supprimer après 7j dans `cleanup_expired`
-
-### Monitoring
-- [x] **`/stats` enrichi** — quota Kaggle par compte, workers actifs
-- [x] **Logs workers → coordinateur** — `_save_worker_logs()` + `GET /tasks/{id}/logs`
-- [ ] **Statut VPN homelab** dans `/stats`
+- [x] WireGuard homelab → SOCKS5 Oracle → workers téléchargent via IP résidentielle
+- [x] Heartbeat Mode B — urllib thread, `task_valid` fix, `current_assignment_token`
+- [x] Mode A supprimé — 9 fichiers, `_maintenance_loop` unifié (15s)
+- [x] Fallback coordinator supprimé — `_download_audio`, `prepare_audio_fallback`
+- [x] Worker deadlock fix — `_read_stderr` thread retiré (Modal + HF)
+- [x] `requeue_stale` atomique 90s, `cleanup_expired` 5min
+- [x] Rate limit pull — auth 30/min, anon 6/min
+- [x] `/stats` enrichi — quota Kaggle par compte, `mode_b_workers_active`
 
 ---
 
-## 🔮 v0.7 — Optimisations & nouveaux usages
+## 🔮 v0.7 — File d'attente intelligente & UX
 
-### Matching GPU intelligent
-- [ ] **`gpu_model` / `gpu_vram_mb`** dans les capabilities
-- [ ] **`gpu_min_vram_mb`** dans la définition de tâche
-- [ ] **Matching** — T4 pour turbo, L40S+ pour large-v3/LLM
+### Queue adaptative (CPU/GPU mixing)
+- [ ] **Queue non-bloquante** — une tâche CPU peut passer devant des tâches GPU si aucun GPU dispo
+- [ ] **`gpu_required` → sémaphore** — tâches CPU traversent même si queue GPU pleine
+- [ ] **FIFO par type** — deux files logiques (CPU / GPU), le harvester décide laquelle servir
+- [ ] **Prio par âge** — si tâche CPU > 5min dans la queue, forcer un worker même si GPU dispo
 
-### Nouveaux runtimes
-- [ ] **LLM Inference** — llama.cpp/WebLLM sur workers GPU
-- [ ] **Web scraping distribué** — tâches parallélisées
-- [ ] **Mode FaaS** — endpoint `/faas/{func_hash}`
+### Priorité par compte (pas par provider)
+- [ ] **`remaining_pct()` → `remaining_credits_per_account()`** — granularité compte, pas provider
+- [ ] **Modal billing API** — utiliser `modal.billing` plutôt qu'estimer le budget
+- [ ] **Kaggle GPU quota API** — `kaggle.api.kaggle_api_extended` pour heures restantes par compte
+- [ ] **Round-robin pondéré** — le compte avec le plus de crédits reçoit la prochaine tâche
+- [ ] **Provider API-first** — privilégier les APIs natives (Modal billing, Kaggle quota) sur nos estimations
 
-### Qualité
-- [ ] **Meilleur modèle Whisper** — large-v3-turbo
-- [ ] **Chunking audio** — découpage longues vidéos
-- [ ] **Sauvegarde transcripts** — export Google Docs, etc.
+### Logs workers → coordinator (streaming)
+- [ ] **Logs temps réel** — SSE ou WebSocket pour streamer stderr worker → coordinator
+- [ ] **Rétention TTL** — logs supprimés après 7j dans `cleanup_expired`
+- [ ] **Ring buffer par tâche** — 1000 dernières lignes max
+- [ ] **`GET /tasks/{id}/logs?tail=100&follow=true`** — tail + follow en HTTP
 
-### Volume Modal partagé
-- [ ] **Audio sur Volume** — écriture coordinateur, lecture concurrente workers
-- [ ] **Modèles LLM sur Volume** — partage de poids entre workers
+### CLI / UX simplifiée
+- [ ] **`scrapower` CLI** — `scrapower submit`, `scrapower status`, `scrapower logs`
+- [ ] **`scrapower serve`** — unifier `docker compose up` + `scrapower serve`
+- [ ] **Dashboard web minimal** — `/` : queue, workers actifs, dernières tâches
+- [ ] **Webhook callback** — `POST https://mon-app.com/hook` quand tâche terminée
+- [ ] **API key par client** — isolation, quotas par clé
+
+### Task chunking
+- [ ] **Découpage audio long** — >30min → N segments → N tâches parallèles
+- [ ] **Merge results** — rassembler les segments dans l'ordre
+- [ ] **Configurable** — `min_chunk_sec=300`, `max_chunks=20`
+- [ ] **Économie** — chunks GPU en parallèle sur comptes différents
+
+---
+
+## 🔮 v0.8 — Multi-workload & runtimes
+
+### Tâches génériques (pas que transcription)
+- [ ] **Endpoint `/tasks` unifié** — `task_type: "whisper" | "python" | "wasm" | "translate"`
+- [ ] **`POST /translate`** — sous-titres pour PotPlayer/VLC (entrée: SRT/VTT, sortie: SRT traduit)
+- [ ] **`POST /infer`** — LLM inference distribué (voir v0.9)
+- [ ] **`POST /faas/{func_hash}`** — exécution Python/WASM arbitraire
+- [ ] **Runner registry** — `whisper_runner.py`, `translate_runner.py`, `llm_runner.py`
+
+### Résultat caching
+- [ ] **Cache par URL + model** — même vidéo + même modèle → résultat caché
+- [ ] **TTL configurable** — 24h par défaut, invalidable
+- [ ] **`ETag` / `If-None-Match`** — cache HTTP standard
+
+### Dead letter queue
+- [ ] **Max retries par tâche** — après N échecs → DLQ au lieu de boucler
+- [ ] **Inspection DLQ** — `GET /tasks?status=failed`
+- [ ] **Retry manuel** — `POST /tasks/{id}/retry`
+
+---
+
+## 🔮 v0.9 — LLM distribué
+
+- [ ] **`llm_runner.py`** — llama.cpp ou vllm, remplace `whisper_runner.py`
+- [ ] **`POST /infer`** — `{"model": "mistral-7b", "prompt": "...", "max_tokens": 500}`
+- [ ] **Modèles sur Volume Modal** — poids partagés entre workers (pas de re-download)
+- [ ] **Streaming tokens** — SSE token par token vers le client
+- [ ] **Matching GPU** — T4 pour 7B, L40S+ pour 13B/34B
+- [ ] **Quantization** — GGUF Q4_K_M pour tenir en VRAM T4 (16GB)
 
 ---
 
 ## 💭 Horizon (v1.0)
 
-- [ ] Multi-tenant — isolation client_id, quotas
-- [ ] Fédération de coordinateurs
-- [ ] SDK Python — `pip install scrapower`
-- [ ] Observabilité Prometheus, alertes
-- [ ] Autres providers : Google Colab, AWS Lambda
+- [ ] **Multi-tenant** — isolation client_id, quotas, billing
+- [ ] **Fédération** — plusieurs coordinateurs (Oracle + homelab + autres)
+- [ ] **SDK Python** — `pip install scrapower`, `from scrapower import Client`
+- [ ] **Observabilité** — Prometheus metrics, Grafana dashboard
+- [ ] **Autres providers** — Colab, Lambda, RunPod
