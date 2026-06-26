@@ -9,6 +9,18 @@ Débugger le cycle de transcription batch (playlist Hegel, vidéos 1-2h).
 Les tâches bouclent : transcription OK → submit rejeté → retour en queued →
 re-transcription depuis zéro → boucle infinie.
 
+### ✅ Résolu — Cause racine
+Le Scheduler Mode A appelait `requeue_stale()` toutes les 5s → invalidait
+le token des workers Mode B → submit rejeté → boucle. Suppression complète
+du Mode A (commits `65324e7`, `1daba3e`, `517a848`).
+
+### ⚠️ Reste à faire — Optimisation
+Si la transcription réussit (exit_code=0) mais le submit échoue (token expiré,
+tâche annulée), le worker jette le résultat et re-transcrit depuis zéro.
+→ Gaspillage GPU (ex: Hegel transcrit 2 fois, 247s + 225s de T4).
+→ À faire : le worker devrait cacher le résultat par task_id et ne refaire
+  que upload+submit sur les pulls suivants, pas la transcription.
+
 ### Chronologie complète
 
 | Étape | Action | Commit | Résultat |
@@ -48,7 +60,7 @@ enfin des requêtes HTTP. Le fix final :
 | P1 | Harvester choisit HF (CPU) pour GPU | `remaining_pct()` ment, `_first_deploy()` inutile, `total_active` pas filtré | 3 sous-bugs corrigés | ✅ |
 | P3 | Comptes Modal hors budget | Spend limit à 0$ | Relevé sur piot.jeremie | ✅ |
 | P4 | Heartbeat 0 requête envoyée | `global _LOG_TASK_ID` manquant + event loop bloqué | urllib + thread + global | ✅ |
-| P5 | `requeue_stale()` invalide le token Mode B | Scheduler Mode A appelle `requeue_stale()` toutes les 5s | Supprimer Mode A (en cours) | 🔴 En cours |
+| P5 | `requeue_stale()` invalide le token Mode B | Scheduler Mode A appelle `requeue_stale()` toutes les 5s | Mode A supprimé, `_maintenance_loop` (15s) + heartbeat fix | ✅ |
 
 ### 🔮 Refactor — Suppression Mode A (à faire)
 
