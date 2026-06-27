@@ -1,0 +1,16 @@
+[project]
+name = "scrapower-worker"
+version = "0.1.0"
+description = "Scrapower worker — Mode B HTTP pull/submit client"
+requires-python = ">=3.10"
+dependencies = [
+    "aiohttp>=3.8",
+    "wasmtime>=14",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]

@@ -308,27 +308,29 @@ class ModalHarvester(WorkerProvider):
 
         app = await modal.App.lookup.aio("scrapower", create_if_missing=True, client=client)
 
-        # Build image with dependencies + CUDA for GPU + worker package
+        # Read the self-contained worker script (bundled from src/scrapower/worker/)
+        worker_code = open("deploy/modal/worker.py").read()
+
+        # Build image with CUDA + dependencies (no local files needed)
         image = (
             modal.Image.from_registry("nvidia/cuda:12.4.0-runtime-ubuntu22.04", add_python="3.12")
             .apt_install("ffmpeg")
             .pip_install("aiohttp", "faster-whisper", "yt-dlp", "wasmtime")
-            .add_local_dir("src/scrapower/worker", "/opt/scrapower/worker")
-            .env({"HF_XET_HIGH_PERFORMANCE": "1", "PYTHONPATH": "/opt"})
+            .env({"HF_XET_HIGH_PERFORMANCE": "1"})
         )
 
-        # Create sandbox — runs the worker package directly
+        # Create sandbox — entrypoint runs the bundled worker script via -c
         sb = await modal.Sandbox.create.aio(
             "python",
-            "-m",
-            "scrapower.worker.entry",
+            "-c",
+            worker_code,
             app=app,
             image=image,
             gpu=self._gpu_type,
             timeout=SANDBOX_TIMEOUT,
             idle_timeout=IDLE_TIMEOUT,
             cpu=4,
-            memory=30720,  # 30 GB RAM
+            memory=30720,
             client=client,
             secrets=[
                 modal.Secret.from_dict(
