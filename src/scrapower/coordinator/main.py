@@ -211,6 +211,7 @@ async def lifespan(app: FastAPI):
 
     harvester_task: asyncio.Task | None = None
     if providers:
+        app.state.providers = providers
         harvester = EphemeralHarvester(providers, task_service=task_service)
         harvester_task = asyncio.create_task(harvester.run())
         log.info("harvester started", providers=len(providers))

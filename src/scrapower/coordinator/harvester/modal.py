@@ -110,7 +110,7 @@ class ModalHarvester(WorkerProvider):
         - MAX_CONCURRENT = 3 (limite de sandboxes simultanées)
         - Billing API (coût réel, rafraîchi toutes les 10 min)
         """
-        if not self._accounts:
+        if not self._accounts.all:
             return 0.0
 
         await self._refresh_billing()

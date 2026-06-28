@@ -78,12 +78,10 @@ async def get_stats(request: Request):
         row = await cursor.fetchone()
         if row:
             total_completed = row["n"]
-        # Also count old "validated" state for backward compat
         cursor = await db.execute("SELECT COUNT(*) as n FROM tasks WHERE state = ?", ("validated",))
         row = await cursor.fetchone()
         if row:
             total_completed += row["n"]
-        # GPU tasks waiting in queue
         cursor = await db.execute(
             "SELECT COUNT(*) as n FROM tasks WHERE gpu_required = 1 AND state = 'queued'"
         )
@@ -91,11 +89,70 @@ async def get_stats(request: Request):
         if row:
             gpu_tasks_queued = row["n"]
 
+    # Worker details from providers
+    workers = []
+    providers = getattr(request.app.state, "providers", None) or []
+    for p in providers:
+        try:
+            status = await p.status()
+            workers.append(
+                {
+                    "provider": status.name,
+                    "gpu_type": status.gpu_type,
+                    "remaining_pct": round(status.remaining_pct, 1),
+                    "workers_active": status.workers_active,
+                    "quota_detail": status.quota_detail,
+                }
+            )
+        except Exception:
+            pass
+
     return JSONResponse(
         {
             "mode_b_workers_active": mode_b_active,
             "completed_tasks": total_completed,
             "gpu_tasks_queued": gpu_tasks_queued,
+            "workers": workers,
             "kaggle_quota": await _get_kaggle_quota(os.environ.get("KAGGLE_ACCOUNTS", "")),
+            "modal_billing": await _get_modal_billing(os.environ.get("MODAL_ACCOUNTS", "")),
         }
     )
+
+
+async def _get_modal_billing(accounts_json: str) -> dict:
+    """Fetch billing info for Modal accounts. Returns {total_cost, monthly_budget, remaining_pct}."""
+    if not accounts_json:
+        return {"accounts": [], "total_cost": 0, "monthly_budget": 0, "remaining_pct": 100}
+    try:
+        accounts = json.loads(accounts_json)
+    except json.JSONDecodeError:
+        return {"accounts": [], "error": "invalid JSON"}
+
+    total_cost = 0.0
+    monthly_budget = 30.0 * len(accounts)
+    acct_list = []
+    for a in accounts:
+        try:
+            import modal
+
+            client = modal.Client.from_credentials(a["token_id"], a["token_secret"])
+            ws = modal.Workspace.from_context(client=client)
+            import datetime
+
+            now_utc = datetime.datetime.now(datetime.timezone.utc)
+            start = now_utc - datetime.timedelta(days=30)
+            report = await ws.billing.report.aio(start=start, end=now_utc, resolution="d")
+            cost = sum(float(item.get("cost", 0)) for item in report)
+            total_cost += cost
+            acct_list.append({"token_id": a["token_id"][:8] + "...", "cost_30d": round(cost, 2)})
+        except Exception:
+            acct_list.append({"token_id": a.get("token_id", "?")[:8] + "...", "cost_30d": None})
+
+    remaining = max(0.0, monthly_budget - total_cost)
+    return {
+        "accounts": acct_list,
+        "total_cost_30d": round(total_cost, 2),
+        "monthly_budget": monthly_budget,
+        "remaining": round(remaining, 2),
+        "remaining_pct": round(remaining / monthly_budget * 100, 1) if monthly_budget > 0 else 0,
+    }
