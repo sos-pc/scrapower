@@ -39,11 +39,14 @@
 - [ ] **Prio par âge** — si tâche CPU > 5min dans la queue, forcer un worker même si GPU dispo
 
 ### Priorité par compte (pas par provider)
+- [x] **`AccountFilter`** — enable/disable par provider (`KAGGLE_ENABLED`) et par compte (`"enabled": true`) ✅
+- [ ] **`AccountRegistry`** — fusionne `AccountFilter` + quota par compte + auto-disable si quota épuisé
 - [ ] **`remaining_pct()` → `remaining_credits_per_account()`** — granularité compte, pas provider
 - [ ] **Modal billing API** — utiliser `modal.billing` plutôt qu'estimer le budget
 - [ ] **Kaggle GPU quota API** — `kaggle.api.kaggle_api_extended` pour heures restantes par compte
 - [ ] **Round-robin pondéré** — le compte avec le plus de crédits reçoit la prochaine tâche
 - [ ] **Provider API-first** — privilégier les APIs natives (Modal billing, Kaggle quota) sur nos estimations
+- [ ] **`/stats` unifié** — une table unique tous comptes confondus (pas un tableau par provider)
 
 ### Logs workers → coordinator (streaming)
 - [ ] **Logs temps réel** — SSE ou WebSocket pour streamer stderr worker → coordinator
