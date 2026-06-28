@@ -19,12 +19,9 @@ def _worker_execute_python(executable, input_data, *, log_fn=None):
         workdir = _Path(tmp)
         script = workdir / "script.py"
         script.write_bytes(executable)
-        sandbox_env = {
-            "PATH": "/usr/bin:/usr/local/bin",
-            "HOME": str(workdir),
-            "TMPDIR": str(workdir),
-            "WG_PROXY": _os.environ.get("WG_PROXY", ""),
-        }
+        sandbox_env = _os.environ.copy()
+        sandbox_env["HOME"] = str(workdir)
+        sandbox_env["TMPDIR"] = str(workdir)
         proc = _subprocess.Popen(
             ["python3", str(script)],
             stdin=_subprocess.PIPE,

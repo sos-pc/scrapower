@@ -34,12 +34,11 @@ def execute_python(
         script = workdir / "script.py"
         script.write_bytes(executable)
 
-        sandbox_env = {
-            "PATH": "/usr/bin:/usr/local/bin",
-            "HOME": str(workdir),
-            "TMPDIR": str(workdir),
-            "WG_PROXY": os.environ.get("WG_PROXY", ""),
-        }
+        # Inherit parent env (preserves LD_LIBRARY_PATH, CUDA libs, etc.)
+        # but isolate the working directory for security.
+        sandbox_env = os.environ.copy()
+        sandbox_env["HOME"] = str(workdir)
+        sandbox_env["TMPDIR"] = str(workdir)
         proc = subprocess.Popen(
             ["python3", str(script)],
             stdin=subprocess.PIPE,
