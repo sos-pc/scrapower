@@ -157,6 +157,7 @@ async def lifespan(app: FastAPI):
 
     # -- Modal provider --
     modal_enabled = os.environ.get("MODAL_ENABLED", "true").lower() in ("1", "true", "yes")
+    modal_accounts_raw = os.environ.get("MODAL_ACCOUNTS", "")
     modal_accounts = []
     if modal_accounts_raw:
         try:

@@ -99,6 +99,37 @@ def main() -> None:
     worker_prefix = os.environ.get("SCRAPOWER_WORKER_PREFIX", "worker")
     worker_id = f"{worker_prefix}-{uuid.uuid4().hex[:8]}"
 
+    # -- CUDA diagnostic (logged before worker starts, for debugging) --
+    print("=== CUDA diagnostic ===", file=sys.stderr)
+    try:
+        import torch
+
+        print(
+            f"torch {torch.__version__}, CUDA {torch.version.cuda}, cuDNN {torch.backends.cudnn.version()}",
+            file=sys.stderr,
+        )
+        print(f"torch.cuda.is_available={torch.cuda.is_available()}", file=sys.stderr)
+    except ImportError:
+        print("torch not installed", file=sys.stderr)
+    import os as _os_diag
+
+    print(f"LD_LIBRARY_PATH={_os_diag.environ.get('LD_LIBRARY_PATH', '(empty)')}", file=sys.stderr)
+    # Check /usr/local/cuda for cuDNN
+    for _cuda_dir in ["/usr/local/cuda", "/usr/local/cuda-12"]:
+        _lib64 = f"{_cuda_dir}/lib64"
+        if _os_diag.path.isdir(_lib64):
+            _cudnn_libs = [f for f in _os_diag.listdir(_lib64) if "cudnn" in f.lower()]
+            print(f"{_cuda_dir}/lib64 cuDNN libs: {_cudnn_libs[:5]}", file=sys.stderr)
+    try:
+        import ctranslate2
+
+        print(
+            f"ctranslate2 {ctranslate2.__version__}, CUDA devices={ctranslate2.get_cuda_device_count()}",
+            file=sys.stderr,
+        )
+    except Exception as _e:
+        print(f"ctranslate2: {_e}", file=sys.stderr)
+
     # Hardware detection
     gpu_type, gpu_vram_mb = _detect_gpu()
     has_gpu = gpu_vram_mb > 0
