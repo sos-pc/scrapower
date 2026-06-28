@@ -85,7 +85,6 @@ import concurrent.futures
 import io
 import sys
 import time as _time
-import urllib.request
 import uuid as _uuid
 
 import aiohttp
@@ -185,39 +184,36 @@ def _run_task_sync(executable, input_data, rt):
 
 
 def _heartbeat_sync():
+    pass  # replaced by async version below
+
+
+async def _heartbeat(session):
     global _LOG_TASK_ID
     while _LOG_TASK_ID:
         logs = _drain_logs()
-        print(f"[HB] sending heartbeat for {_LOG_TASK_ID[:12]}...", flush=True)
         try:
-            data = _json.dumps(
-                {
+            async with session.post(
+                f"{_COORDINATOR_URL}/worker/heartbeat",
+                json={
                     "type": "heartbeat",
                     "worker_id": _WORKER_ID,
                     "task_id": _LOG_TASK_ID,
                     "assignment_token": _LOG_TOKEN,
                     "logs": logs,
-                }
-            ).encode()
-            req = urllib.request.Request(
-                f"{_COORDINATOR_URL}/worker/heartbeat",
-                data=data,
-                headers={"Content-Type": "application/json"},
-            )
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                ack = _json.loads(resp.read())
-            if not ack.get("task_valid"):
-                _log("Heartbeat: task reassigned, aborting")
-                _LOG_TASK_ID = ""
+                },
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as r:
+                if r.status == 200:
+                    ack = await r.json()
+                    if not ack.get("task_valid"):
+                        _log("Heartbeat: task reassigned, aborting")
+                        _LOG_TASK_ID = ""
+                        return
+        except asyncio.CancelledError:
+            return
         except Exception as e:
             _log(f"Heartbeat failed: {e}")
-        _time.sleep(30)
-
-
-async def _heartbeat(session):
-    loop = asyncio.get_running_loop()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        await loop.run_in_executor(pool, _heartbeat_sync)
+        await asyncio.sleep(30)
 
 
 async def run():

@@ -33,20 +33,15 @@
 ## 🔮 v0.7 — File d'attente intelligente & UX
 
 ### Queue adaptative (CPU/GPU mixing)
-- [ ] **Queue non-bloquante** — une tâche CPU peut passer devant des tâches GPU si aucun GPU dispo
-- [ ] **`gpu_required` → sémaphore** — tâches CPU traversent même si queue GPU pleine
-- [ ] **FIFO par type** — deux files logiques (CPU / GPU), le harvester décide laquelle servir
-- [ ] **Prio par âge** — si tâche CPU > 5min dans la queue, forcer un worker même si GPU dispo
-
-### Priorité par compte (pas par provider)
-- [x] **`AccountFilter`** — enable/disable par provider (`KAGGLE_ENABLED`) et par compte (`"enabled": true`) ✅
-- [ ] **`AccountRegistry`** — fusionne `AccountFilter` + quota par compte + auto-disable si quota épuisé
-- [ ] **`remaining_pct()` → `remaining_credits_per_account()`** — granularité compte, pas provider
-- [ ] **Modal billing API** — utiliser `modal.billing` plutôt qu'estimer le budget
+- [x] **`gpu_required` → sémaphore** — tâches CPU traversent même si queue GPU pleine ✅ (v0.7)
+- [x] **FIFO par compte** — `AccountRegistry.candidates_for_task()` trie par quota ✅ (v0.7)
+- [x] **Lancement parallèle** — `asyncio.gather` sur plusieurs comptes ✅ (v0.7)
+- [x] **`remaining_pct()` → `remaining_credits_per_account()`** — granularité compte ✅ (v0.7)
+- [x] **Modal billing API** — `modal.billing` ✅ (v0.7)
+- [x] **Heartbeat async** — remplace le thread urllib (P8) ✅ (v0.7)
 - [ ] **Kaggle GPU quota API** — `kaggle.api.kaggle_api_extended` pour heures restantes par compte
-- [ ] **Round-robin pondéré** — le compte avec le plus de crédits reçoit la prochaine tâche
 - [ ] **Provider API-first** — privilégier les APIs natives (Modal billing, Kaggle quota) sur nos estimations
-- [ ] **`/stats` unifié** — une table unique tous comptes confondus (pas un tableau par provider)
+- [ ] **`/stats` unifié** — une table unique tous comptes confondus ✅ (v0.7)
 
 ### Logs workers → coordinator (streaming)
 - [ ] **Logs temps réel** — SSE ou WebSocket pour streamer stderr worker → coordinator

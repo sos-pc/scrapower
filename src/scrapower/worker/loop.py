@@ -11,10 +11,8 @@ import asyncio
 import concurrent.futures
 import io
 import json as _json
-import os
 import sys
 import time
-import urllib.request
 from typing import Any
 
 import aiohttp
@@ -102,42 +100,35 @@ class WorkerLoop:
         finally:
             sys.stderr = old_stderr
 
-    # -- Heartbeat (synchronous, runs in a thread) -----------------------
+    # -- Heartbeat (async, runs as background task) --------------------
 
-    def _heartbeat_sync(self) -> None:
-        """Send heartbeat every N seconds. Exits when _log_task_id is cleared."""
+    async def _heartbeat(self, session: aiohttp.ClientSession) -> None:
+        """Send heartbeat every N seconds during task execution."""
         while self._log_task_id:
             logs = self._drain_logs()
-            print(f"[HB] sending heartbeat for {self._log_task_id[:12]}...", flush=True)
             try:
-                data = _json.dumps(
-                    {
+                async with session.post(
+                    f"{self.coordinator_url}/worker/heartbeat",
+                    json={
                         "type": "heartbeat",
                         "worker_id": self.worker_id,
                         "task_id": self._log_task_id,
                         "assignment_token": self._log_token,
                         "logs": logs,
-                    }
-                ).encode()
-                req = urllib.request.Request(
-                    f"{self.coordinator_url}/worker/heartbeat",
-                    data=data,
-                    headers={"Content-Type": "application/json"},
-                )
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    ack = _json.loads(resp.read())
-                if not ack.get("task_valid"):
-                    self._log("Heartbeat: task reassigned, aborting")
-                    self._log_task_id = ""
+                    },
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as r:
+                    if r.status == 200:
+                        ack = await r.json()
+                        if not ack.get("task_valid"):
+                            self._log("Heartbeat: task reassigned, aborting")
+                            self._log_task_id = ""
+                            return
+            except asyncio.CancelledError:
+                return
             except Exception as e:
                 self._log(f"Heartbeat failed: {e}")
-            time.sleep(self.heartbeat_interval_sec)
-
-    async def _heartbeat(self, session: aiohttp.ClientSession) -> None:
-        """Run heartbeat synchronously in a thread (bypasses event loop)."""
-        loop = asyncio.get_running_loop()
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            await loop.run_in_executor(pool, self._heartbeat_sync)
+            await asyncio.sleep(self.heartbeat_interval_sec)
 
     # -- Main loop -------------------------------------------------------
 
