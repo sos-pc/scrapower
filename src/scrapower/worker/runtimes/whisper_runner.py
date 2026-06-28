@@ -21,6 +21,40 @@ class DownloadError(Exception):
 
 
 def _ensure_deps():
+    # -- Fix A: Install cuDNN 9 via pip, expose via LD_LIBRARY_PATH --
+    # ctranslate2 4.x requires cuDNN 9.x, which Kaggle lacks.
+    # We install it here BEFORE importing faster-whisper (which imports ctranslate2).
+    _fix_a_ok = False
+    try:
+        __import__("nvidia.cudnn")
+        _fix_a_ok = True
+    except ImportError:
+        try:
+            subprocess.check_call(
+                [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "install",
+                    "-q",
+                    "nvidia-cublas-cu12",
+                    "nvidia-cudnn-cu12==9.*",
+                ],
+                timeout=120,
+            )
+            import nvidia.cudnn
+
+            _cudnn_lib = os.path.join(os.path.dirname(nvidia.cudnn.__file__), "lib")
+            _existing = os.environ.get("LD_LIBRARY_PATH", "")
+            os.environ["LD_LIBRARY_PATH"] = f"{_cudnn_lib}:{_existing}" if _existing else _cudnn_lib
+            _fix_a_ok = True
+            print(
+                f"[whisper_runner] Fix A: cuDNN 9 installed, LD_LIBRARY_PATH={_cudnn_lib}",
+                file=sys.stderr,
+            )
+        except Exception as e:
+            print(f"[whisper_runner] Fix A failed: {e}", file=sys.stderr)
+
     for pkg in ["faster-whisper", "yt-dlp"]:
         try:
             __import__(pkg.replace("-", "_"))
