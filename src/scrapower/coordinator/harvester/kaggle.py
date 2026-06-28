@@ -29,17 +29,20 @@ class KaggleHarvester(WorkerProvider):
         coordinator_url: str = "wss://your-coordinator.example.com/worker/ws",
         api_key: str = "",
         notebook_template: str | None = None,
+        provider_enabled: bool = True,
     ):
-        self._accounts = accounts
+        from ..accounts import AccountFilter
+
+        self._accounts = AccountFilter(accounts, provider_enabled=provider_enabled)
         self._coordinator_url = coordinator_url
         self._api_key = api_key
         self._notebook_template = notebook_template or self._find_notebook()
         self._running = False
         self._round = 0
-        self._last_start: dict[str, float] = {}  # token_id -> timestamp
+        self._last_start: dict[str, float] = {}
         self._current_cooldown: float = COOLDOWN_SEC
         self._last_cleanup: float = 0
-        self._kernel_refs: list[str] = []  # kernel IDs we've launched
+        self._kernel_refs: list[str] = []
 
     @staticmethod
     def _find_notebook() -> str:
@@ -61,7 +64,7 @@ class KaggleHarvester(WorkerProvider):
         self._last_cleanup = now
 
         cleaned = 0
-        for account in self._accounts:
+        for account in self._accounts.all:
             try:
                 env = os.environ.copy()
                 env["KAGGLE_API_TOKEN"] = account["token"]
@@ -233,11 +236,9 @@ class KaggleHarvester(WorkerProvider):
                 return False
 
     def _next_account(self) -> dict | None:
-        if not self._accounts:
-            return None
-        a = self._accounts[self._round % len(self._accounts)]
+        account = self._accounts.get(self._round)
         self._round += 1
-        return a
+        return account
 
     # ── WorkerProvider interface ──────────────────────────────
 
@@ -250,7 +251,7 @@ class KaggleHarvester(WorkerProvider):
         if not self._accounts:
             return 0.0
         best = 0.0
-        for account in self._accounts:
+        for account in self._accounts.all:
             q = await self._get_quota_for(account)
             if q:
                 best = max(best, min(100.0, q["remaining_h"] / q["total_h"] * 100))
@@ -263,10 +264,10 @@ class KaggleHarvester(WorkerProvider):
     async def launch_worker(self) -> bool:
         """Lance un kernel Kaggle. Avec rate-limit per-compte et max concurrent."""
         # Peek at next account to check per-account cooldown
-        if self._accounts:
-            next_idx = self._round % len(self._accounts)
-            next_tid = self._accounts[next_idx].get("token_id", "default")
-            next_name = self._accounts[next_idx].get("username", "?")
+        next_account = self._accounts.get(self._round)
+        if next_account:
+            next_tid = next_account.get("token_id", next_account.get("username", "default"))
+            next_name = next_account.get("username", "?")
         else:
             return False
         last = self._last_start.get(next_tid, 0)
@@ -300,7 +301,7 @@ class KaggleHarvester(WorkerProvider):
     async def _count_active_kernels(self) -> int:
         """Count RUNNING scrapower-auto kernels across all accounts."""
         active = 0
-        for account in self._accounts:
+        for account in self._accounts.all:
             try:
                 env = os.environ.copy()
                 env["KAGGLE_API_TOKEN"] = account["token"]
@@ -334,7 +335,7 @@ class KaggleHarvester(WorkerProvider):
             gpu_type="T4",
             remaining_pct=pct,
             workers_active=len(self._kernel_refs),
-            quota_detail={"accounts": len(self._accounts)},
+            quota_detail={"accounts": len(self._accounts.all)},
         )
 
     async def _get_quota_for(self, account: dict) -> dict | None:

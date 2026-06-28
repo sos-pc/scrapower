@@ -36,8 +36,11 @@ class ModalHarvester(WorkerProvider):
         budget_monthly_usd: float = BUDGET_MONTHLY_USD,
         gpu_type: str = GPU_TYPE,
         db_path: str = "",
+        provider_enabled: bool = True,
     ):
-        self._accounts = accounts  # list of {token_id, token_secret, [label]}
+        from ..accounts import AccountFilter
+
+        self._accounts = AccountFilter(accounts, provider_enabled=provider_enabled)
         self._coordinator_url = coordinator_url
         self._api_key = api_key
         self._gpu_type = gpu_type
@@ -118,7 +121,7 @@ class ModalHarvester(WorkerProvider):
                 now_utc = datetime.datetime.now(datetime.timezone.utc)
                 start = now_utc - datetime.timedelta(days=30)
                 total_cost = 0.0
-                for account in self._accounts:
+                for account in self._accounts.all:
                     cost = await self._billing_for_account(account, start, now_utc)
                     total_cost += cost
                 self._billing_cost_cached = total_cost
@@ -129,7 +132,7 @@ class ModalHarvester(WorkerProvider):
 
         # Per-account: best remaining budget, with sandbox margin
         best_pct = 0.0
-        for account in self._accounts:
+        for account in self._accounts.all:
             tid = account.get("token_id", "")
             # Count active sandboxes for this account
             active = sum(
@@ -144,7 +147,7 @@ class ModalHarvester(WorkerProvider):
 
         # Floor by billing API (actual cost, never lower)
         if self._billing_cost_cached > 0:
-            total_budget = self._budget_monthly * len(self._accounts)
+            total_budget = self._budget_monthly * len(self._accounts.all)
             billed_pct = max(0, total_budget - self._billing_cost_cached) / total_budget * 100
             best_pct = min(best_pct, billed_pct)
         return best_pct
@@ -170,10 +173,11 @@ class ModalHarvester(WorkerProvider):
     async def launch_worker(self) -> bool:
         """Create a Modal Sandbox with GPU T4. Per-account cooldown."""
         # Peek at next account to check per-account cooldown
-        if self._accounts:
-            next_idx = self._round % len(self._accounts)
-            next_tid = self._accounts[next_idx].get("token_id", "default")
+        next_account = self._accounts.get(self._round)
+        if next_account:
+            next_tid = next_account.get("token_id", "default")
         else:
+            log.info("modal no enabled accounts")
             return False
         last = self._last_start.get(next_tid, 0)
         if time.time() - last < COOLDOWN_SEC:
@@ -191,8 +195,8 @@ class ModalHarvester(WorkerProvider):
             sb = await self._create_sandbox()
             self._last_start[next_tid] = time.time()
             self._sandbox_ids.append(sb.object_id)
-            # Track which account's token created this sandbox (for cross-account cleanup)
-            account = self._accounts[(self._round - 1) % len(self._accounts)]
+            # Track which account's token created this sandbox
+            account = self._accounts.enabled[(self._round - 1) % len(self._accounts.enabled)]
             self._sandbox_tokens[sb.object_id] = (
                 account["token_id"],
                 account["token_secret"],
@@ -266,7 +270,7 @@ class ModalHarvester(WorkerProvider):
             remaining_pct=pct,
             workers_active=len(self._sandbox_ids),
             quota_detail={
-                "accounts": len(self._accounts),
+                "accounts": len(self._accounts.all),
                 "budget_monthly_usd": self._budget_monthly,
                 "cost_per_hour": {"T4": 0.59, "L4": 0.80, "A10": 1.10, "L40S": 1.95}.get(
                     self._gpu_type, 0.59
@@ -288,9 +292,11 @@ class ModalHarvester(WorkerProvider):
         return self._clients[token_id]
 
     def _next_account(self) -> dict:
-        a = self._accounts[self._round % len(self._accounts)]
+        account = self._accounts.get(self._round)
+        if account is None:
+            raise RuntimeError("No enabled Modal accounts")
         self._round += 1
-        return a
+        return account
 
     @staticmethod
     def _find_worker_script() -> str:

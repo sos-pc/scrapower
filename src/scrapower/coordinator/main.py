@@ -136,6 +136,7 @@ async def lifespan(app: FastAPI):
     api_key = os.environ.get("SCRAPOWER_API_KEY", "")
 
     # -- Kaggle provider(s) --
+    kaggle_enabled = os.environ.get("KAGGLE_ENABLED", "true").lower() in ("1", "true", "yes")
     kaggle_accounts_raw = os.environ.get("KAGGLE_ACCOUNTS", "")
     if kaggle_accounts_raw:
         try:
@@ -148,13 +149,14 @@ async def lifespan(app: FastAPI):
                         accounts=kaggle_accounts,
                         coordinator_url=coordinator_url,
                         api_key=api_key,
+                        provider_enabled=kaggle_enabled,
                     )
                 )
         except json.JSONDecodeError:
             log.warning("kaggle_accounts: invalid JSON, skipping")
 
     # -- Modal provider --
-    modal_accounts_raw = os.environ.get("MODAL_ACCOUNTS", "")
+    modal_enabled = os.environ.get("MODAL_ENABLED", "true").lower() in ("1", "true", "yes")
     modal_accounts = []
     if modal_accounts_raw:
         try:
@@ -178,6 +180,7 @@ async def lifespan(app: FastAPI):
                     api_key=api_key,
                     gpu_type=os.environ.get("MODAL_GPU_TYPE", "T4"),
                     db_path=str(config.data_dir) + "/scrapower.db",
+                    provider_enabled=modal_enabled,
                 )
             )
         except ImportError:
