@@ -1,62 +1,56 @@
-"""WorkerProvider ABC — interface commune pour tous les providers éphémères.
+"""WorkerProvider ABC — interface commune pour tous les providers.
 
-Tous les providers (Kaggle, Modal, etc.) implémentent cette interface.
-Le EphemeralHarvester les interroge pour décider lequel lance un worker.
+Chaque provider (Kaggle, Modal, HF Spaces) implémente cette interface.
+Le EphemeralHarvester interroge l'AccountRegistry directement pour
+décider quel compte lancer, puis appelle launch_worker(account).
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from ..accounts import Account
 
 
 @dataclass
 class ProviderStatus:
+    """Aggregate status for display (dashboard, stats). Not used for decisions."""
+
     name: str
-    provider_type: str  # "kaggle", "modal", ...
+    provider_type: str
     gpu_type: str
-    remaining_pct: float  # 0.0 = épuisé, 100.0 = plein
+    remaining_pct: float  # best account's quota (indicative)
     workers_active: int
-    quota_detail: dict | None = None  # données brutes (heures restantes, budget, etc.)
+    quota_detail: dict | None = None
 
 
 class WorkerProvider(ABC):
-    """Une source de workers GPU éphémères.
+    """A provider manages one or more accounts on a single platform.
 
-    Chaque provider gère un ou plusieurs comptes sur une plateforme
-    (Kaggle, Modal, etc.). Le harvester l'interroge périodiquement
-    pour décider s'il doit lancer un worker.
+    After v0.7 refactor: the harvester no longer iterates providers
+    directly. It queries AccountRegistry for the best account, then
+    calls launch_worker(account) on the account's provider.
     """
 
-    @abstractmethod
-    async def remaining_pct(self) -> float:
-        """Pourcentage de quota restant. 0.0 = épuisé, 100.0 = plein.
+    provider_name: str = ""  # set by subclass
 
-        Permet de comparer des sources hétérogènes (heures GPU Kaggle
-        vs crédits $ Modal) sur une échelle unique.
-        """
+    @abstractmethod
+    async def refresh_quota(self, registry) -> None:
+        """Update quota for all accounts of this provider in the registry."""
         ...
 
     @abstractmethod
-    async def has_quota(self) -> bool:
-        """True si au moins un worker peut être lancé (quota > seuil minimum)."""
+    async def launch_worker(self, account: Account) -> bool:
+        """Launch a worker on a specific account. Returns True on success."""
         ...
 
     @abstractmethod
-    async def launch_worker(self) -> bool:
-        """Lance un worker. Retourne True si succès.
-
-        Le worker doit s'autogérer : se connecter au coordinateur,
-        pull des tâches, et s'arrêter après idle_timeout.
-        """
+    async def cleanup_stale(self, registry) -> None:
+        """Clean up stale workers for all accounts of this provider."""
         ...
 
     @abstractmethod
-    async def cleanup_stale(self) -> None:
-        """Nettoie les workers morts/orphelins (kernels stuck, sandbox zombies)."""
-        ...
-
-    @abstractmethod
-    async def status(self) -> ProviderStatus:
-        """Statut actuel du provider (quota, workers actifs, etc.)."""
+    async def status(self, registry) -> ProviderStatus:
+        """Aggregate status for display purposes."""
         ...

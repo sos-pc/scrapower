@@ -1,10 +1,11 @@
-"""EphemeralHarvester — boucle générique pour tous les WorkerProviders.
+"""EphemeralHarvester — boucle de distribution par compte.
 
-Gère le cycle de vie des workers éphémères (Kaggle, Modal, etc.) :
-1. Interroge chaque provider pour son quota
-2. Compte les workers actifs vs tâches en attente
-3. Ne lance que si nécessaire (évite les "launch failed" fantômes)
-4. Trie par capacité restante décroissante
+Gère le cycle de vie des workers éphémères (Kaggle, Modal) et
+persistants (HF Spaces) :
+1. Rafraîchit les quotas de tous les comptes via leurs providers
+2. Compte les workers actifs par compte
+3. Sélectionne le meilleur compte (quota + matching GPU)
+4. Lance un worker sur ce compte
 5. Nettoie les workers morts
 """
 
@@ -13,24 +14,35 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from ..accounts import AccountRegistry
 from .base import WorkerProvider
 
 log = logging.getLogger(__name__)
 
 TICK_SEC = 15
-MIN_QUOTA_PCT = 5.0  # ne pas lancer si < 5% restant
+MIN_QUOTA_PCT = 5.0
 
 
 class EphemeralHarvester:
-    """Pilote générique pour tous les WorkerProviders."""
+    """Pilote générique pour tous les comptes worker.
 
-    def __init__(self, providers: list[WorkerProvider], task_service=None):
+    Après v0.7 : itère les comptes directement via AccountRegistry,
+    pas les providers. Les providers sont juste la couche API.
+    """
+
+    def __init__(
+        self,
+        registry: AccountRegistry,
+        providers: list[WorkerProvider],
+        task_service=None,
+    ):
+        self._registry = registry
         self._providers = providers
+        self._providers_by_name = {p.provider_name: p for p in providers}
         self._task_service = task_service
         self._running = False
 
     async def run(self):
-        """Boucle principale. Tourne indéfiniment."""
         self._running = True
         names = ", ".join(type(p).__name__ for p in self._providers)
         log.info("harvester: %d provider(s) - %s", len(self._providers), names)
@@ -45,122 +57,66 @@ class EphemeralHarvester:
         self._running = False
 
     async def _tick(self):
-        # 1. Récupérer les statuts de tous les providers
-        candidates: list[tuple[float, WorkerProvider]] = []
-        total_active = 0
-        status_lines: list[str] = []
-
-        # Vérifier si toutes les tâches en attente nécessitent un GPU.
-        # Si oui, on ne compte pas les providers CPU-only dans total_active
-        # (ils ne peuvent pas traiter ces tâches, donc ils ne sont pas "actifs").
-        gpu_only = await self._gpu_only_queued()
-
+        # 1. Refresh quotas for all accounts via their providers
         for p in self._providers:
             try:
-                remaining = await p.remaining_pct()
-                status = await p.status()
-                # Ne pas compter les workers CPU-only si toutes les tâches sont GPU
-                if not (gpu_only and status.gpu_type == "none"):
-                    total_active += status.workers_active
-                status_lines.append(
-                    f"{status.name}({remaining:.0f}%, {status.workers_active} active)"
-                )
-                if remaining >= MIN_QUOTA_PCT:
-                    candidates.append((remaining, p))
+                await p.refresh_quota(self._registry)
             except Exception:
-                log.exception("harvester: failed to query %s", type(p).__name__)
+                log.exception("harvester: refresh_quota failed for %s", type(p).__name__)
 
-        # Cleanup ALWAYS runs
+        # 2. Cleanup stale workers (always runs, provider-wide)
         for p in self._providers:
             try:
-                await p.cleanup_stale()
+                await p.cleanup_stale(self._registry)
             except Exception:
                 pass
 
-        if not candidates:
-            return
-
-        # 2. Trier par capacité restante décroissante
-        candidates.sort(key=lambda x: x[0], reverse=True)
-
-        # 3. Vérifier s'il y a des tâches en attente
+        # 3. Count queued tasks and decide if we need workers
         queued = await self._count_queued()
         if queued == 0:
             return
 
-        # 4. Smart launch: ne lancer que si on a besoin de plus de workers
+        gpu_only = await self._gpu_only_queued()
+        total_active = sum(
+            a.workers_active for a in self._registry.enabled if not (gpu_only and not a.has_gpu)
+        )
+
         if total_active >= queued:
-            log.info(
-                "harvester: %d active workers for %d tasks (%s) — skipping launch",
-                total_active,
-                queued,
-                ", ".join(status_lines),
-            )
+            return  # enough workers already
+
+        # 4. Find best account for the task type
+        account = self._registry.best_for_task(gpu_required=gpu_only, min_quota_pct=MIN_QUOTA_PCT)
+        if not account:
             return
 
-        needed = queued - total_active
-        log.info(
-            "harvester: %d tasks queued, %d active (%s), need %d more — trying %s",
-            queued,
-            total_active,
-            ", ".join(status_lines),
-            needed,
-            type(candidates[0][1]).__name__,
-        )
+        provider = self._providers_by_name.get(account.provider)
+        if not provider:
+            log.warning("harvester: no provider for account %s (%s)", account.id, account.provider)
+            return
 
-        # 5. Lancer sur le meilleur provider (le provider logue son propre résultat)
-        launched = False
-        skipped = 0
-        for pct, provider in candidates:
-            try:
-                ok = await provider.launch_worker()
+        # 5. Launch or ensure running
+        try:
+            if account.lifecycle == "persistent":
+                await provider.ensure_running(account)
+            else:
+                ok = await provider.launch_worker(account)
                 if ok:
                     log.info(
-                        "harvester: launched on %s (%.0f%% remaining)",
-                        type(provider).__name__,
-                        pct,
+                        "harvester: launched on %s (%.0f%%)", account.id, account.remaining_pct
                     )
-                    launched = True
-                    break
-                skipped += 1
-            except Exception:
-                log.exception(
-                    "harvester: %s launch crashed, trying next...", type(provider).__name__
-                )
-
-        if not launched:
-            log.info(
-                "harvester: all %d provider(s) declined launch (%d tasks waiting, %d workers active)",
-                len(candidates),
-                queued,
-                total_active,
-            )
+        except Exception:
+            log.exception("harvester: launch failed for %s", account.id)
 
     async def _count_queued(self) -> int:
-        """Nombre de tâches en attente, via TaskService (injecté)."""
-        if self._task_service is None:
-            return 0
-        return await self._task_service.count_queued()
+        if self._task_service:
+            return await self._task_service.count_queued()
+        return 0
 
     async def _gpu_only_queued(self) -> bool:
-        """Vrai si toutes les tâches en attente nécessitent un GPU.
-
-        Si aucune tâche en attente, retourne False (conservateur).
-        Utilisé pour ne pas compter les workers CPU-only dans total_active
-        quand ils ne peuvent de toute façon pas traiter les tâches."""
-        if self._task_service is None:
+        """True if ALL queued tasks require GPU."""
+        if not self._task_service:
             return False
-        cursor = await self._task_service._tm._db.execute(
-            "SELECT COUNT(*) as n FROM tasks WHERE state = 'queued' AND gpu_required = 0"
-        )
-        row = await cursor.fetchone()
-        cpu_count = row["n"] if row else 0
-        if cpu_count > 0:
-            return False  # Au moins une tâche CPU → ne pas filtrer
-        # Vérifier qu'il y a AU MOINS une tâche GPU
-        cursor = await self._task_service._tm._db.execute(
-            "SELECT COUNT(*) as n FROM tasks WHERE state = 'queued'"
-        )
-        row = await cursor.fetchone()
-        total = row["n"] if row else 0
-        return total > 0  # GPU-only si au moins une tâche et zéro CPU
+        tasks = await self._task_service.get_queued(limit=10)
+        if not tasks:
+            return False
+        return all(t.gpu_required for t in tasks)

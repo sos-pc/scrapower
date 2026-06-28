@@ -44,17 +44,11 @@ HEALTH_CHECK_INTERVAL_SEC = 300
 
 
 class HuggingFaceHarvester(WorkerProvider):
-    """Manages a single persistent HF Space running our Mode B worker.
-
-    Must be configured with:
-      - hf_token: HuggingFace API token (write access)
-      - space_id: "username/repo-name" for the Space
-      - coordinator_url: where the worker should connect
-      - api_key: for worker authentication
-    """
+    provider_name = "hf"
 
     def __init__(
         self,
+        account_id: str,
         hf_token: str,
         space_id: str,
         coordinator_url: str,
@@ -62,18 +56,17 @@ class HuggingFaceHarvester(WorkerProvider):
         deploy_dir: str | None = None,
         session_manager=None,
     ):
+        self._account_id = account_id
         self._token = hf_token
         self._space_id = space_id
         self._coordinator_url = coordinator_url
         self._api_key = api_key
-        # Directory containing Dockerfile, app.py, README.md
-        # Default: deploy/hf-spaces/ relative to project root
         self._deploy_dir = deploy_dir or self._find_deploy_dir()
         self._api = HfApi(token=hf_token)
-        self._deployed = False  # True after first successful deploy
+        self._deployed = False
         self._last_health_check: float = 0
-        self._space_url: str = ""  # Cached Space URL (populated on first use)
-        self._session_manager = session_manager  # For counting active HF workers
+        self._space_url: str = ""
+        self._session_manager = session_manager
 
     @staticmethod
     def _find_deploy_dir() -> str:
@@ -89,34 +82,15 @@ class HuggingFaceHarvester(WorkerProvider):
 
     # -- WorkerProvider interface ------------------------------------
 
-    async def remaining_pct(self) -> float:
-        """CPU free tier has unlimited usage. Always 100% if Space exists."""
-        if not self._deployed:
-            return 100.0  # We can always deploy
-        try:
-            runtime = self._api.get_space_runtime(self._space_id)
-            # SLEEPING is fine — we'll wake it on next launch_worker()
-            if runtime.stage in ("RUNNING", "SLEEPING", "APP_STARTING", "PAUSED"):
-                return 100.0
-            if runtime.stage in ("BUILDING", "RUNNING_BUILDING"):
-                return 50.0  # Building — not ready yet but progressing
-            return 0.0  # ERROR, STOPPED, etc.
-        except Exception:
-            return 100.0  # Optimistic: assume we can create it
+    async def refresh_quota(self, registry) -> None:
+        """HF CPU is free and unlimited. Always 100%."""
+        registry.update_quota(self._account_id, 100.0)
 
-    async def has_quota(self) -> bool:
-        """CPU is always free. Always True."""
-        return True
+    async def launch_worker(self, account) -> bool:
+        """Ensure the HF Space is running (deploy or wake)."""
+        return await self.ensure_running(account)
 
-    async def launch_worker(self) -> bool:
-        """Ensure a worker is running. Creates the Space on first call,
-        wakes it on subsequent calls if sleeping.
-
-        Returns True only when this call actually started/restarted
-        a worker (first deploy or wake). Returns False when the worker
-        is already running — the EphemeralHarvester should try another
-        provider instead of counting this as a successful launch.
-        """
+    async def ensure_running(self, account) -> bool:
         if not self._deployed:
             return await self._first_deploy()
 
@@ -145,13 +119,13 @@ class HuggingFaceHarvester(WorkerProvider):
             log.warning("hf: Failed to check/restart Space: %s", e)
             return False
 
-    async def cleanup_stale(self):
-        """Nothing to clean — the worker manages its own lifecycle.
-        The Space auto-sleeps after 48h inactivity (free tier)."""
+    async def cleanup_stale(self, registry) -> None:
+        """Nothing to clean — the worker manages its own lifecycle."""
         pass
 
-    async def status(self) -> ProviderStatus:
-        """Human-readable status for the EphemeralHarvester log line."""
+    async def status(self, registry) -> ProviderStatus:
+        """Aggregate status (indicative)."""
+        account = registry.get(self._account_id)
         try:
             rt = self._api.get_space_runtime(self._space_id)
             stage = rt.stage
@@ -161,7 +135,7 @@ class HuggingFaceHarvester(WorkerProvider):
             name="hf",
             provider_type="hf-spaces",
             gpu_type="none",
-            remaining_pct=await self.remaining_pct(),
+            remaining_pct=account.remaining_pct if account else 100.0,
             workers_active=(
                 self._session_manager.mode_b_active_count("hf-") if self._session_manager else 0
             ),

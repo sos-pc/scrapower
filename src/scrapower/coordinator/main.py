@@ -127,35 +127,55 @@ async def lifespan(app: FastAPI):
     # Start maintenance loop (requeue stale + cleanup expired tasks)
     maint_task = asyncio.create_task(_maintenance_loop(task_service, log))
 
-    # Ephemeral harvester — manages all GPU worker providers (Kaggle, Modal, ...)
+    # Ephemeral harvester — manages all worker accounts (Kaggle, Modal, HF)
+    from .accounts import Account, AccountRegistry
     from .harvester.base import WorkerProvider
     from .harvester.ephemeral import EphemeralHarvester
 
+    registry = AccountRegistry()
     providers: list[WorkerProvider] = []
     coordinator_url = config.coordinator_url
     api_key = os.environ.get("SCRAPOWER_API_KEY", "")
 
-    # -- Kaggle provider(s) --
+    # -- Kaggle accounts --
     kaggle_enabled = os.environ.get("KAGGLE_ENABLED", "true").lower() in ("1", "true", "yes")
     kaggle_accounts_raw = os.environ.get("KAGGLE_ACCOUNTS", "")
+    kaggle_ids: list[str] = []
     if kaggle_accounts_raw:
         try:
             kaggle_accounts = json.loads(kaggle_accounts_raw)
-            if kaggle_accounts:
+            for a in kaggle_accounts:
+                if not kaggle_enabled and not a.get("enabled", True):
+                    continue
+                account_id = f"kaggle:{a['username']}"
+                registry.add(
+                    Account(
+                        id=account_id,
+                        provider="kaggle",
+                        lifecycle="ephemeral",
+                        gpu_type="T4",
+                        gpu_vram_mb=16384,
+                        enabled=a.get("enabled", True) if kaggle_enabled else False,
+                        max_concurrent=3,
+                        credentials=a,
+                    )
+                )
+                if kaggle_enabled and a.get("enabled", True):
+                    kaggle_ids.append(account_id)
+            if kaggle_ids:
                 from .harvester.kaggle import KaggleHarvester
 
                 providers.append(
                     KaggleHarvester(
-                        accounts=kaggle_accounts,
+                        account_ids=kaggle_ids,
                         coordinator_url=coordinator_url,
                         api_key=api_key,
-                        provider_enabled=kaggle_enabled,
                     )
                 )
         except json.JSONDecodeError:
             log.warning("kaggle_accounts: invalid JSON, skipping")
 
-    # -- Modal provider --
+    # -- Modal accounts --
     modal_enabled = os.environ.get("MODAL_ENABLED", "true").lower() in ("1", "true", "yes")
     modal_accounts_raw = os.environ.get("MODAL_ACCOUNTS", "")
     modal_accounts = []
@@ -165,37 +185,67 @@ async def lifespan(app: FastAPI):
         except json.JSONDecodeError:
             log.warning("modal_accounts: invalid JSON")
     if not modal_accounts:
-        # Fallback: single account via MODAL_TOKEN_ID + MODAL_TOKEN_SECRET
         mid = os.environ.get("MODAL_TOKEN_ID", "")
         msec = os.environ.get("MODAL_TOKEN_SECRET", "")
         if mid and msec:
             modal_accounts = [{"token_id": mid, "token_secret": msec}]
+    modal_ids: list[str] = []
     if modal_accounts:
         try:
-            from .harvester.modal import ModalHarvester
-
-            providers.append(
-                ModalHarvester(
-                    accounts=modal_accounts,
-                    coordinator_url=coordinator_url,
-                    api_key=api_key,
-                    gpu_type=os.environ.get("MODAL_GPU_TYPE", "T4"),
-                    db_path=str(config.data_dir) + "/scrapower.db",
-                    provider_enabled=modal_enabled,
+            for a in modal_accounts:
+                account_id = f"modal:{a['token_id'][:8]}"
+                registry.add(
+                    Account(
+                        id=account_id,
+                        provider="modal",
+                        lifecycle="ephemeral",
+                        gpu_type=os.environ.get("MODAL_GPU_TYPE", "T4"),
+                        gpu_vram_mb=16384,
+                        enabled=a.get("enabled", True) if modal_enabled else False,
+                        max_concurrent=3,
+                        credentials=a,
+                    )
                 )
-            )
+                if modal_enabled and a.get("enabled", True):
+                    modal_ids.append(account_id)
+            if modal_ids:
+                from .harvester.modal import ModalHarvester
+
+                providers.append(
+                    ModalHarvester(
+                        account_ids=modal_ids,
+                        coordinator_url=coordinator_url,
+                        api_key=api_key,
+                        gpu_type=os.environ.get("MODAL_GPU_TYPE", "T4"),
+                        db_path=str(config.data_dir) + "/scrapower.db",
+                    )
+                )
         except ImportError:
             log.warning("modal package not installed - skipping Modal provider")
 
-    # -- HuggingFace Spaces provider (CPU worker, persistent) --
+    # -- HuggingFace Spaces (persistent CPU worker) --
     hf_token = os.environ.get("HF_TOKEN", "")
     hf_space_id = os.environ.get("HF_SPACE_ID", "")
     if hf_token and hf_space_id:
         try:
             from .harvester.hf_spaces import HuggingFaceHarvester
 
+            account_id = f"hf:{hf_space_id}"
+            registry.add(
+                Account(
+                    id=account_id,
+                    provider="hf",
+                    lifecycle="persistent",
+                    gpu_type="none",
+                    gpu_vram_mb=0,
+                    enabled=True,
+                    max_concurrent=1,
+                    credentials={"token": hf_token, "space_id": hf_space_id},
+                )
+            )
             providers.append(
                 HuggingFaceHarvester(
+                    account_id=account_id,
                     hf_token=hf_token,
                     space_id=hf_space_id,
                     coordinator_url=coordinator_url,
@@ -206,15 +256,16 @@ async def lifespan(app: FastAPI):
         except ImportError:
             log.warning("huggingface_hub not installed - skipping HF Spaces provider")
 
-    # Start GC background task
+    # Start GC
     gc_task = asyncio.create_task(_gc_loop(config, db))
 
     harvester_task: asyncio.Task | None = None
     if providers:
+        app.state.registry = registry
         app.state.providers = providers
-        harvester = EphemeralHarvester(providers, task_service=task_service)
+        harvester = EphemeralHarvester(registry, providers, task_service=task_service)
         harvester_task = asyncio.create_task(harvester.run())
-        log.info("harvester started", providers=len(providers))
+        log.info("harvester started", accounts=len(registry), providers=len(providers))
     else:
         log.info("no harvester providers configured")
         harvester_task = None
