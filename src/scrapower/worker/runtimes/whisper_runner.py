@@ -87,9 +87,31 @@ def _download_audio(url, workdir, cookies_path=None):
 def _transcribe(audio_path, model_name, language, fmt):
     from faster_whisper import BatchedInferencePipeline, WhisperModel
 
-    model = WhisperModel(
-        model_name, device="cuda", compute_type="float16", download_root=str(MODEL_CACHE)
-    )
+    # Try CUDA first, fall back to CPU if driver/libs are incompatible.
+    # ctranslate2 may fail with misleading "driver version insufficient"
+    # when cuDNN is missing from LD_LIBRARY_PATH (common on Kaggle).
+    model = None
+    for device, compute_type in (("cuda", "float16"), ("cpu", "int8")):
+        try:
+            model = WhisperModel(
+                model_name,
+                device=device,
+                compute_type=compute_type,
+                download_root=str(MODEL_CACHE),
+            )
+            print(
+                f"[whisper_runner] WhisperModel loaded on {device} ({compute_type})",
+                file=sys.stderr,
+            )
+            break
+        except RuntimeError as e:
+            print(
+                f"[whisper_runner] {device} failed: {e}, trying next",
+                file=sys.stderr,
+            )
+    if model is None:
+        raise RuntimeError("No viable device for WhisperModel")
+
     batched = BatchedInferencePipeline(model=model)
     segments, info = batched.transcribe(
         str(audio_path), language=language, batch_size=8, beam_size=5, vad_filter=True
