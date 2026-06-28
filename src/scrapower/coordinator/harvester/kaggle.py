@@ -136,6 +136,9 @@ class KaggleHarvester(WorkerProvider):
                         if dproc.returncode == 0:
                             log.info("harvester cleanup: deleted %s", ref)
                             cleaned += 1
+                            # Keep _kernel_refs in sync so status() reports correct worker count
+                            if ref in self._kernel_refs:
+                                self._kernel_refs.remove(ref)
             except Exception:
                 pass
         if cleaned:
