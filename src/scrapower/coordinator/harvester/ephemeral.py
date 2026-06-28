@@ -84,33 +84,40 @@ class EphemeralHarvester:
         if total_active >= queued:
             return  # enough workers already
 
-        # 4. Try accounts in descending quota order until one launches
+        # 4. Launch workers on multiple accounts in parallel
         candidates = self._registry.candidates_for_task(
             gpu_required=gpu_only, min_quota_pct=MIN_QUOTA_PCT
         )
         needed = queued - total_active
-        launched = 0
+
+        # Build launch coroutines for candidate accounts (up to needed)
+        to_launch: list[tuple[str, asyncio.Task]] = []
         for account in candidates:
-            if launched >= needed:
+            if len(to_launch) >= needed:
                 break
             provider = self._providers_by_name.get(account.provider)
             if not provider:
                 continue
-            try:
-                if account.lifecycle == "persistent":
-                    await provider.ensure_running(account)
-                    launched += 1
-                else:
-                    ok = await provider.launch_worker(account)
-                    if ok:
-                        log.info(
-                            "harvester: launched on %s (%.0f%%)",
-                            account.id,
-                            account.remaining_pct,
-                        )
-                        launched += 1
-            except Exception:
-                log.exception("harvester: launch failed for %s", account.id)
+            if account.lifecycle == "persistent":
+                to_launch.append((account.id, provider.ensure_running(account)))
+            else:
+                to_launch.append((account.id, provider.launch_worker(account)))
+
+        if not to_launch:
+            return
+
+        # Launch all in parallel
+        results = await asyncio.gather(*(coro for _, coro in to_launch), return_exceptions=True)
+        for (account_id, _), ok in zip(to_launch, results):
+            if isinstance(ok, Exception):
+                log.warning("harvester: launch failed for %s: %s", account_id, ok)
+            elif ok:
+                account = self._registry.get(account_id)
+                log.info(
+                    "harvester: launched on %s (%.0f%%)",
+                    account_id,
+                    account.remaining_pct if account else 0,
+                )
 
     async def _count_queued(self) -> int:
         if self._task_service:
