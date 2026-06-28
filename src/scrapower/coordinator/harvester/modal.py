@@ -104,53 +104,40 @@ class ModalHarvester(WorkerProvider):
             pass  # best-effort - DB might be locked
 
     async def remaining_pct(self) -> float:
-        """Budget restant (0-100). Single source of truth: modal.billing API.
+        """Budget restant (0-100). Source unique : modal.billing API.
 
-        Calls billing for ALL accounts every 10 min. Adds a small margin
-        per active sandbox (API has collection delay) -- one sandbox hour
-        at worst = $0.59, or ~2% of the monthly budget. Simple and reliable.
+        Aucune estimation. La sécurité est assurée par :
+        - MAX_CONCURRENT = 3 (limite de sandboxes simultanées)
+        - Billing API (coût réel, rafraîchi toutes les 10 min)
         """
         if not self._accounts:
             return 0.0
 
+        await self._refresh_billing()
+        total_budget = self._budget_monthly * len(self._accounts.all)
+        remaining = max(0.0, total_budget - self._billing_cost_cached)
+        return remaining / total_budget * 100
+
+    async def _refresh_billing(self) -> None:
+        """Refresh billing cache from Modal API (every 10 min)."""
         now = time.time()
-        if now - self._billing_last_check > 600:
-            try:
-                import datetime
+        if now - self._billing_last_check <= 600:
+            return
+        try:
+            import datetime
 
-                now_utc = datetime.datetime.now(datetime.timezone.utc)
-                start = now_utc - datetime.timedelta(days=30)
-                total_cost = 0.0
-                for account in self._accounts.all:
-                    cost = await self._billing_for_account(account, start, now_utc)
-                    total_cost += cost
-                self._billing_cost_cached = total_cost
-                self._billing_last_check = now
-                log.debug("modal billing: $%.4f total (all accounts)", total_cost)
-            except Exception:
-                pass  # keep cached value
-
-        # Per-account: best remaining budget, with sandbox margin
-        best_pct = 0.0
-        for account in self._accounts.all:
-            tid = account.get("token_id", "")
-            # Count active sandboxes for this account
-            active = sum(
-                1
-                for sid, (tok_id, _) in self._sandbox_tokens.items()
-                if tok_id == tid and sid in self._sandbox_ids
-            )
-            # Margin: 1 sandbox-hour = $0.59 = ~2% of $30
-            margin = active * 2.0
-            account_pct = max(0.0, 100.0 - margin)
-            best_pct = max(best_pct, account_pct)
-
-        # Floor by billing API (actual cost, never lower)
-        if self._billing_cost_cached > 0:
+            now_utc = datetime.datetime.now(datetime.timezone.utc)
+            start = now_utc - datetime.timedelta(days=30)
+            total_cost = 0.0
+            for account in self._accounts.all:
+                total_cost += await self._billing_for_account(account, start, now_utc)
+            self._billing_cost_cached = total_cost
+            self._billing_last_check = now
             total_budget = self._budget_monthly * len(self._accounts.all)
-            billed_pct = max(0, total_budget - self._billing_cost_cached) / total_budget * 100
-            best_pct = min(best_pct, billed_pct)
-        return best_pct
+            used_pct = total_cost / total_budget * 100 if total_budget > 0 else 0
+            log.info("modal billing: $%.2f / $%.0f (%.0f%%)", total_cost, total_budget, used_pct)
+        except Exception:
+            pass  # keep cached value
 
     async def _billing_for_account(self, account: dict, start, end) -> float:
         """Call modal billing API for a single account. Returns total cost."""
