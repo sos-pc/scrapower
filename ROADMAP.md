@@ -30,7 +30,17 @@
 
 ---
 
-## 🔮 v0.7 — File d'attente intelligente & UX
+## ✅ v0.7 — AccountRegistry & distribution parallèle (JUIN 2026)
+
+- [x] `AccountRegistry` — liste plate de comptes, quota, GPU capabilities
+- [x] Décision par compte — `candidates_for_task()`, tri par quota décroissant
+- [x] Lancement parallèle — `asyncio.gather` sur N comptes
+- [x] `remaining_pct()` par compte — plus d'agrégat provider
+- [x] Modal billing API — `modal.billing` par compte
+- [x] Kaggle quota API — `kaggle quota --csv` par compte
+- [x] `/stats` unifié — une liste `accounts`, plus de doublons
+- [x] Heartbeat async — `aiohttp` remplace `urllib` thread (fix P8)
+- [x] HF Spaces unifié comme compte avec `lifecycle: persistent`
 
 ### Queue adaptative (CPU/GPU mixing)
 - [x] **`gpu_required` → sémaphore** — tâches CPU traversent même si queue GPU pleine ✅ (v0.7)
