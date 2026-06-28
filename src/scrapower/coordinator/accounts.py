@@ -96,21 +96,23 @@ class AccountRegistry:
     def best_for_task(
         self, *, gpu_required: bool = False, min_quota_pct: float = 5.0
     ) -> Account | None:
-        """Return the best eligible account for a task.
+        """Return the single best eligible account."""
+        candidates = self.candidates_for_task(
+            gpu_required=gpu_required, min_quota_pct=min_quota_pct
+        )
+        return candidates[0] if candidates else None
 
-        Sorts by remaining quota (descending), GPU capability (GPU first).
-        Accounts with quota < min_quota_pct are excluded.
-        """
+    def candidates_for_task(
+        self, *, gpu_required: bool = False, min_quota_pct: float = 5.0
+    ) -> list[Account]:
+        """Return all eligible accounts sorted by priority."""
         candidates = [
             a
             for a in self._accounts.values()
             if a.can_launch and a.remaining_pct >= min_quota_pct and (not gpu_required or a.has_gpu)
         ]
-        if not candidates:
-            return None
-        # Sort: highest quota first, GPU accounts before CPU
         candidates.sort(key=lambda a: (a.remaining_pct, int(a.has_gpu)), reverse=True)
-        return candidates[0]
+        return candidates
 
     def __len__(self) -> int:
         return len(self._accounts)

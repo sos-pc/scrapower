@@ -84,28 +84,33 @@ class EphemeralHarvester:
         if total_active >= queued:
             return  # enough workers already
 
-        # 4. Find best account for the task type
-        account = self._registry.best_for_task(gpu_required=gpu_only, min_quota_pct=MIN_QUOTA_PCT)
-        if not account:
-            return
-
-        provider = self._providers_by_name.get(account.provider)
-        if not provider:
-            log.warning("harvester: no provider for account %s (%s)", account.id, account.provider)
-            return
-
-        # 5. Launch or ensure running
-        try:
-            if account.lifecycle == "persistent":
-                await provider.ensure_running(account)
-            else:
-                ok = await provider.launch_worker(account)
-                if ok:
-                    log.info(
-                        "harvester: launched on %s (%.0f%%)", account.id, account.remaining_pct
-                    )
-        except Exception:
-            log.exception("harvester: launch failed for %s", account.id)
+        # 4. Try accounts in descending quota order until one launches
+        candidates = self._registry.candidates_for_task(
+            gpu_required=gpu_only, min_quota_pct=MIN_QUOTA_PCT
+        )
+        needed = queued - total_active
+        launched = 0
+        for account in candidates:
+            if launched >= needed:
+                break
+            provider = self._providers_by_name.get(account.provider)
+            if not provider:
+                continue
+            try:
+                if account.lifecycle == "persistent":
+                    await provider.ensure_running(account)
+                    launched += 1
+                else:
+                    ok = await provider.launch_worker(account)
+                    if ok:
+                        log.info(
+                            "harvester: launched on %s (%.0f%%)",
+                            account.id,
+                            account.remaining_pct,
+                        )
+                        launched += 1
+            except Exception:
+                log.exception("harvester: launch failed for %s", account.id)
 
     async def _count_queued(self) -> int:
         if self._task_service:
