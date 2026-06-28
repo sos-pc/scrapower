@@ -77,14 +77,16 @@ Le fallback CPU fonctionne (tiny: 2.6s, turbo: ~4min pour 2h).
 
 ## Cause racine confirmée
 
-**Le driver NVIDIA 560.35.03 de Kaggle est incompatible avec `ctranslate2` (toutes versions).**
+~~Le driver NVIDIA 560.35.03 de Kaggle est incompatible avec `ctranslate2` (toutes versions).~~
 
-Ce n'est PAS un problème de :
-- ❌ cuDNN manquant (vérifié : installé, LD_LIBRARY_PATH configuré)
-- ❌ Mauvaise version de ctranslate2 (testé 3.x et 4.x)
-- ❌ Lib CUDA manquantes (PyTorch les fournit)
+**RÉSOLU** : Le problème n'était PAS le driver. `ctranslate2.get_cuda_device_count()` retournait 2.
+La cause réelle : `src/scrapower/worker/runtimes/python.py` créait un environnement
+minimal pour le subprocess (`{PATH, HOME, TMPDIR, WG_PROXY}`) au lieu d'hériter
+l'environnement parent. `LD_LIBRARY_PATH=/usr/local/nvidia/lib64:...` n'était pas
+transmis → `ctranslate2` ne trouvait pas `libcudnn.so` → fallback CPU.
 
-Le message `CUDA driver version is insufficient` est littéral : le driver 560.35.03 est trop ancien pour la combinaison ctranslate2 + CUDA 12.6.
+**Fix** : `os.environ.copy()` au lieu du dict minimal. Une ligne changée.
+Le GPU Kaggle fonctionne maintenant avec `faster-whisper` directement.
 
 ---
 
@@ -116,10 +118,9 @@ Le message `CUDA driver version is insufficient` est littéral : le driver 560.3
 
 ```
 ✅ Mode B HTTP pull/submit — fonctionnel
-✅ Heartbeat — fonctionnel  
+✅ Heartbeat — fonctionnel
 ✅ WG_PROXY — fonctionnel (téléchargement YouTube OK)
-✅ CPU fallback — fonctionnel (tiny: 2.6s)
-❌ GPU — incompatible avec ctranslate2
+✅ GPU — fonctionnel (faster-whisper CUDA, tiny: 2.7s)
 ```
 
 ## Architecture de déploiement Kaggle

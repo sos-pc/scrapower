@@ -68,7 +68,7 @@ enfin des requêtes HTTP. Le fix final :
 | P7 | Notebook Kaggle incomplet | `sworker.ipynb` contient seulement le code submit retry, pas de pull loop / execute / heartbeat | Réécrire le notebook (ou le générer depuis le harvester) avec le code worker complet | ✅ Fait (commit `79420ab`) |
 | P8 | Transcription réussie mais submit rejeté → retranscription complète | Worker jette le résultat si submit échoue, refait download + transcription | Cacher résultat par task_id, retry upload+submit seulement | ⚠️ À planifier |
 | P9 | `workers_active` Kaggle basé sur `_kernel_refs` jamais nettoyé | `status()` retourne `len(self._kernel_refs)` sans retirer les kernels supprimés → harvester bloqué 5 min entre chaque cleanup | Ajouter `self._kernel_refs.remove(ref)` dans `_cleanup_old_kernels()` | ✅ Fixé (commit `79420ab`) |
-| P10 | GPU Kaggle incompatible ctranslate2 | Driver CUDA 12.6 (560.35.03) rejeté par ctranslate2 3.x et 4.x. Même avec cuDNN 9 + LD_LIBRARY_PATH. | Fallback CPU fonctionnel (tiny: 3s, turbo: ~4min pour 2h). Piste: `insanely-fast-whisper` ou `openai-whisper` (PyTorch natif). | ⚠️ Documenté |
+| P10 | GPU Kaggle incompatible ctranslate2 | Driver CUDA 12.6 (560.35.03) rejeté par ctranslate2 3.x et 4.x. Même avec cuDNN 9 + LD_LIBRARY_PATH. | **Cause réelle** : `python.py` isolait trop le subprocess (env minimal sans `LD_LIBRARY_PATH`). Fix : `os.environ.copy()`. GPU fonctionne maintenant. | ✅ Résolu (commit `c2e1d1f`) |
 
 ---
 
