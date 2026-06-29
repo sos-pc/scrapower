@@ -165,7 +165,12 @@ A Kaggle account at 93% runs before a Modal account at 80%.
 
 - `modal.Sandbox.create()` with CUDA image (nvidia/cuda:12.4.0)
 - GPU T4 ($0.59/h), idle_timeout=2min, max 6h per sandbox
-- Worker script runs Mode B polling loop, auto-exits after idle
+- **Worker delivery**: `deploy/modal/worker.py` is **auto-generated** by
+  `scripts/bundle_modal_worker.py` from the canonical sources
+  (`src/scrapower/worker/{loop,entry,runtimes/python,wasm}.py`).
+  Modal Sandbox API requires a self-contained script (`python -c`),
+  unlike Kaggle which installs the package via `pip install git+...`.
+  Run the bundler after any source change and commit the result.
 - **Budget tracking**: `modal.billing` API as single source of truth
   - Queries ALL accounts every 10 min (cached)
   - Survives coordinator restarts (persisted in `kv_store` DB)

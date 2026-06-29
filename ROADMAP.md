@@ -41,6 +41,8 @@
 - [x] `/stats` unifié — une liste `accounts`, plus de doublons
 - [x] Heartbeat async — `aiohttp` remplace `urllib` thread (fix P8)
 - [x] HF Spaces unifié comme compte avec `lifecycle: persistent`
+- [x] Bundle Modal auto-généré — `scripts/bundle_modal_worker.py` élimine la duplication
+- [x] Nettoyage codebase v0.7.1 — code mort, constantes, `except: pass`, type annotations
 
 ### Queue adaptative (CPU/GPU mixing)
 - [x] **`gpu_required` → sémaphore** — tâches CPU traversent même si queue GPU pleine ✅ (v0.7)

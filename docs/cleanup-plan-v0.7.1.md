@@ -3,85 +3,73 @@
 > **Objectif** : réduire la dette technique, éliminer la duplication,
 > améliorer la robustesse. Zéro changement fonctionnel.
 
+**Statut global** : ✅ Passes 1, 2 terminées. ⏳ Passe 3 partielle (3.2 restant).
+
 ---
 
-## Passe 1 — Nettoyage mécanique (20 min, zéro risque)
+## Passe 1 — Nettoyage mécanique ✅ Terminé (commits `239d9af`, `4de13cb`)
 
-### 1.1 Code mort dans `whisper_runner.py`
+### 1.1 Code mort dans `whisper_runner.py` ✅
 
 | Suppression | Lignes | Raison |
 |-------------|--------|--------|
 | `_transcribe_transformers()` | ~60 | Fallback jamais déclenché depuis fix `os.environ.copy()` |
 | `HF_MODEL_MAP` | ~10 | Mapping inutile |
 | `_format_segments()` | ~20 | Fusionné dans `_transcribe_faster_whisper` |
-| `import torch`, `from transformers import ...` dans la fonction | — | Plus appelé |
+| `import torch`, `from transformers import ...` | — | Plus appelé |
 | Installation de `transformers` dans `_ensure_deps()` | ~5 | Dépendance inutile |
 
-**Fichier** : `src/scrapower/worker/runtimes/whisper_runner.py`
-**Vérification** : `grep -c '_transcribe_transformers' → 0`
+**Fichier** : `src/scrapower/worker/runtimes/whisper_runner.py` (-112 lignes)
 
-### 1.2 Imports inutilisés
+### 1.2 Imports inutilisés ✅
 
-| Fichier | Import | Raison |
-|---------|--------|--------|
+| Fichier | Import retiré | Raison |
+|---------|--------------|--------|
 | `loop.py` | `import sys` | Plus de swap `sys.stderr` |
+| `loop.py` | `from collections.abc import Callable` | Jamais utilisé dans ce fichier |
+| `python.py` | `import subprocess` | Remplacé par `asyncio.create_subprocess_exec` |
 
-**Vérification** : `grep -c 'import sys' loop.py → 0`
-
-### 1.3 Uniformiser `log_fn`
+### 1.3 Uniformiser `log_fn` ✅
 
 | Fichier | Avant | Après |
 |---------|-------|-------|
-| `python.py:22` | `log_fn: object = None` | `log_fn: Callable[..., None] \| None = None` |
-| `loop.py` | implicite | idem |
+| `python.py` | `log_fn: object = None` | `log_fn: Callable[[str], None] \| None = None` |
 
-### 1.4 Constantes magiques
+### 1.4 Constantes magiques ✅
 
-| Constante | Valeur | Fichier |
-|-----------|--------|---------|
-| `HEARTBEAT_INTERVAL` | 30 | `loop.py` |
-| `STDERR_READER_TIMEOUT` | 1800 | `python.py`, `modal/worker.py` |
+| Constante | Valeur | Définie dans | Utilisée dans |
+|-----------|--------|-------------|---------------|
+| `HEARTBEAT_INTERVAL_SEC` | 30 | `loop.py`, `deploy/modal/worker.py` | `asyncio.sleep()`, `WorkerLoop.__init__` |
+| `STDERR_READER_TIMEOUT_SEC` | 1800 | `python.py`, `deploy/modal/worker.py` | `asyncio.wait_for()`, messages timeout |
+
+Les hardcodages `1800` et `30` ont été remplacés partout par les constantes.
 
 ---
 
-## Passe 2 — Élimination duplication (1h)
+## Passe 2 — Élimination duplication ✅ Terminé
 
-### 2.1 Générer `modal/worker.py`
+### 2.1 Générer `modal/worker.py` ✅
 
-**Problème** : `deploy/modal/worker.py` est une copie manuelle de `loop.py` + `python.py` + `wasm.py` → désynchronisation garantie.
+**Problème** : `deploy/modal/worker.py` était une copie manuelle de `loop.py` +
+`python.py` + `wasm.py` + `entry.py`. Chaque modification des sources canoniques
+devait être répercutée à la main → désynchronisation garantie.
 
-**Solution** : script `scripts/bundle_modal_worker.py` qui lit les sources et génère le bundle.
+**Solution** : `scripts/bundle_modal_worker.py` lit les 4 sources canoniques et
+génère un bundle autonome. Transformations :
+- Strip des docstrings et `from __future__` (fournis par le HEADER)
+- Suppression des imports relatifs (`from .runtimes.xxx`, `from .loop`)
+- Suppression du `__main__` d'`entry.py` (remplacé par le footer Modal)
+- Footer Modal : `pip install` dépendances + `main()` avec retry
 
-```python
-# scripts/bundle_modal_worker.py
-import re
-from pathlib import Path
-
-SRC = Path("src/scrapower/worker")
-DST = Path("deploy/modal/worker.py")
-
-def bundle():
-    parts = []
-    for source, section in [
-        (SRC / "runtimes" / "python.py", "python"),
-        (SRC / "runtimes" / "wasm.py", "wasm"),
-        (SRC / "loop.py", "loop"),
-        (SRC / "entry.py", "entry"),
-    ]:
-        code = source.read_text()
-        # Remove imports that Modal doesn't need (aiohttp is in image)
-        code = re.sub(r'from \.runtimes\.|from \.loop', '# BUNDLED', code)
-        parts.append(f"# === BUNDLED: scrapower/worker/{section} ===\n{code}")
-    DST.write_text("\n".join(parts))
-    print(f"Bundled {len(parts)} modules → {DST}")
-
-if __name__ == "__main__":
-    bundle()
+**Workflow** :
+```bash
+python scripts/bundle_modal_worker.py
+git add deploy/modal/worker.py && git commit
 ```
 
 **Fichiers** : `scripts/bundle_modal_worker.py` (nouveau), `deploy/modal/worker.py` (régénéré)
 
-### 2.2 Dédupliquer quota stats
+### 2.2 Dédupliquer quota stats ⏳
 
 | Actuel | Cible |
 |--------|-------|
@@ -90,23 +78,24 @@ if __name__ == "__main__":
 
 ---
 
-## Passe 3 — Robustesse (30 min)
+## Passe 3 — Robustesse (partiellement terminé)
 
-### 3.1 Remplacer `except Exception: pass`
+### 3.1 Remplacer `except Exception: pass` ✅
 
-Dans chaque harvester, remplacer les `except Exception: pass` par `log.exception()` pour ne plus perdre d'erreurs.
+Tous les `except Exception: pass` des harvesters remplacés par `log.debug()` :
 
-| Fichier | Ligne | Remplacement |
-|---------|-------|-------------|
-| `kaggle.py:328` | `except Exception: pass` | `except Exception: log.exception(...)` |
-| `kaggle.py:369` | `except Exception: pass` | idem |
-| `modal.py:131` | `except Exception: pass` | `log.warning("modal billing refresh failed")` |
-| `modal.py:154` | `except Exception: return 0.0` | `log.warning(...)` |
-| `ephemeral.py:72` | `except Exception: pass` | `log.warning(...)` |
+| Fichier | Changement |
+|---------|-----------|
+| `kaggle.py` | 3x `except Exception: pass` → `log.debug()` |
+| `modal.py` | 2x `except Exception: pass` → `log.debug()` (billing, cleanup) |
+| `ephemeral.py` | Commentaire explicatif ajouté |
 
-### 3.2 Extraire `_build_registry()` de `main.py`
+Restent intacts (légitimes) : `modal.py` `_load_state`/`_save_state` (DB peut ne pas
+exister), `main.py` `CancelledError` (pattern asyncio standard).
 
-`main.py:lifespan()` fait 90 lignes de construction → extraire dans `_build_registry()`.
+### 3.2 Extraire `_build_registry()` de `main.py` ⏳
+
+`main.py:lifespan()` fait ~90 lignes de construction → extraire dans `_build_registry()`.
 
 ---
 

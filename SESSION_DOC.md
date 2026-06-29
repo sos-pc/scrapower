@@ -1,3 +1,84 @@
+# Session du 2026-06-29 — Cleanup & Bundle Modal
+
+## Résumé
+
+Session dédiée au **nettoyage de la codebase** et à l'**élimination de la
+ duplication worker**.  Code mort supprimé, constantes extraites, bundle Modal
+ auto-généré, documentation mise à jour.
+
+---
+
+## 1. Nettoyage codebase (v0.7.1)
+
+### Code mort supprimé
+- `whisper_runner.py` : `_transcribe_transformers()` + `HF_MODEL_MAP` (112 lignes)
+- `loop.py` : `import sys` inutilisé, `Callable` inutilisé
+- `python.py` : `import subprocess` inutilisé
+
+### Constantes magiques extraites
+- `HEARTBEAT_INTERVAL_SEC = 30` dans `loop.py` et `deploy/modal/worker.py`
+- `STDERR_READER_TIMEOUT_SEC = 1800` dans `python.py` et `deploy/modal/worker.py`
+- Les hardcodages `1800` et `30` remplacés par les constantes
+
+### Type annotations
+- `log_fn: object = None` → `log_fn: Callable[[str], None] | None = None`
+
+### Gestion d'erreurs
+- `except Exception: pass` → `log.debug()` dans `kaggle.py` (3 occurences)
+- `except Exception: pass` → `log.debug()` dans `modal.py` (2 occurences)
+- Commentaire explicatif dans `ephemeral.py`
+
+---
+
+## 2. Bundle Modal auto-généré
+
+### Problème
+`deploy/modal/worker.py` était maintenu manuellement : chaque modification
+de `loop.py`, `python.py`, `wasm.py`, `entry.py` devait être répercutée à
+la main → risque de désynchronisation.
+
+### Solution
+`scripts/bundle_modal_worker.py` lit les 4 sources canoniques et génère
+un script autonome pour Modal Sandbox. Transformations :
+- Strip des docstrings et `from __future__` (HEADER les fournit)
+- Suppression des imports relatifs (tout est dans le même fichier)
+- Footer Modal avec installation des dépendances et retry
+
+### Workflow
+```bash
+# Après toute modification des sources worker :
+python scripts/bundle_modal_worker.py
+git add deploy/modal/worker.py && git commit
+```
+
+### Impact
+- **Kaggle** : continue avec `pip install git+https://...` (package installé)
+- **Modal** : bundle généré depuis les mêmes sources (script autonome)
+- **Plus de duplication manuelle** — les deux providers exécutent le même code
+
+---
+
+## 3. Documentation mise à jour
+
+| Fichier | Changement |
+|---------|-----------|
+| `ARCHITECTURE.md` | ModalHarvester : bundle auto-généré documenté |
+| `docs/audit-2026-06.md` | A7 marqué résolu |
+| `docs/cleanup-plan-v0.7.1.md` | Statut des passes mis à jour |
+| `ROADMAP.md` | Bundle et nettoyage ajoutés à v0.7 |
+
+---
+
+## 4. Prochaines étapes
+
+| # | Tâche |
+|---|-------|
+| 1 | Tester le bundle généré sur Modal (sandbox réel) |
+| 2 | Extraire `_build_registry()` de `main.py:lifespan()` |
+| 3 | Dédupliquer quota stats |
+
+---
+
 # Session du 2026-06-18 — Fondations Scrapower
 
 ## Résumé
