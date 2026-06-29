@@ -1,12 +1,13 @@
-"""Python runtime — execute Python scripts in sandboxed subprocess.
+"""Python runtime — execute Python scripts via async subprocess.
 
 All Python execution is sandboxed: minimal env, no secrets,
-working directory isolated to temp. Network access only via
-WG_PROXY SOCKS5 proxy.
+working directory isolated to temp. Stderr is streamed in real time
+via the log callback so heartbeats capture progress during long runs.
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -15,20 +16,21 @@ import tempfile
 from pathlib import Path
 
 
-def execute_python(
+async def execute_python(
     executable: bytes,
     input_data: bytes,
     *,
     log_fn: object = None,
 ) -> tuple[bytes, str, int, str]:
-    """Execute a Python script in a sandboxed subprocess.
+    """Execute a Python script in a sandboxed async subprocess.
 
     The script receives input_data on stdin. It must print a JSON object
     to stdout with at least:
         {"output_hash": "sha256..."} or {"output_bytes": "hex..."}
 
-    Stderr is streamed in real time via log_fn (if provided) so heartbeats
-    can capture progress during long executions.
+    Stderr is streamed in real time via log_fn so heartbeats capture
+    progress during long executions. No threads, no communicate() —
+    everything runs on the same asyncio event loop.
 
     Returns (output_bytes, output_hash, exit_code, stderr_str).
     """
@@ -40,48 +42,46 @@ def execute_python(
         sandbox_env = os.environ.copy()
         sandbox_env["HOME"] = str(workdir)
         sandbox_env["TMPDIR"] = str(workdir)
-        proc = subprocess.Popen(
-            ["python3", str(script)],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+
+        proc = await asyncio.create_subprocess_exec(
+            "python3",
+            str(script),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
             cwd=str(workdir),
             env=sandbox_env,
         )
 
-        # Write input and close stdin so the subprocess can start
+        # Write input and close stdin
         proc.stdin.write(input_data)
+        await proc.stdin.drain()
         proc.stdin.close()
 
-        # Read stderr in a thread → streaming to heartbeat via log_fn
+        # Read stderr line by line → streaming via log_fn
         stderr_lines: list[str] = []
-        import threading
 
-        def _read_stderr():
-            for line in proc.stderr:
+        async def _read_stderr():
+            async for line in proc.stderr:
                 text = line.decode(errors="replace").rstrip()
                 if text:
                     stderr_lines.append(text)
                     if log_fn:
                         log_fn(f"[sub] {text}")
 
-        stderr_thread = threading.Thread(target=_read_stderr, daemon=True)
-        stderr_thread.start()
+        stderr_task = asyncio.ensure_future(_read_stderr())
 
-        # Read stdout (blocking — waits for subprocess to finish)
+        # Read stdout with timeout
         try:
-            stdout_data = proc.stdout.read()
-        finally:
-            proc.wait()
-            stderr_thread.join(timeout=5)
+            stdout_data = await asyncio.wait_for(proc.stdout.read(), timeout=1800)
+        except asyncio.TimeoutError:
+            proc.kill()
+            stdout_data = b""
+            if log_fn:
+                log_fn("[sub] TIMEOUT after 1800s")
 
-        exit_code = proc.returncode
-
-        # If subprocess timed out (exit code = -15 from SIGTERM or similar),
-        # proc.kill() was never called here — the 600s timeout was removed
-        # to allow long transcriptions. The subprocess manages its own timeout.
-        if exit_code != 0 and log_fn:
-            log_fn(f"[sub] exit_code={exit_code}")
+        exit_code = await proc.wait()
+        await stderr_task
 
         # Parse JSON output (whisper_runner format) or fall back to raw
         try:
@@ -99,7 +99,8 @@ def execute_python(
             output_hash = hashlib.sha256(output).hexdigest()
             if exit_code == 0:
                 exit_code = 1
-            stderr_lines.append(stdout_data.decode()[:8192] if stdout_data else "no output")
+            if not stderr_lines:
+                stderr_lines.append(stdout_data.decode()[:8192] if stdout_data else "no output")
 
         stderr_str = "\n".join(stderr_lines)
 
@@ -112,5 +113,5 @@ class PythonRuntime:
     Same interface as WasmRuntime for pluggable use in WorkerLoop.
     """
 
-    def execute(self, executable: bytes, input_data: bytes) -> tuple[bytes, str, int, str]:
-        return execute_python(executable, input_data)
+    async def execute(self, executable: bytes, input_data: bytes) -> tuple[bytes, str, int, str]:
+        return await execute_python(executable, input_data)

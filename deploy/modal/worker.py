@@ -14,7 +14,7 @@ import tempfile as _tempfile
 from pathlib import Path as _Path
 
 
-def _worker_execute_python(executable, input_data, *, log_fn=None):
+async def _worker_execute_python(executable, input_data, *, log_fn=None):
     with _tempfile.TemporaryDirectory() as tmp:
         workdir = _Path(tmp)
         script = workdir / "script.py"
@@ -22,8 +22,9 @@ def _worker_execute_python(executable, input_data, *, log_fn=None):
         sandbox_env = _os.environ.copy()
         sandbox_env["HOME"] = str(workdir)
         sandbox_env["TMPDIR"] = str(workdir)
-        proc = _subprocess.Popen(
-            ["python3", str(script)],
+        proc = await asyncio.create_subprocess_exec(
+            "python3",
+            str(script),
             stdin=_subprocess.PIPE,
             stdout=_subprocess.PIPE,
             stderr=_subprocess.PIPE,
@@ -31,29 +32,31 @@ def _worker_execute_python(executable, input_data, *, log_fn=None):
             env=sandbox_env,
         )
         proc.stdin.write(input_data)
+        await proc.stdin.drain()
         proc.stdin.close()
 
-        # Read stderr in a thread → streaming to heartbeat via log_fn
         stderr_lines = []
-        import threading as _threading
 
-        def _read_stderr():
-            for line in proc.stderr:
+        async def _read_stderr():
+            async for line in proc.stderr:
                 text = line.decode(errors="replace").rstrip()
                 if text:
                     stderr_lines.append(text)
                     if log_fn:
                         log_fn(f"[sub] {text}")
 
-        _stderr_thread = _threading.Thread(target=_read_stderr, daemon=True)
-        _stderr_thread.start()
+        stderr_task = asyncio.ensure_future(_read_stderr())
 
-        # Read stdout (blocking — waits for subprocess to finish)
-        stdout_data = proc.stdout.read()
-        proc.wait()
-        _stderr_thread.join(timeout=5)
+        try:
+            stdout_data = await asyncio.wait_for(proc.stdout.read(), timeout=1800)
+        except TimeoutError:
+            proc.kill()
+            stdout_data = b""
+            if log_fn:
+                log_fn("[sub] TIMEOUT after 1800s")
+        exit_code = await proc.wait()
+        await stderr_task
 
-        exit_code = proc.returncode
         try:
             result = _json.loads(stdout_data.decode())
             output = result.get("output_bytes", stdout_data)
@@ -92,9 +95,6 @@ def _worker_execute_wasm(wasm_bytes, input_data):
 
 # === BUNDLED: scrapower/worker/loop.py + entry.py ===
 import asyncio
-import concurrent.futures
-import io
-import sys
 import time as _time
 import uuid as _uuid
 
@@ -175,27 +175,11 @@ def _drain_logs():
     return chunk
 
 
-def _run_task_sync(executable, input_data, rt):
-    stderr_capture = io.StringIO()
-    old_stderr, sys.stderr = sys.stderr, stderr_capture
-    try:
-        result = (
-            _worker_execute_python(executable, input_data, log_fn=_log)
-            if rt == "python"
-            else _worker_execute_wasm(executable, input_data)
-        )
-        captured = stderr_capture.getvalue()
-        if captured:
-            for line in captured.split("\n"):
-                if line.strip():
-                    _log(f"[sub] {line.strip()}")
-        return result
-    finally:
-        sys.stderr = old_stderr
-
-
-def _heartbeat_sync():
-    pass  # replaced by async version below
+async def _run_task(executable, input_data, rt):
+    if rt == "python":
+        return await _worker_execute_python(executable, input_data, log_fn=_log)
+    else:
+        return _worker_execute_wasm(executable, input_data)
 
 
 async def _heartbeat(session):
@@ -289,10 +273,7 @@ async def run():
             print(f"[HB] heartbeat task created for {task['id'][:12]}", flush=True)
             worker_stderr, output, output_hash, exit_code = "", b"", "", 1
             try:
-                loop = asyncio.get_running_loop()
-                result = await loop.run_in_executor(
-                    None, _run_task_sync, executable, input_data, rt
-                )
+                result = await _run_task(executable, input_data, rt)
                 output, output_hash, exit_code, worker_stderr = result
             except Exception as e:
                 worker_stderr = f"{type(e).__name__}: {e}"

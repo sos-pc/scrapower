@@ -8,10 +8,7 @@ Auto-stops after idle timeout to save resources.
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
-import io
 import json as _json
-import sys
 import time
 from typing import Any
 
@@ -76,29 +73,14 @@ class WorkerLoop:
 
     # -- Task execution --------------------------------------------------
 
-    @staticmethod
-    def _run_task_sync(
-        executable: bytes, input_data: bytes, rt: str, log_fn: object
+    async def _run_task(
+        self, executable: bytes, input_data: bytes, rt: str
     ) -> tuple[bytes, str, int, str]:
-        """Execute task synchronously in a thread. Captures stderr for heartbeat."""
-        # Redirect stderr to capture print() output from subprocess
-        stderr_capture = io.StringIO()
-        old_stderr = sys.stderr
-        sys.stderr = stderr_capture
-        try:
-            if rt == "python":
-                result = execute_python(executable, input_data, log_fn=log_fn)
-            else:
-                result = execute_wasm(executable, input_data)
-            # Flush captured stderr into log buffer
-            captured = stderr_capture.getvalue()
-            if captured:
-                for line in captured.split("\n"):
-                    if line.strip():
-                        log_fn(f"[sub] {line.strip()}")
-            return result
-        finally:
-            sys.stderr = old_stderr
+        """Execute a task. Stderr is streamed via log_fn (set by caller)."""
+        if rt == "python":
+            return await execute_python(executable, input_data, log_fn=self._log)
+        else:
+            return execute_wasm(executable, input_data)
 
     # -- Heartbeat (async, runs as background task) --------------------
 
@@ -214,15 +196,7 @@ class WorkerLoop:
                 output_hash = ""
                 exit_code = 1
                 try:
-                    loop = asyncio.get_running_loop()
-                    result = await loop.run_in_executor(
-                        None,
-                        self._run_task_sync,
-                        executable,
-                        input_data,
-                        rt,
-                        self._log,
-                    )
+                    result = await self._run_task(executable, input_data, rt)
                     output, output_hash, exit_code, worker_stderr = result
                 except Exception as e:
                     worker_stderr = f"{type(e).__name__}: {e}"
