@@ -31,14 +31,6 @@ def _ensure_deps():
             __import__(pkg.replace("-", "_"))
         except ImportError:
             subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", pkg])
-    # Ensure transformers + accelerate for PyTorch fallback (Kaggle GPU)
-    try:
-        __import__("transformers")
-        __import__("accelerate")
-    except ImportError:
-        subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "-q", "transformers", "accelerate"]
-        )
 
 
 def _download_audio(url, workdir, cookies_path=None):
@@ -132,6 +124,8 @@ def _format_segments(seg_list, language, duration, fmt):
 #  Backend: faster-whisper (ctranslate2) — primary
 # ---------------------------------------------------------------------------
 
+# -- Backend: faster-whisper (ctranslate2) --------------------------
+
 
 def _transcribe_faster_whisper(audio_path, model_name, language):
     """Return (seg_list, language_str, duration_sec, device_used) or None."""
@@ -175,121 +169,15 @@ def _transcribe_faster_whisper(audio_path, model_name, language):
     return seg_list, info.language, info.duration, device
 
 
-# ---------------------------------------------------------------------------
-#  Backend: transformers (PyTorch native) — fallback for Kaggle
-# ---------------------------------------------------------------------------
-
-HF_MODEL_MAP = {
-    "tiny": "openai/whisper-tiny",
-    "tiny.en": "openai/whisper-tiny.en",
-    "base": "openai/whisper-base",
-    "small": "openai/whisper-small",
-    "medium": "openai/whisper-medium",
-    "large-v2": "openai/whisper-large-v2",
-    "large-v3": "openai/whisper-large-v3",
-    "turbo": "openai/whisper-large-v3-turbo",
-}
-
-
-def _transcribe_transformers(audio_path, model_name, language):
-    """Return (seg_list, language_str, duration_sec). Uses PyTorch directly."""
-    import torch
-    from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
-
-    hf_model = HF_MODEL_MAP.get(model_name, f"openai/whisper-{model_name}")
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = torch.float16 if device == "cuda" else torch.float32
-
-    print(
-        f"[whisper_runner] Transformers: {hf_model} on {device} ({dtype})",
-        file=sys.stderr,
-    )
-
-    model = AutoModelForSpeechSeq2Seq.from_pretrained(
-        hf_model,
-        torch_dtype=dtype,
-        low_cpu_mem_usage=True,
-        use_safetensors=True,
-    ).to(device)
-
-    processor = AutoProcessor.from_pretrained(hf_model)
-
-    pipe = pipeline(
-        "automatic-speech-recognition",
-        model=model,
-        tokenizer=processor.tokenizer,
-        feature_extractor=processor.feature_extractor,
-        torch_dtype=dtype,
-        device=device,
-        chunk_length_s=30,
-        batch_size=8 if device == "cuda" else 2,
-        return_timestamps=True,
-    )
-
-    generate_kwargs: dict = {}
-    if language:
-        generate_kwargs["language"] = language
-
-    print("[whisper_runner] Transformers transcribing...", file=sys.stderr)
-    start = time.time()
-    result = pipe(str(audio_path), generate_kwargs=generate_kwargs)
-    elapsed = time.time() - start
-    print(f"[whisper_runner] Transformers done in {elapsed:.1f}s", file=sys.stderr)
-
-    chunks = result.get("chunks", [])
-    detected_language = result.get("language", language or "unknown")
-    duration = round(chunks[-1].get("timestamp", (0, 0))[1], 1) if chunks else 0
-
-    # Wrap HF chunks into segment-like objects matching faster-whisper's API
-    class _Segment:
-        __slots__ = ("start", "end", "text")
-
-        def __init__(self, start, end, text):
-            self.start = start
-            self.end = end
-            self.text = text
-
-    seg_list = [_Segment(c["timestamp"][0], c["timestamp"][1], c["text"]) for c in chunks]
-    return seg_list, detected_language, duration
-
-
-# ---------------------------------------------------------------------------
-#  Orchestrator
-# ---------------------------------------------------------------------------
+# -- Orchestrator -------------------------------------------------------
 
 
 def _transcribe(audio_path, model_name, language, fmt):
-    """Transcribe audio with automatic backend selection.
-
-    Strategy:
-      1. Try faster-whisper (primary). Works on Modal (CUDA) and HF Spaces (CPU).
-      2. If faster-whisper needed CPU but torch shows a GPU, we're on Kaggle
-         where ctranslate2 is driver-incompatible. Use transformers GPU instead.
-      3. If faster-whisper failed entirely, fall back to transformers.
-    """
-    import torch
-
-    # 1. Try faster-whisper first
+    """Transcribe audio. Tries CUDA first, falls back to CPU."""
     result = _transcribe_faster_whisper(audio_path, model_name, language)
-    if result is not None:
-        seg_list, lang, dur, used_device = result
-        # If torch says GPU is available but faster-whisper fell back to CPU,
-        # we're on Kaggle — ctranslate2 is broken, transformers will be faster.
-        if used_device == "cpu" and torch.cuda.is_available():
-            print(
-                "[whisper_runner] GPU available via torch but ctranslate2 failed, "
-                "switching to transformers for GPU acceleration",
-                file=sys.stderr,
-            )
-            seg_list, lang, dur = _transcribe_transformers(audio_path, model_name, language)
-        return _format_segments(seg_list, lang, dur, fmt)
-
-    # 2. faster-whisper failed entirely, fall back to transformers
-    print(
-        "[whisper_runner] faster-whisper unavailable, falling back to transformers",
-        file=sys.stderr,
-    )
-    seg_list, lang, dur = _transcribe_transformers(audio_path, model_name, language)
+    if result is None:
+        raise RuntimeError("No viable device for WhisperModel")
+    seg_list, lang, dur, _ = result
     return _format_segments(seg_list, lang, dur, fmt)
 
 
