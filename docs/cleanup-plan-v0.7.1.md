@@ -3,7 +3,7 @@
 > **Objectif** : réduire la dette technique, éliminer la duplication,
 > améliorer la robustesse. Zéro changement fonctionnel.
 
-**Statut global** : ✅ Passes 1, 2.1, 3 terminées. ⏳ Passe 2.2 restante.
+**Statut global** : ✅ Toutes les passes terminées.
 
 ---
 
@@ -69,12 +69,14 @@ git add deploy/modal/worker.py && git commit
 
 **Fichiers** : `scripts/bundle_modal_worker.py` (nouveau), `deploy/modal/worker.py` (régénéré)
 
-### 2.2 Dédupliquer quota stats ⏳
+### 2.2 Dédupliquer quota stats ✅
 
-| Actuel | Cible |
-|--------|-------|
-| `stats_api._get_kaggle_quota()` | Supprimé, lit `AccountRegistry.quota_detail` |
-| `stats_api._get_modal_billing()` | Supprimé, lit `AccountRegistry.quota_detail` |
+| Actuel | Statut |
+|--------|--------|
+| `stats_api._get_kaggle_quota()` | Déjà supprimé — lit `AccountRegistry.quota_detail` |
+| `stats_api._get_modal_billing()` | Déjà supprimé — lit `AccountRegistry.quota_detail` |
+
+Ces fonctions ont été retirées lors du refactor AccountRegistry (v0.7). `stats_api.py` lit directement `registry.all`.
 
 ---
 

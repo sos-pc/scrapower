@@ -75,7 +75,7 @@ git add deploy/modal/worker.py && git commit
 |---|-------|
 | 1 | Tester le bundle généré sur Modal (sandbox réel) | ✅ Fait — transcription tiny OK, circuit complet validé |
 | 2 | Extraire `_build_registry()` de `main.py:lifespan()` |
-| 3 | Dédupliquer quota stats |
+| 3 | Dédupliquer quota stats | ✅ Déjà fait — supprimé lors du refactor v0.7 |
 
 ---
 
