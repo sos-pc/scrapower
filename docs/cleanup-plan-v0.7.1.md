@@ -3,7 +3,7 @@
 > **Objectif** : réduire la dette technique, éliminer la duplication,
 > améliorer la robustesse. Zéro changement fonctionnel.
 
-**Statut global** : ✅ Passes 1, 2 terminées. ⏳ Passe 3 partielle (3.2 restant).
+**Statut global** : ✅ Passes 1, 2.1, 3 terminées. ⏳ Passe 2.2 restante.
 
 ---
 
@@ -93,9 +93,9 @@ Tous les `except Exception: pass` des harvesters remplacés par `log.debug()` :
 Restent intacts (légitimes) : `modal.py` `_load_state`/`_save_state` (DB peut ne pas
 exister), `main.py` `CancelledError` (pattern asyncio standard).
 
-### 3.2 Extraire `_build_registry()` de `main.py` ⏳
+### 3.2 Extraire `_build_registry()` de `main.py` ✅
 
-`main.py:lifespan()` fait ~90 lignes de construction → extraire dans `_build_registry()`.
+`main.py:lifespan()` faisait ~140 lignes de construction → extrait dans `_build_registry()`.
 
 ---
 

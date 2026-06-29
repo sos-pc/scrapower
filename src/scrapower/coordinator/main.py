@@ -19,11 +19,14 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from .accounts import Account, AccountRegistry
 from .api.client_api import create_client_router
 from .blob_store import blob_exists, get_blob, run_gc, store_blob
 from .config import Config, load_config
 from .db import init_db
 from .domain import TaskService
+from .harvester.base import WorkerProvider
+from .harvester.ephemeral import EphemeralHarvester
 from .security import rate_limit, require_auth, verify_api_key
 from .task_manager import TaskManager
 from .worker_gateway.router import router as worker_router
@@ -39,103 +42,20 @@ db: aiosqlite.Connection  # type: ignore[assignment]
 # ──────────────────────────────────────────────────────────────
 # Lifespan
 # ──────────────────────────────────────────────────────────────
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global config, db
-    config = load_config()
-    structlog.configure(
-        processors=[
-            structlog.stdlib.add_log_level,
-            structlog.dev.ConsoleRenderer(),
-        ],
-        wrapper_class=structlog.stdlib.BoundLogger,
-        context_class=dict,
-        logger_factory=structlog.PrintLoggerFactory(),
-        cache_logger_on_first_use=True,
-    )
-    logging.basicConfig(level=getattr(logging, config.log_level.upper()))
-    log = structlog.get_logger()
-    log.info("scrapower coordinator starting", host=config.host, port=config.port)
+def _build_registry(
+    config: Config,
+    coordinator_url: str,
+    api_key: str,
+    log: logging.Logger,
+    session_manager: SessionManager | None = None,
+) -> tuple[AccountRegistry, list[WorkerProvider]]:
+    """Build AccountRegistry and WorkerProvider list from environment.
 
-    app.state.config = config
-
-    db = await init_db(config.db_path)
-    app.state.db = db
-    log.info("database initialized", path=config.db_path)
-
-    # Seed blob store with whisper_runner.py so tasks can reference it
-    from pathlib import Path as _Path
-
-    from .blob_store import store_blob as _store_blob
-
-    whisper_path = _Path(__file__).parent.parent / "worker" / "runtimes" / "whisper_runner.py"
-    if whisper_path.exists():
-        whisper_hash = await _store_blob(db, config.blob_dir, whisper_path.read_bytes())
-        log.info("whisper runner seeded", hash=whisper_hash[:12])
-    else:
-        log.warning("whisper runner not found at %s", whisper_path)
-
-    # VPN pre-flight check (retry � VPN container may still be booting)
-    vpn_proxy = os.environ.get("SCRAPOWER_VPN_PROXY", "")
-    if vpn_proxy:
-        for attempt in range(5):
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    "curl",
-                    "-s",
-                    "--socks5",
-                    "127.0.0.1:1080",
-                    "--max-time",
-                    "5",
-                    "https://ifconfig.me",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=8)
-                if proc.returncode == 0:
-                    log.info("vpn check ok", vpn_ip=stdout.decode().strip())
-                    break
-                elif attempt < 4:
-                    await asyncio.sleep(2)
-                else:
-                    log.warning("vpn check failed after 5 attempts (curl rc=%d)", proc.returncode)
-            except Exception as e:
-                if attempt < 4:
-                    await asyncio.sleep(2)
-                else:
-                    log.warning("vpn check failed: %s", str(e)[:100])
-
-    # Initialize session manager (Mode B worker tracking only)
-    manager = SessionManager(
-        heartbeat_interval_sec=config.heartbeat_interval_sec,
-        heartbeat_miss_threshold=config.heartbeat_miss_threshold,
-    )
-    import scrapower.coordinator.worker_gateway.router as router_mod
-
-    router_mod.session_manager = manager
-
-    # Task manager
-    task_manager = TaskManager(db)
-    app.state.task_manager = task_manager
-    task_service = TaskService(task_manager, db, config)
-    app.state.task_service = task_service
-    router_mod.task_service = task_service  # type: ignore[assignment]
-
-    # Purge orphaned assignments at startup (tasks left assigned by dead workers)
-    await _purge_orphaned_assignments(db, log)
-
-    # Start maintenance loop (requeue stale + cleanup expired tasks)
-    maint_task = asyncio.create_task(_maintenance_loop(task_service, log))
-
-    # Ephemeral harvester � manages all worker accounts (Kaggle, Modal, HF)
-    from .accounts import Account, AccountRegistry
-    from .harvester.base import WorkerProvider
-    from .harvester.ephemeral import EphemeralHarvester
-
+    Reads KAGGLE_ACCOUNTS, MODAL_ACCOUNTS, HF_TOKEN/HF_SPACE_ID env vars.
+    Each provider is only instantiated if the required package is installed.
+    """
     registry = AccountRegistry()
     providers: list[WorkerProvider] = []
-    coordinator_url = config.coordinator_url
-    api_key = os.environ.get("SCRAPOWER_API_KEY", "")
 
     # -- Kaggle accounts --
     kaggle_enabled = os.environ.get("KAGGLE_ENABLED", "true").lower() in ("1", "true", "yes")
@@ -226,7 +146,7 @@ async def lifespan(app: FastAPI):
     # -- HuggingFace Spaces (persistent CPU worker) --
     hf_token = os.environ.get("HF_TOKEN", "")
     hf_space_id = os.environ.get("HF_SPACE_ID", "")
-    if hf_token and hf_space_id:
+    if hf_token and hf_space_id and session_manager is not None:
         try:
             from .harvester.hf_spaces import HuggingFaceHarvester
 
@@ -250,11 +170,107 @@ async def lifespan(app: FastAPI):
                     space_id=hf_space_id,
                     coordinator_url=coordinator_url,
                     api_key=api_key,
-                    session_manager=manager,
+                    session_manager=session_manager,
                 )
             )
         except ImportError:
             log.warning("huggingface_hub not installed - skipping HF Spaces provider")
+
+    return registry, providers
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global config, db
+    config = load_config()
+    structlog.configure(
+        processors=[
+            structlog.stdlib.add_log_level,
+            structlog.dev.ConsoleRenderer(),
+        ],
+        wrapper_class=structlog.stdlib.BoundLogger,
+        context_class=dict,
+        logger_factory=structlog.PrintLoggerFactory(),
+        cache_logger_on_first_use=True,
+    )
+    logging.basicConfig(level=getattr(logging, config.log_level.upper()))
+    log = structlog.get_logger()
+    log.info("scrapower coordinator starting", host=config.host, port=config.port)
+
+    app.state.config = config
+
+    db = await init_db(config.db_path)
+    app.state.db = db
+    log.info("database initialized", path=config.db_path)
+
+    # Seed blob store with whisper_runner.py so tasks can reference it
+    from pathlib import Path as _Path
+
+    from .blob_store import store_blob as _store_blob
+
+    whisper_path = _Path(__file__).parent.parent / "worker" / "runtimes" / "whisper_runner.py"
+    if whisper_path.exists():
+        whisper_hash = await _store_blob(db, config.blob_dir, whisper_path.read_bytes())
+        log.info("whisper runner seeded", hash=whisper_hash[:12])
+    else:
+        log.warning("whisper runner not found at %s", whisper_path)
+
+    # VPN pre-flight check (retry � VPN container may still be booting)
+    vpn_proxy = os.environ.get("SCRAPOWER_VPN_PROXY", "")
+    if vpn_proxy:
+        for attempt in range(5):
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "curl",
+                    "-s",
+                    "--socks5",
+                    "127.0.0.1:1080",
+                    "--max-time",
+                    "5",
+                    "https://ifconfig.me",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=8)
+                if proc.returncode == 0:
+                    log.info("vpn check ok", vpn_ip=stdout.decode().strip())
+                    break
+                elif attempt < 4:
+                    await asyncio.sleep(2)
+                else:
+                    log.warning("vpn check failed after 5 attempts (curl rc=%d)", proc.returncode)
+            except Exception as e:
+                if attempt < 4:
+                    await asyncio.sleep(2)
+                else:
+                    log.warning("vpn check failed: %s", str(e)[:100])
+
+    # Initialize session manager (Mode B worker tracking only)
+    manager = SessionManager(
+        heartbeat_interval_sec=config.heartbeat_interval_sec,
+        heartbeat_miss_threshold=config.heartbeat_miss_threshold,
+    )
+    import scrapower.coordinator.worker_gateway.router as router_mod
+
+    router_mod.session_manager = manager
+
+    # Task manager
+    task_manager = TaskManager(db)
+    app.state.task_manager = task_manager
+    task_service = TaskService(task_manager, db, config)
+    app.state.task_service = task_service
+    router_mod.task_service = task_service  # type: ignore[assignment]
+
+    # Purge orphaned assignments at startup (tasks left assigned by dead workers)
+    await _purge_orphaned_assignments(db, log)
+
+    # Start maintenance loop (requeue stale + cleanup expired tasks)
+    maint_task = asyncio.create_task(_maintenance_loop(task_service, log))
+
+    # Ephemeral harvester � builds AccountRegistry + WorkerProviders from env
+    coordinator_url = config.coordinator_url
+    api_key = os.environ.get("SCRAPOWER_API_KEY", "")
+    registry, providers = _build_registry(config, coordinator_url, api_key, log, manager)
 
     # Start GC
     gc_task = asyncio.create_task(_gc_loop(config, db))
