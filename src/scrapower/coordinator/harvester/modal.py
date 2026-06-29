@@ -83,7 +83,7 @@ class ModalHarvester(WorkerProvider):
             used_pct = total_cost / total_budget * 100 if total_budget > 0 else 0
             log.info("modal billing: $%.2f / $%.0f (%.0f%%)", total_cost, total_budget, used_pct)
         except Exception:
-            pass
+            log.debug("modal billing refresh failed")
 
     async def launch_worker(self, account: Account) -> bool:
         """Create a Modal Sandbox on a specific account."""
@@ -151,7 +151,7 @@ class ModalHarvester(WorkerProvider):
                 )
             self._save_state()
         except Exception:
-            pass
+            log.debug("modal cleanup stale failed")
 
     async def status(self, registry) -> ProviderStatus:
         """Aggregate Modal status (indicative)."""

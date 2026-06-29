@@ -69,7 +69,7 @@ class EphemeralHarvester:
             try:
                 await p.cleanup_stale(self._registry)
             except Exception:
-                pass
+                pass  # best-effort cleanup, errors logged at provider level
 
         # 3. Count queued tasks and decide if we need workers
         queued = await self._count_queued()

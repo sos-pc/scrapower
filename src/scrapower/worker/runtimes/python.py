@@ -11,16 +11,18 @@ import asyncio
 import hashlib
 import json
 import os
-import subprocess
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
+
+STDERR_READER_TIMEOUT_SEC = 1800
 
 
 async def execute_python(
     executable: bytes,
     input_data: bytes,
     *,
-    log_fn: object = None,
+    log_fn: Callable[[str], None] | None = None,
 ) -> tuple[bytes, str, int, str]:
     """Execute a Python script in a sandboxed async subprocess.
 
@@ -73,12 +75,14 @@ async def execute_python(
 
         # Read stdout with timeout
         try:
-            stdout_data = await asyncio.wait_for(proc.stdout.read(), timeout=1800)
+            stdout_data = await asyncio.wait_for(
+                proc.stdout.read(), timeout=STDERR_READER_TIMEOUT_SEC
+            )
         except asyncio.TimeoutError:
             proc.kill()
             stdout_data = b""
             if log_fn:
-                log_fn("[sub] TIMEOUT after 1800s")
+                log_fn(f"[sub] TIMEOUT after {STDERR_READER_TIMEOUT_SEC}s")
 
         exit_code = await proc.wait()
         await stderr_task

@@ -124,8 +124,8 @@ class KaggleHarvester(WorkerProvider):
                         "total_h": float(parts[3].rstrip("h")),
                     }
         except Exception:
-            pass
-        return None
+            log.debug("kaggle quota check failed for %s", account.id)
+            return None
 
     async def _start_kernel(self, account: Account) -> bool:
         username = account.credentials.get("username", "")
@@ -283,7 +283,7 @@ class KaggleHarvester(WorkerProvider):
                             if ref in self._kernel_refs:
                                 self._kernel_refs.remove(ref)
             except Exception:
-                pass
+                log.debug("kaggle cleanup failed for account %s", account.id)
         if cleaned:
             log.info("harvester cleanup: deleted %d kernels", cleaned)
 
@@ -311,5 +311,5 @@ class KaggleHarvester(WorkerProvider):
                         if "scrapower-auto" in line and "RUNNING" in line:
                             active += 1
             except Exception:
-                pass
-        return active
+                log.debug("kaggle count active failed for %s", account.id)
+            return active

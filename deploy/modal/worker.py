@@ -15,6 +15,7 @@ from pathlib import Path as _Path
 
 
 async def _worker_execute_python(executable, input_data, *, log_fn=None):
+    """Execute Python script in async subprocess. log_fn: Callable[[str], None] | None."""
     with _tempfile.TemporaryDirectory() as tmp:
         workdir = _Path(tmp)
         script = workdir / "script.py"
@@ -48,12 +49,14 @@ async def _worker_execute_python(executable, input_data, *, log_fn=None):
         stderr_task = asyncio.ensure_future(_read_stderr())
 
         try:
-            stdout_data = await asyncio.wait_for(proc.stdout.read(), timeout=1800)
+            stdout_data = await asyncio.wait_for(
+                proc.stdout.read(), timeout=STDERR_READER_TIMEOUT_SEC
+            )
         except TimeoutError:
             proc.kill()
             stdout_data = b""
             if log_fn:
-                log_fn("[sub] TIMEOUT after 1800s")
+                log_fn(f"[sub] TIMEOUT after {STDERR_READER_TIMEOUT_SEC}s")
         exit_code = await proc.wait()
         await stderr_task
 
@@ -99,6 +102,9 @@ import time as _time
 import uuid as _uuid
 
 import aiohttp
+
+HEARTBEAT_INTERVAL_SEC = 30
+STDERR_READER_TIMEOUT_SEC = 1800
 
 _COORDINATOR_URL = _os.environ.get("COORDINATOR_URL", "")
 if not _COORDINATOR_URL:
@@ -208,7 +214,7 @@ async def _heartbeat(session):
             return
         except Exception as e:
             _log(f"Heartbeat failed: {e}")
-        await asyncio.sleep(30)
+        await asyncio.sleep(HEARTBEAT_INTERVAL_SEC)
 
 
 async def run():

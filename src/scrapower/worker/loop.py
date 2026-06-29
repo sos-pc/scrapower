@@ -17,6 +17,9 @@ import aiohttp
 from .runtimes.python import execute_python
 from .runtimes.wasm import execute_wasm
 
+HEARTBEAT_INTERVAL_SEC = 30
+STDERR_READER_TIMEOUT_SEC = 1800
+
 
 class WorkerLoop:
     """Main worker loop: pull → execute → upload → submit → repeat.
@@ -33,7 +36,7 @@ class WorkerLoop:
         capabilities: dict[str, Any],
         poll_interval_sec: int = 3,
         idle_timeout_sec: int = 120,
-        heartbeat_interval_sec: int = 30,
+        heartbeat_interval_sec: int = HEARTBEAT_INTERVAL_SEC,
     ):
         self.worker_id = worker_id
         self.coordinator_url = coordinator_url.rstrip("/")
