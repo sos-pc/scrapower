@@ -54,10 +54,10 @@
 - [ ] **`/stats` unifié** — une table unique tous comptes confondus ✅ (v0.7)
 
 ### Logs workers → coordinator (streaming)
-- [ ] **Logs temps réel** — SSE ou WebSocket pour streamer stderr worker → coordinator
+- [x] **Logs temps réel** — stderr streamé via heartbeat async + `asyncio.create_subprocess_exec` ✅ (`332a65d`)
 - [ ] **Rétention TTL** — logs supprimés après 7j dans `cleanup_expired`
 - [ ] **Ring buffer par tâche** — 1000 dernières lignes max
-- [ ] **`GET /tasks/{id}/logs?tail=100&follow=true`** — tail + follow en HTTP
+- [ ] **`GET /tasks/{id}/logs?tail=100&follow=true`** — SSE tail + follow
 
 ### CLI / UX simplifiée
 - [ ] **`scrapower` CLI** — `scrapower submit`, `scrapower status`, `scrapower logs`

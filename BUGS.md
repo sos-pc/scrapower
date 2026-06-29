@@ -66,7 +66,7 @@ enfin des requêtes HTTP. Le fix final :
 | P5 | `requeue_stale()` invalide le token Mode B | Scheduler Mode A appelle `requeue_stale()` toutes les 5s | Mode A supprimé, `_maintenance_loop` (15s) + heartbeat fix | ✅ |
 | P6 | Worker deadlock après transcription | Thread `_read_stderr` concurrence `communicate()` sur pipe stderr | Supprimer `_read_stderr`, utiliser stderr de `communicate()` | ✅ Modal + HF |
 | P7 | Notebook Kaggle incomplet | `sworker.ipynb` contient seulement le code submit retry | Réécrire le notebook avec le code worker complet | ✅ (`79420ab`) |
-| P8 | Transcription réussie mais submit rejeté → retranscription complète | Heartbeat thread urllib non fiable sur Kaggle (nest_asyncio) → token invalidé après 90s | Heartbeat async aiohttp remplace le thread urllib | ✅ (`88567dd`) |
+| P13 | Logs worker non streamés | `communicate()` bloquait tout le stderr jusqu'à la fin de l'exécution → heartbeats n'avaient rien à envoyer | `asyncio.create_subprocess_exec` + `async for line in proc.stderr` → streaming temps réel | ✅ (`332a65d`) |
 | P9 | `workers_active` Kaggle basé sur `_kernel_refs` jamais nettoyé | `status()` retourne `len(self._kernel_refs)` sans retirer les kernels supprimés | `self._kernel_refs.remove(ref)` dans `_cleanup_old_kernels()` | ✅ (`79420ab`) |
 | P10 | GPU Kaggle incompatible ctranslate2 | `python.py` isolait trop le subprocess (env minimal sans `LD_LIBRARY_PATH`) | `os.environ.copy()` au lieu d'un dict minimal | ✅ (`c2e1d1f`) |
 | P11 | Distribution non-parallèle (1 kernel/tick) | Harvester lançait 1 worker par tick (15s) | `asyncio.gather` sur N comptes en parallèle | ✅ (`a480f3a`) |
