@@ -27,6 +27,9 @@ def execute_python(
     to stdout with at least:
         {"output_hash": "sha256..."} or {"output_bytes": "hex..."}
 
+    Stderr is streamed in real time via log_fn (if provided) so heartbeats
+    can capture progress during long executions.
+
     Returns (output_bytes, output_hash, exit_code, stderr_str).
     """
     with tempfile.TemporaryDirectory() as tmp:
@@ -34,8 +37,6 @@ def execute_python(
         script = workdir / "script.py"
         script.write_bytes(executable)
 
-        # Inherit parent env (preserves LD_LIBRARY_PATH, CUDA libs, etc.)
-        # but isolate the working directory for security.
         sandbox_env = os.environ.copy()
         sandbox_env["HOME"] = str(workdir)
         sandbox_env["TMPDIR"] = str(workdir)
@@ -48,24 +49,39 @@ def execute_python(
             env=sandbox_env,
         )
 
-        # communicate() safely reads both stdout and stderr to completion.
-        # No thread needed — avoids deadlock with concurrent pipe reads.
+        # Write input and close stdin so the subprocess can start
+        proc.stdin.write(input_data)
+        proc.stdin.close()
+
+        # Read stderr in a thread → streaming to heartbeat via log_fn
+        stderr_lines: list[str] = []
+        import threading
+
+        def _read_stderr():
+            for line in proc.stderr:
+                text = line.decode(errors="replace").rstrip()
+                if text:
+                    stderr_lines.append(text)
+                    if log_fn:
+                        log_fn(f"[sub] {text}")
+
+        stderr_thread = threading.Thread(target=_read_stderr, daemon=True)
+        stderr_thread.start()
+
+        # Read stdout (blocking — waits for subprocess to finish)
         try:
-            stdout_data, stderr_data = proc.communicate(input=input_data, timeout=600)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            stdout_data, stderr_data = proc.communicate()
-            if log_fn:
-                log_fn("[sub] TIMEOUT after 600s")
+            stdout_data = proc.stdout.read()
+        finally:
+            proc.wait()
+            stderr_thread.join(timeout=5)
 
         exit_code = proc.returncode
-        stderr_str = stderr_data.decode(errors="replace") if stderr_data else ""
 
-        # Feed stderr to log callback
-        if log_fn:
-            for line in stderr_str.split("\n"):
-                if line.strip():
-                    log_fn(f"[sub] {line.strip()}")
+        # If subprocess timed out (exit code = -15 from SIGTERM or similar),
+        # proc.kill() was never called here — the 600s timeout was removed
+        # to allow long transcriptions. The subprocess manages its own timeout.
+        if exit_code != 0 and log_fn:
+            log_fn(f"[sub] exit_code={exit_code}")
 
         # Parse JSON output (whisper_runner format) or fall back to raw
         try:
@@ -83,8 +99,9 @@ def execute_python(
             output_hash = hashlib.sha256(output).hexdigest()
             if exit_code == 0:
                 exit_code = 1
-            if not stderr_str:
-                stderr_str = stdout_data.decode()[:8192] if stdout_data else "no output"
+            stderr_lines.append(stdout_data.decode()[:8192] if stdout_data else "no output")
+
+        stderr_str = "\n".join(stderr_lines)
 
     return output, output_hash, exit_code, stderr_str
 

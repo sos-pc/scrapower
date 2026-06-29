@@ -30,19 +30,30 @@ def _worker_execute_python(executable, input_data, *, log_fn=None):
             cwd=str(workdir),
             env=sandbox_env,
         )
-        try:
-            stdout_data, stderr_data = proc.communicate(input=input_data, timeout=600)
-        except _subprocess.TimeoutExpired:
-            proc.kill()
-            stdout_data, stderr_data = proc.communicate()
-            if log_fn:
-                log_fn("[sub] TIMEOUT after 600s")
+        proc.stdin.write(input_data)
+        proc.stdin.close()
+
+        # Read stderr in a thread → streaming to heartbeat via log_fn
+        stderr_lines = []
+        import threading as _threading
+
+        def _read_stderr():
+            for line in proc.stderr:
+                text = line.decode(errors="replace").rstrip()
+                if text:
+                    stderr_lines.append(text)
+                    if log_fn:
+                        log_fn(f"[sub] {text}")
+
+        _stderr_thread = _threading.Thread(target=_read_stderr, daemon=True)
+        _stderr_thread.start()
+
+        # Read stdout (blocking — waits for subprocess to finish)
+        stdout_data = proc.stdout.read()
+        proc.wait()
+        _stderr_thread.join(timeout=5)
+
         exit_code = proc.returncode
-        stderr_str = stderr_data.decode(errors="replace") if stderr_data else ""
-        if log_fn:
-            for line in stderr_str.split("\n"):
-                if line.strip():
-                    log_fn(f"[sub] {line.strip()}")
         try:
             result = _json.loads(stdout_data.decode())
             output = result.get("output_bytes", stdout_data)
@@ -58,8 +69,8 @@ def _worker_execute_python(executable, input_data, *, log_fn=None):
             output_hash = _hashlib.sha256(output).hexdigest()
             if exit_code == 0:
                 exit_code = 1
-            if not stderr_str:
-                stderr_str = stdout_data.decode()[:8192] if stdout_data else "no output"
+            stderr_lines.append(stdout_data.decode()[:8192] if stdout_data else "no output")
+        stderr_str = "\n".join(stderr_lines)
     return output, output_hash, exit_code, stderr_str
 
 
