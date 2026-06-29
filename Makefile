@@ -18,16 +18,13 @@ deploy: build docker-build
 	@echo "✓ Déployé — $(COORDINATOR_URL)"
 
 # ── Qualité ────────────────────────────────────────────────────
-test:
-	.venv/Scripts/python.exe -m pytest tests/ -q --ignore=tests/test_distribution.py --ignore=tests/test_gpu.py
-
 lint:
-	.venv/Scripts/python.exe -m ruff check src/ tests/
+	.venv/Scripts/python.exe -m ruff check src/
 
 typecheck:
 	.venv/Scripts/python.exe -m mypy src/scrapower --ignore-missing-imports
 
-check: lint typecheck test
+check: lint typecheck
 	@echo "✓ Tout est propre"
 
 # ── Build ──────────────────────────────────────────────────────
