@@ -5,12 +5,11 @@ COORDINATOR_URL ?= http://localhost:8777
 SSH_KEY := ~/.ssh/clouscard-ghost.key
 SERVER  := ubuntu@130.110.242.56
 
-deploy: build docker-build
+deploy:
 	scp -i $(SSH_KEY) docker-compose.yml .env $(SERVER):~/scrapower/
 	scp -i $(SSH_KEY) Dockerfile $(SERVER):~/scrapower/
 	scp -i $(SSH_KEY) pyproject.toml $(SERVER):~/scrapower/
 	scp -r -i $(SSH_KEY) src/ $(SERVER):~/scrapower/
-	scp -r -i $(SSH_KEY) worker-browser/ $(SERVER):~/scrapower/
 	ssh -i $(SSH_KEY) $(SERVER) "cd ~/scrapower && docker compose down 2>/dev/null; docker compose up -d --build"
 	@sleep 5
 	@curl -sS $(COORDINATOR_URL)/health
@@ -28,11 +27,6 @@ check: lint typecheck
 	@echo "✓ Tout est propre"
 
 # ── Build ──────────────────────────────────────────────────────
-build:
-	@cd worker-browser && npm run build
-	@echo "✓ worker.js + sandbox_worker.js buildés"
-
-# ── Docker (local dev) ─────────────────────────────────────────
 docker-build:
 	docker build -t scrapower .
 

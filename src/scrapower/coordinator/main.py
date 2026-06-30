@@ -17,7 +17,6 @@ import structlog
 import uvicorn
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
 
 from .accounts import Account, AccountRegistry
 from .api.client_api import create_client_router
@@ -403,20 +402,6 @@ app.add_middleware(CORSMiddleware)
 
 app.include_router(worker_router)
 
-# Serve static files (browser worker)
-static_dir = Path(__file__).parent / "static"
-static_dir.mkdir(exist_ok=True)
-app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
-
-
-# Serve Service Worker from root (required for scope "/")
-@app.get("/sw.js")
-async def service_worker():
-    from fastapi.responses import FileResponse
-
-    sw_path = static_dir / "sw.js"
-    return FileResponse(sw_path, media_type="application/javascript")
-
 
 # Client API router needs task_manager from app.state
 client_api_router = create_client_router(require_auth)
@@ -490,26 +475,9 @@ async def check_blob(hash_hex: str):
 # ──────────────────────────────────────────────────────────────
 
 
-@app.get("/embed")
-@app.get("/worker")
-async def embed_page(request: Request):
-    """Serve the embeddable worker page (iframe-compatible)."""
-    from fastapi.responses import FileResponse
-
-    embed_path = Path(__file__).parent / "static" / "embed.html"
-    resp = FileResponse(embed_path)
-    # No X-Frame-Options = allow framing from any origin
-    # CSP frame-ancestors is the modern equivalent (set via Caddy)
-    return resp
-
-
 @app.get("/")
 async def homepage():
-    """Serve the browser worker page."""
-    from fastapi.responses import FileResponse
-
-    index_path = Path(__file__).parent / "static" / "index.html"
-    return FileResponse(index_path)
+    return {"service": "scrapower", "version": "0.7.1", "docs": "/docs"}
 
 
 @app.get("/health")
