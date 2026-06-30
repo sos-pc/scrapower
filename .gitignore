@@ -13,7 +13,6 @@ dist/
 
 # Node
 node_modules/
-worker-browser/node_modules/
 
 # IDE
 .vscode/
@@ -29,8 +28,6 @@ Thumbs.db
 
 # Temp
 *.tmp
-.pytest_cache/
-projects/
 
 # VPN credentials & certs (deployed via SCP)
 deploy/vpn/auth.txt
@@ -38,6 +35,3 @@ deploy/vpn/ca.crt
 deploy/vpn/client.crt
 deploy/vpn/client.key
 deploy/vpn-wg/SCRAPOWER.conf
-Reprise Scrapower dernière tâche en cours
-session actuel entiere V1
-session actuel entiere V2
