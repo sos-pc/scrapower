@@ -25,6 +25,7 @@ Thumbs.db
 # Env
 .env
 *.log
+BUGS.md
 
 # Temp
 *.tmp
