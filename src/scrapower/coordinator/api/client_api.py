@@ -56,15 +56,22 @@ def create_client_router(require_auth: Callable | None = None) -> APIRouter:
         await task_service.submit(
             task_id=task_id,
             client_id=client_id,
-            runtime=body.get("runtime", "wasm"),
+            runtime=body.get("runtime", "python"),
             executable_hash=body.get("executable_hash", ""),
             input_hash=body.get("input_hash", ""),
-            task_type=body.get("type", "wasm"),
+            task_type=body.get("type", "whisper"),
             requirements_json=json.dumps(body.get("requirements", {})),
             gpu_required=body.get("gpu_required", False),
         )
 
-        return JSONResponse({"task_id": task_id, "status": "queued", "client_id": client_id, "type": body.get("type", "wasm")})
+        return JSONResponse(
+            {
+                "task_id": task_id,
+                "status": "queued",
+                "client_id": client_id,
+                "type": body.get("type", "whisper"),
+            }
+        )
 
     @router.get("/tasks/{task_id}")
     async def get_task(task_id: str, request: Request):

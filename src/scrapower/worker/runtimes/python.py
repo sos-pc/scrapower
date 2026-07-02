@@ -114,7 +114,7 @@ async def execute_python(
 class PythonRuntime:
     """Execute a Python script with JSON input, capture JSON output.
 
-    Same interface as WasmRuntime for pluggable use in WorkerLoop.
+    Same interface for pluggable use in WorkerLoop.
     """
 
     async def execute(self, executable: bytes, input_data: bytes) -> tuple[bytes, str, int, str]:

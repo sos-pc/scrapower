@@ -15,7 +15,6 @@ from typing import Any
 import aiohttp
 
 from .runtimes.python import execute_python
-from .runtimes.wasm import execute_wasm
 
 HEARTBEAT_INTERVAL_SEC = 30
 STDERR_READER_TIMEOUT_SEC = 1800
@@ -82,8 +81,7 @@ class WorkerLoop:
         """Execute a task. Stderr is streamed via log_fn (set by caller)."""
         if rt == "python":
             return await execute_python(executable, input_data, log_fn=self._log)
-        else:
-            return execute_wasm(executable, input_data)
+        raise ValueError(f"Unknown runtime: {rt}")
 
     # -- Heartbeat (async, runs as background task) --------------------
 
@@ -169,7 +167,7 @@ class WorkerLoop:
                 self._last_task_time = time.time()
                 tid = task["id"][:12]
                 tok = task["assignment_token"]
-                rt = task.get("runtime", "wasm")
+                rt = task.get("runtime", "python")
                 self._log(f"Task: {tid}... (runtime={rt})")
 
                 # Download blobs

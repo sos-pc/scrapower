@@ -41,7 +41,7 @@ if __name__ == "__main__":
     import time as _time
 
     # Ensure runtime dependencies (whisper + yt-dlp are pulled in by whisper_runner on demand)
-    _WORKER_PKGS = ["aiohttp", "faster-whisper", "yt-dlp", "wasmtime"]
+    _WORKER_PKGS = ["aiohttp", "faster-whisper", "yt-dlp"]
     for _pkg in _WORKER_PKGS:
         try:
             __import__(_pkg.replace("-", "_"))
@@ -86,7 +86,6 @@ def _strip_future_imports(code: str) -> str:
 def bundle() -> None:
     files: list[tuple[str, Path]] = [
         ("runtimes/python.py", SRC / "runtimes" / "python.py"),
-        ("runtimes/wasm.py", SRC / "runtimes" / "wasm.py"),
         ("loop.py", SRC / "loop.py"),
         ("entry.py", SRC / "entry.py"),
     ]

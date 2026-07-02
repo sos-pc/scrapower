@@ -31,7 +31,7 @@ class TaskService:
         runtime: str,
         executable_hash: str,
         input_hash: str,
-        task_type: str = "wasm",
+        task_type: str = "whisper",
         requirements_json: str = "{}",
         gpu_required: bool = False,
         deadline_ms: int = 60000,
@@ -264,7 +264,7 @@ def _match_capabilities(task, capabilities: dict) -> bool:
     import json as _json
 
     worker_types = capabilities.get("task_types") or capabilities.get("runtimes", [])
-    worker_runtimes = capabilities.get("runtimes", ["wasm"])
+    worker_runtimes = capabilities.get("runtimes", ["python"])
     if task.task_type not in worker_types:
         return False
     if task.runtime not in worker_runtimes:

@@ -118,39 +118,11 @@ async def execute_python(
 class PythonRuntime:
     """Execute a Python script with JSON input, capture JSON output.
 
-    Same interface as WasmRuntime for pluggable use in WorkerLoop.
+    Same interface for pluggable use in WorkerLoop.
     """
 
     async def execute(self, executable: bytes, input_data: bytes) -> tuple[bytes, str, int, str]:
         return await execute_python(executable, input_data)
-
-# === BUNDLED: scrapower/worker/runtimes/wasm.py ===
-
-
-import hashlib
-
-
-def execute_wasm(wasm_bytes: bytes, input_data: bytes) -> tuple[bytes, str, int, str]:
-    """Execute WASM bytecode. Returns (output, hash, exit_code, stderr)."""
-    from wasmtime import Engine, Limits, Memory, MemoryType, Module, Store
-
-    engine = Engine()
-    store = Store(engine)
-    module = Module(engine, wasm_bytes)
-    memory = Memory(store, MemoryType(Limits(16, None)))
-    return (
-        hashlib.sha256(input_data).digest(),
-        hashlib.sha256(hashlib.sha256(input_data).digest()).hexdigest(),
-        0,
-        "wasm executed successfully",
-    )
-
-
-class WasmRuntime:
-    """Execute WASM bytecode. Same interface as PythonRuntime."""
-
-    def execute(self, executable: bytes, input_data: bytes) -> tuple[bytes, str, int, str]:
-        return execute_wasm(executable, input_data)
 
 # === BUNDLED: scrapower/worker/loop.py ===
 
@@ -228,8 +200,7 @@ class WorkerLoop:
         """Execute a task. Stderr is streamed via log_fn (set by caller)."""
         if rt == "python":
             return await execute_python(executable, input_data, log_fn=self._log)
-        else:
-            return execute_wasm(executable, input_data)
+        raise ValueError(f"Unknown runtime: {rt}")
 
     # -- Heartbeat (async, runs as background task) --------------------
 
@@ -315,7 +286,7 @@ class WorkerLoop:
                 self._last_task_time = time.time()
                 tid = task["id"][:12]
                 tok = task["assignment_token"]
-                rt = task.get("runtime", "wasm")
+                rt = task.get("runtime", "python")
                 self._log(f"Task: {tid}... (runtime={rt})")
 
                 # Download blobs
@@ -473,9 +444,8 @@ def _build_capabilities(
     """Build the capabilities dict sent to the coordinator on every pull."""
     has_gpu = gpu_vram_mb > 0
     caps: dict = {
-        "task_types": task_types
-        or (["whisper", "python", "wasm"] if has_gpu else ["wasm", "python"]),
-        "runtimes": ["wasm", "python"],
+        "task_types": task_types or (["whisper", "python"] if has_gpu else ["python"]),
+        "runtimes": ["python"],
         "resources": {
             "cpu_cores": cpu_cores,
             "ram_mb": ram_mb,
@@ -583,7 +553,7 @@ def main() -> None:
     )
 
     # Ensure runtime dependencies
-    for pkg in ["aiohttp", "wasmtime"]:
+    for pkg in ["aiohttp"]:
         try:
             __import__(pkg.replace("-", "_"))
         except ImportError:
@@ -609,7 +579,7 @@ if __name__ == "__main__":
     import time as _time
 
     # Ensure runtime dependencies (whisper + yt-dlp are pulled in by whisper_runner on demand)
-    _WORKER_PKGS = ["aiohttp", "faster-whisper", "yt-dlp", "wasmtime"]
+    _WORKER_PKGS = ["aiohttp", "faster-whisper", "yt-dlp"]
     for _pkg in _WORKER_PKGS:
         try:
             __import__(_pkg.replace("-", "_"))

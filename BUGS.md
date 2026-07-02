@@ -1,137 +1,241 @@
-# Bugs & Technical Debt — Scrapower
+# Bugs & Dette technique — Audit 2026-06-29
+
+> Fichier local, exclu de Git. Examné un par un avant correction.
 
 ---
 
-## 🔥 Session 2026-06-26 — Diagnostic batch + heartbeat + refactor Mode A
+## 🔴 P0 — Critique
 
-### Objectif initial
-Débugger le cycle de transcription batch (playlist Hegel, vidéos 1-2h).
-Les tâches bouclent : transcription OK → submit rejeté → retour en queued →
-re-transcription depuis zéro → boucle infinie.
+### 1. `wasm.py` — WASM jamais exécuté (stub)
+- **Fichier** : `src/scrapower/worker/runtimes/wasm.py`
+- **Problème** : `execute_wasm()` charge le module via wasmtime (Engine, Store, Module, Memory) mais n'appelle **aucune fonction exportée**. Le « résultat » est un double SHA256 de l'input. Aucun code WASM n'est jamais exécuté.
+- **Impact** : Toute tâche `runtime=wasm` produit un résultat factice.
+- **Action** : Soit implémenter l'appel à `compute()`, soit supprimer le runtime WASM s'il n'est pas utilisé en production.
 
-### ✅ Résolu — Cause racine
-Le Scheduler Mode A appelait `requeue_stale()` toutes les 5s → invalidait
-le token des workers Mode B → submit rejeté → boucle. Suppression complète
-du Mode A (commits `65324e7`, `1daba3e`, `517a848`).
+### 2. `config.py:153` — KeyError si sections TOML mal agencées
+- **Fichier** : `src/scrapower/coordinator/config.py`
+- **Ligne** : 153
+- **Problème** : `sec = data["security"]` est à l'intérieur du bloc `if "worker_gateway" in data:`. Si `[worker_gateway]` présent mais `[security]` absent → `KeyError`. Si `[security]` présent mais `[worker_gateway]` absent → config silencieusement ignorée.
+- **Impact** : Crash au démarrage ou config partielle.
+- **Action** : Sortir la lecture de `security` hors du bloc `worker_gateway`.
 
-### ⚠️ Reste à faire
+### 3. `main.py:377` — `_cleanup_loop()` code mort
+- **Fichier** : `src/scrapower/coordinator/main.py`
+- **Lignes** : 377-386
+- **Problème** : `_cleanup_loop()` est définie mais jamais appelée. `_maintenance_loop()` fait déjà le cleanup.
+- **Impact** : Aucun (code mort inoffensif), mais confusion.
+- **Action** : Supprimer `_cleanup_loop()`.
 
-Voir P7 et P8 dans le tableau ci-dessous.
+### 4. `main.py:37-38` — Variables globales `config` et `db`
+- **Fichier** : `src/scrapower/coordinator/main.py`
+- **Lignes** : 37-38
+- **Problème** : `config` et `db` déclarés comme variables globales, utilisés par les endpoints `/blobs`. Devraient être sur `app.state`.
+- **Impact** : Anti-pattern, risque en contexte multi-thread.
+- **Action** : Déplacer sur `app.state` (déjà fait pour `task_service`, `registry`, `providers`).
 
-### Chronologie complète
+### 5. `ephemeral.py` — `workers_active` toujours à 0
+- **Fichier** : `src/scrapower/coordinator/harvester/ephemeral.py` + `accounts.py`
+- **Problème** : `Account.update_workers()` n'est **jamais appelé**. La condition `total_active >= queued` est toujours `0 >= N` → jamais vraie. La régulation de capacité est inopérante.
+- **Impact** : Le harvester tente toujours de lancer des workers même s'il y en a déjà assez. Atténué par les cooldowns des providers, mais gaspillage potentiel de quota.
+- **Action** : Appeler `update_workers()` dans le harvester après chaque lancement/cleanup.
 
-| Étape | Action | Commit | Résultat |
-|-------|--------|--------|----------|
-| 1 | Ajout logs diagnostic dans `complete()` et `submit()` | `e09b5c3` | ✅ Déployé |
-| 2 | Test batch 2 vidéos | — | ❌ Worker Modal tué à 300s (KeyboardInterrupt) |
-| 3 | Analyse logs Modal (sandbox piot.jeremie) | — | Transcription 209 segments puis kill externe |
-| 4 | Recherche doc Modal | — | GPU Sandboxes = préemptibles ; timeout peut être ignoré |
-| 5 | Découverte : logs diagnostic révèlent "token mismatch" | — | `complete rejected: token mismatch db=none` — le submit est rejeté car le token a été invalidé par `requeue_stale()` |
-| 6 | P1a+P1b — `remaining_pct()` et `_first_deploy()` gèrent PAUSED/SLEEPING/STOPPED | `9d29370` | ✅ Harvester ne fait plus de redeploy inutile |
-| 7 | P1c — `total_active` exclut CPU-only pour tâches GPU | `9e0d6fc` | ✅ Harvester ne bloque plus sur HF |
-| 8 | Découverte P3 — les 2 comptes Modal ont spend limit à 0$ | — | L'utilisateur avait mis les limites à 0 par peur d'être débité |
-| 9 | L'utilisateur relève la limite du compte piot.jeremie | — | ✅ Modal fonctionne à nouveau |
-| 10 | Ajout logs erreur heartbeat (coordinator + worker) | `50b1872` | ✅ `except:pass` remplacé par `log.exception` |
-| 11 | Heartbeat : send immédiat (pas de sleep avant 1er envoi) | `db7ae34` | Toujours 0 heartbeat reçu |
-| 12 | Heartbeat : session aiohttp dédiée (pas la session partagée) | `dcbaafb` | Toujours 0 heartbeat reçu |
-| 13 | Heartbeat : `global _LOG_TASK_ID` manquant → crash Python | `4032c26` | ✅ 1er heartbeat reçu ! |
-| 14 | Heartbeat : thread synchrone urllib (bypass event loop) | `f3660cb` | ✅ 3 heartbeats reçus ! Fonctionne ! |
-| 15 | Découverte : `task_valid=false` au 1er heartbeat — token déjà invalide | — | Le scheduler Mode A appelle `requeue_stale()` toutes les 5s et invalide le token |
-| 16 | Audit complet des dépendances Mode A | — | 8 fichiers à supprimer, 11 à modifier |
-| 17 | Suppression Mode A : 9 fichiers supprimés, 6 modifiés | `65324e7` | ✅ Déployé — `_maintenance_loop` remplace Scheduler |
-| 18 | Clean CLI + conftest Mode A | `65324e7` | ✅ `_worker` supprimé, `live_server` retiré |
-| 19 | Heartbeat fix : `current_assignment_token` absent du `get()` | `1daba3e` | ✅ `task_valid=true` confirmé |
-| 20 | Supprimer fallback coordinator (yt-dlp, `_download_audio`, `prepare_audio_fallback`) | `1daba3e` | ✅ Worker download autonome via WG_PROXY |
-| 21 | Fix worker deadlock : `_read_stderr` thread vs `communicate()` | `517a848` | ✅ Modal fixé |
-| 22 | Fix même deadlock sur HF Spaces | `e11b950` | ✅ HF fixé |
-| 23 | Documenter P6, P7, P8 | `619b885` | ✅ |
+### 6. `kaggle.py:315` — `return` dans la boucle `for`
+- **Fichier** : `src/scrapower/coordinator/harvester/kaggle.py`
+- **Ligne** : 315
+- **Problème** : Dans `_count_active_kernels()`, le `return active` est à l'intérieur de la boucle `for account in accounts`. La fonction retourne après avoir traité uniquement le premier compte.
+- **Impact** : Les kernels des autres comptes sont ignorés. Le harvester sous-estime le nombre de workers actifs.
+- **Action** : Déplacer `return active` après la boucle.
 
-### 🎯 Résultat clé : La heartbeat fonctionne
+### 7. `kaggle.py:259` — `datetime.UTC` incompatible Python < 3.11
+- **Fichier** : `src/scrapower/coordinator/harvester/kaggle.py`
+- **Ligne** : 259
+- **Problème** : `from datetime import UTC` n'existe qu'à partir de Python 3.11. Crash sur versions antérieures.
+- **Impact** : Incompatibilité si le worker tourne sur Python 3.10 (peu probable en pratique, le Dockerfile utilise 3.12).
+- **Action** : Remplacer par `datetime.timezone.utc` (compatible 3.9+).
 
-Après 4 itérations (commits `50b1872` → `f3660cb`), la heartbeat Mode B envoie
-enfin des requêtes HTTP. Le fix final :
-- `global _LOG_TASK_ID` dans `_heartbeat_sync()` (le bug racine)
-- `urllib.request` dans un thread dédié (pas aiohttp, pas l'event loop)
-- Premier envoi immédiat (pas de sleep 30s avant)
-- Annulation heartbeat APRÈS upload+submit (pas dans le finally)
-
-### 🔴 Problèmes découverts et leur résolution
-
-| # | Problème | Root cause | Fix | État |
-|---|---------|-----------|-----|------|
-| P0 | Modal tue GPU sandboxes à 300s | GPU Sandboxes préemptibles | Checkpoints whisper_runner (planifié) | ⚠️ En attente |
-| P1 | Harvester choisit HF (CPU) pour GPU | `remaining_pct()` ment, `_first_deploy()` inutile, `total_active` pas filtré | 3 sous-bugs corrigés | ✅ |
-| P3 | Comptes Modal hors budget | Spend limit à 0$ | Relevé sur piot.jeremie | ✅ |
-| P4 | Heartbeat 0 requête envoyée | `global _LOG_TASK_ID` manquant + event loop bloqué | urllib + thread + global | ✅ |
-| P5 | `requeue_stale()` invalide le token Mode B | Scheduler Mode A appelle `requeue_stale()` toutes les 5s | Mode A supprimé, `_maintenance_loop` (15s) + heartbeat fix | ✅ |
-| P6 | Worker deadlock après transcription | Thread `_read_stderr` concurrence `communicate()` sur pipe stderr | Supprimer `_read_stderr`, utiliser stderr de `communicate()` | ✅ Modal + HF |
-| P7 | Notebook Kaggle incomplet | `sworker.ipynb` contient seulement le code submit retry | Réécrire le notebook avec le code worker complet | ✅ (`79420ab`) |
-| P13 | Logs worker non streamés | `communicate()` bloquait tout le stderr jusqu'à la fin de l'exécution → heartbeats n'avaient rien à envoyer | `asyncio.create_subprocess_exec` + `async for line in proc.stderr` → streaming temps réel | ✅ (`332a65d`) |
-| P9 | `workers_active` Kaggle basé sur `_kernel_refs` jamais nettoyé | `status()` retourne `len(self._kernel_refs)` sans retirer les kernels supprimés | `self._kernel_refs.remove(ref)` dans `_cleanup_old_kernels()` | ✅ (`79420ab`) |
-| P10 | GPU Kaggle incompatible ctranslate2 | `python.py` isolait trop le subprocess (env minimal sans `LD_LIBRARY_PATH`) | `os.environ.copy()` au lieu d'un dict minimal | ✅ (`c2e1d1f`) |
-| P11 | Distribution non-parallèle (1 kernel/tick) | Harvester lançait 1 worker par tick (15s) | `asyncio.gather` sur N comptes en parallèle | ✅ (`a480f3a`) |
-| P12 | Décision par provider au lieu de par compte | `AccountFilter` + `remaining_pct()` agrégé | `AccountRegistry` + quota par compte + `candidates_for_task()` | ✅ (`b1615f9`) |
+### 8. `python.py` — `PythonRuntime.execute` perd `log_fn`
+- **Fichier** : `src/scrapower/worker/runtimes/python.py`
+- **Lignes** : 120-121
+- **Problème** : `PythonRuntime.execute()` appelle `execute_python()` **sans** passer `log_fn`. Quand le `WorkerLoop` utilise la classe au lieu de la fonction directe, le streaming stderr est perdu.
+- **Impact** : Pas de logs temps réel pour les tâches Python exécutées via la classe.
+- **Action** : Ajouter `log_fn` en paramètre de `PythonRuntime.execute()`.
 
 ---
 
-## 🔴 Corrigés (session 2026-06-24/25)
+## 🟡 P1 — Important
 
-| # | Bug | Fichiers |
-|---|-----|----------|
-| C1 | HF Space `CONFIG_ERROR` : collision variables/secrets | `hf_spaces.py` |
-| C2 | Caddy `502` : `reverse_proxy 172.17.0.1` → mauvaise gateway Docker | `/opt/ghost/Caddyfile` |
-| C3 | Harvester bloqué sur HF pour tâches GPU | `hf_spaces.py` |
-| C4 | Redeploy HF Space inutile à chaque restart | `hf_spaces.py` |
-| C5 | `output_hash` mismatch worker↔blob store → `BLOB_NOT_FOUND` | `worker.py`, `app.py`, `sworker.ipynb` |
-| C6 | Worker HF `completed: 0` — conséquence de C5 | `app.py` |
-| S1 | P0 — Coordinator n'a pas vérifié blob avant submit → `rowcount` check | `task_manager.py` |
-| B2 | `_ensure_secrets()` appelé à chaque restart → retiré de Path A | `hf_spaces.py` |
-| B3 | `workers_active` HF via `SessionManager` + `_touch_starting` + `_ping_worker` | `session.py`, `http_handler.py`, `router.py`, `hf_spaces.py`, `main.py` |
-| B4 | Caddy fix hors repo → `deploy/caddy/scrapower.conf` + README | `deploy/caddy/`, `README.md` |
-| B5 | Fichiers inutiles dans le bundle HF Space → retiré `COPY worker/` | `Dockerfile`, `hf_spaces.py` |
-| B7 | `_wake_space()` URL dérivée manuellement → `space_info().host` | `hf_spaces.py` |
-| H1 | Worker ne retentait pas le submit → retry ×3 upload+submit | `app.py`, `worker.py`, `sworker.ipynb` |
-| B8/B9 | Rate limit pull : fuite mémoire + anonyme → cleanup auto + 401 | `http_handler.py` |
-| B11 | `requeue_stale()` bypass `transition()` → utilise `transition(TIMEOUT)` | `domain.py` |
-| B13 | 6 tables DB mortes → DROP migration | `db.py` |
-| B14 | Kaggle dead code `_get_quota` → supprimé | `kaggle.py` |
-| B15 | Modal `os.environ` race condition → `Client.from_credentials` | `modal.py` |
+### 9. `accounts.py` — `update_workers()` jamais appelé
+- Voir P0 #5.
 
-**18 bugs corrigés.**
+### 10. `client_api.py` — Paramètre `require_auth` mort
+- **Fichier** : `src/scrapower/coordinator/api/client_api.py`
+- **Problème** : `create_client_router(require_auth: Callable | None)` — le paramètre n'est jamais utilisé dans le corps. La méthode `_check_auth` interne est toujours appelée.
+- **Action** : Supprimer le paramètre.
+
+### 11. `client_api.py` + 3 autres — `"data/logs"` dupliqué ×4
+- **Fichiers** : `client_api.py` (×2), `domain.py:240`, `http_handler.py:280`
+- **Problème** : Le chemin `"data/logs"` est hardcodé dans 4 fichiers.
+- **Action** : Centraliser dans `config.py` (`config.log_dir`).
+
+### 12. `stats_api.py` — Couplage au singleton `router.py`
+- **Fichier** : `src/scrapower/coordinator/api/stats_api.py`
+- **Problème** : `getattr(router_mod, "session_manager", None)` — repose sur le singleton module-level injecté par `main.py`.
+- **Action** : Passer `session_manager` via `app.state` ou en paramètre.
+
+### 13. `transcribe_api.py` — Fallback hash silencieux
+- **Fichier** : `src/scrapower/coordinator/api/transcribe_api.py`
+- **Ligne** : 34
+- **Problème** : Si `whisper_runner.py` n'existe pas, `hashlib.sha256(b"").hexdigest()` est utilisé → hash invalide, échec silencieux au runtime.
+- **Action** : Lever une exception explicite si le fichier est introuvable.
+
+### 14. `transcribe_api.py` — Mutation `os.environ`
+- **Fichier** : `src/scrapower/coordinator/api/transcribe_api.py`
+- **Ligne** : 158
+- **Problème** : `os.environ["SCRAPOWER_YT_COOKIES_HASH"] = new_hash` — mutation d'état global, risque en concurrence.
+- **Action** : Passer la valeur via la tâche (input_data) plutôt que via l'environnement.
+
+### 15. `transcribe_api.py` — Chemin fragile vers `whisper_runner.py`
+- **Fichier** : `src/scrapower/coordinator/api/transcribe_api.py`
+- **Lignes** : 22-23
+- **Problème** : `Path(__file__).parent.parent.parent.parent / "worker" / "runtimes"` — 4 niveaux de `parent`, cassera si l'arborescence change.
+- **Action** : Mettre dans `config.py`.
+
+### 16. `blob_store.py` — `db` inutilisé dans `get_blob` et `blob_exists`
+- **Fichier** : `src/scrapower/coordinator/blob_store.py`
+- **Lignes** : 76, 88
+- **Problème** : Les fonctions acceptent `db` en paramètre mais ne l'utilisent pas. Signature trompeuse.
+- **Action** : Supprimer le paramètre ou l'utiliser.
+
+### 17. `blob_store.py` — `run_gc` dupliqué
+- **Fichier** : `src/scrapower/coordinator/blob_store.py`
+- **Problème** : Deux passes quasi identiques (checkpoint vs regular).
+- **Action** : Factoriser.
+
+### 18. `db.py` — Migrations fragiles
+- **Fichier** : `src/scrapower/coordinator/db.py`
+- **Problème** : Les migrations sont ré-exécutées à chaque démarrage avec `try/except: pass`. Pas de table `schema_version`. Erreurs silencieusement avalées.
+- **Action** : Ajouter une table `schema_version`, ne jouer que les migrations non appliquées.
+
+### 19. `domain.py` — Violation de couche (×6)
+- **Fichier** : `src/scrapower/coordinator/domain.py`
+- **Problème** : `TaskService` contourne `TaskManager` et accède directement à `self._tm._db` pour des écritures SQL dans 6 méthodes (`set_queued`, `mark_failed`, `count_queued`, `requeue_stale`, `requeue_for_worker`, `cleanup_expired`).
+- **Action** : Déplacer ces opérations dans `TaskManager`.
+
+### 20. `domain.py` — Imports `import time` lazy ×6
+- **Fichier** : `src/scrapower/coordinator/domain.py`
+- **Problème** : `import time` répété dans 5 méthodes + `import asyncio` dans `run_prepare`.
+- **Action** : Mettre au niveau module.
+
+### 21. `task_manager.py` — `cursor = cursor =` (triple affectation)
+- **Fichier** : `src/scrapower/coordinator/task_manager.py`
+- **Lignes** : 164, 191, 280
+- **Problème** : `cursor = cursor = await...` — double affectation sans effet.
+- **Action** : Nettoyer.
+
+### 22. `task_manager.py` — Champs omis dans `get_queued`
+- **Fichier** : `src/scrapower/coordinator/task_manager.py`
+- **Lignes** : 190-220
+- **Problème** : Omet `definition_json`, `current_assignment_token`, `assigned_worker_id`, `assigned_at`, `output_hash`, `deadline_ms`, `max_retries`.
+- **Action** : Aligner avec `get()`.
+
+### 23. `task_manager.py` — Timestamps en string
+- **Fichier** : `src/scrapower/coordinator/task_manager.py`
+- **Problème** : `str(time.time())` stocké en TEXT. Comparaisons SQL non numériques.
+- **Action** : Utiliser `REAL` ou `INTEGER`.
+
+### 24. `hf_spaces.py` — `_ping_worker` code mort
+- **Fichier** : `src/scrapower/coordinator/harvester/hf_spaces.py`
+- **Lignes** : 272-292
+- **Action** : Supprimer.
+
+### 25. `hf_spaces.py` — Crash si dossier de déploiement absent
+- **Fichier** : `src/scrapower/coordinator/harvester/hf_spaces.py`
+- **Problème** : `_find_deploy_dir` lève `FileNotFoundError` → crash au démarrage.
+- **Action** : Gérer l'absence gracieusement.
+
+### 26. `modal.py` — I/O synchrone dans l'event loop
+- **Fichier** : `src/scrapower/coordinator/harvester/modal.py`
+- **Problème** : `sqlite3` (bloquant) dans `_load_state`/`_save_state`, `open()` dans `_create_sandbox`.
+- **Action** : Utiliser `aiosqlite` ou `asyncio.to_thread`.
+
+### 27. `http_handler.py` + `domain.py` — Accès direct `_tm._db`
+- Voir P1 #19.
+
+### 28. `router.py` — `task_manager` code mort
+- **Fichier** : `src/scrapower/coordinator/worker_gateway/router.py`
+- **Ligne** : 15
+- **Problème** : `task_manager = None` — défini mais jamais référencé.
+- **Action** : Supprimer.
+
+### 29. `router.py` — Singletons module-level
+- **Fichier** : `src/scrapower/coordinator/worker_gateway/router.py`
+- **Lignes** : 14-16
+- **Problème** : `session_manager`, `task_service` injectés depuis `main.py` comme singletons globaux.
+- **Action** : Utiliser `app.state` ou l'injection de dépendances FastAPI.
+
+### 30. `session.py` — Paramètres inutilisés
+- **Fichier** : `src/scrapower/coordinator/worker_gateway/session.py`
+- **Ligne** : 15
+- **Problème** : `heartbeat_interval_sec` et `heartbeat_miss_threshold` acceptés mais jamais stockés ni utilisés. `max_age_sec=90` hardcodé.
+- **Action** : Dériver `max_age_sec` de `heartbeat_interval_sec * heartbeat_miss_threshold`.
+
+### 31. `entry.py` — Code mort + import dupliqué + valeurs magiques
+- **Fichier** : `src/scrapower/worker/entry.py`
+- **Problèmes** :
+  - Lignes 82-83 : double assignation de `max_lifetime_sec` (no-op)
+  - Ligne 114 : `import os as _os_diag` alors que `os` déjà importé
+  - Valeurs magiques : 16384, 21600, 900000, etc.
+- **Action** : Nettoyer + extraire des constantes.
+
+### 32. `loop.py` — Import mort + constante inutilisée + `print()` nu
+- **Fichier** : `src/scrapower/worker/loop.py`
+- **Problèmes** :
+  - `import json as _json` — jamais utilisé (aiohttp fait le parsing)
+  - `STDERR_READER_TIMEOUT_SEC` défini ici mais seul `python.py` l'utilise
+  - Ligne 195 : `print(..., flush=True)` au lieu de `self._log()` — casse l'uniformité
+- **Action** : Nettoyer.
+
+### 33. `whisper_runner.py` — Fallback transformers absent + DRY violé
+- **Fichier** : `src/scrapower/worker/runtimes/whisper_runner.py`
+- **Problèmes** :
+  - Docstring annonce un fallback `transformers` pour Kaggle mais aucun code ne l'implémente
+  - Triplon de sérialisation d'erreur (lignes 224-241)
+  - Filtrage fragile des arguments yt-dlp (lignes 71-78)
+- **Action** : Supprimer la docstring trompeuse, factoriser la sérialisation.
 
 ---
 
-## 🟢 Restant (non bloquant)
+## 🔵 P2 — Cosmétique
 
-| # | Problème | Fichier |
-|---|---------|----------|
-| B10 | `workers_active` surcompté 90s après restart (1 promesse + 1 pull). Cosmétique. | `hf_spaces.py` |
-| B12 | Blob `ref_count` toujours ≥1 → GC lent (6h, TTL 7j). 742 MB. Acceptable. | `blob_store.py`, `domain.py` |
+### 34. `cors_middleware.py` — `ALLOWED_ORIGINS` mort
+- Défini ligne 13, jamais utilisé (le middleware hardcode `b"*"`).
+
+### 35. `security.py` — `import hmac` lazy + docstrings corrompus
+- `import hmac` dans `verify_api_key` au lieu du niveau module.
+- Caractères `ā€"` au lieu de `—` dans les docstrings.
+
+### 36. `harvester/base.py` — Types manquants
+- `registry` non typé dans `refresh_quota`, `cleanup_stale`, `status`.
+
+### 37. `domain.py:149` — Docstring en français
+- `"""Nombre de tâches en attente..."""` — incohérent avec le reste.
+
+### 38. `main.py` — Versions inconsistantes
+- `"0.7.1"` (homepage) vs `"0.1.0"` (health).
+
+### 39. `worker/__init__.py` — Docstring trompeuse
+- Parle de `from scrapower.worker.entry import main` mais exporte `WorkerLoop`.
+
+### 40. `worker/runtimes/__init__.py` — Docstring incorrecte
+- Dit que les runtimes retournent un dict, mais ils retournent un tuple.
 
 ---
 
-## ⚠️ Compromis assumés
+## 📊 Stats
 
-| # | Compromis | Risque |
-|---|-----------|--------|
-| W4 | Space HF public — health endpoint expose l'URL coordinator | Faible |
-| W6 | `launch_worker()` → `False` pour Space RUNNING | Accepté |
-
----
-
-## 🔮 Hors scope
-
-| # | Idée |
-|---|------|
-| H2 | `ProviderStatus.workers_starting` + lifecycle standardisé |
-| H3 | Monitoring worker persistant (table `workers`) |
-
----
-
-## 🔒 Sécurité (corrigé)
-
-| # | Problème | Fichier |
-|---|---------|----------|
-| ~~A9~~ | Tokens Modal en clair | `scripts/modal_proxy_diag.py` |
-| ~~A10~~ | Password WG en clair | `deploy/modal/proxy_test.py` |
-| ~~N6~~ | Password WG dans logs worker | `whisper_runner.py` |
+| Priorité | Nombre |
+|----------|--------|
+| P0 | 8 |
+| P1 | 25 |
+| P2 | 9 |
+| **Total** | **42** |

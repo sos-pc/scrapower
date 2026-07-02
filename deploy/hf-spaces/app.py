@@ -58,8 +58,8 @@ if __name__ == "__main__":
     from scrapower.worker.loop import WorkerLoop
 
     capabilities = {
-        "task_types": ["wasm", "python"],
-        "runtimes": ["wasm", "python"],
+        "task_types": ["python"],
+        "runtimes": ["python"],
         "resources": {
             "cpu_cores": CPU_CORES,
             "ram_mb": RAM_MB,

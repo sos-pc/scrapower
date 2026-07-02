@@ -241,7 +241,7 @@ class ModalHarvester(WorkerProvider):
         image = (
             modal.Image.from_registry("nvidia/cuda:12.4.0-runtime-ubuntu22.04", add_python="3.12")
             .apt_install("ffmpeg")
-            .pip_install("aiohttp", "faster-whisper", "yt-dlp", "wasmtime")
+            .pip_install("aiohttp", "faster-whisper", "yt-dlp")
             .env({"HF_XET_HIGH_PERFORMANCE": "1"})
         )
         sb = await modal.Sandbox.create.aio(

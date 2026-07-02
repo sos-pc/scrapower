@@ -65,7 +65,7 @@ async def pull(request: Request, sessions: SessionManager):
     Body:
       { "type": "pull",
         "worker_id": "kaggle-a1b2c3d4",
-        "capabilities": { "runtimes": ["wasm","python"], "resources": {...} } }
+        "capabilities": { "runtimes": ["python"], "resources": {...} } }
 
     Returns:
       { "type": "pull_response",

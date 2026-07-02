@@ -70,11 +70,11 @@ class Task:
     deadline_ms: int = 60000
     executable_hash: str = ""
     input_hash: str = ""
-    runtime: str = "wasm"
+    runtime: str = "python"
     gpu_required: bool = False
     output_hash: str = ""
     error: str = ""
-    task_type: str = "wasm"
+    task_type: str = "whisper"
     requirements_json: str = "{}"
     created_at: str = ""
     updated_at: str = ""
@@ -105,7 +105,7 @@ class TaskManager:
         runtime: str,
         executable_hash: str,
         input_hash: str,
-        task_type: str = "wasm",
+        task_type: str = "whisper",
         requirements_json: str = "{}",
         max_retries: int = 3,
         deadline_ms: int = 60000,
@@ -180,7 +180,7 @@ class TaskManager:
             gpu_required=bool(row["gpu_required"]) if "gpu_required" in row.keys() else False,
             executable_hash=row["executable_hash"] if "executable_hash" in row.keys() else "",
             input_hash=row["input_hash"] if "input_hash" in row.keys() else "",
-            runtime=row["runtime"] if "runtime" in row.keys() else "wasm",
+            runtime=row["runtime"] if "runtime" in row.keys() else "python",
             output_hash=row["output_hash"] if "output_hash" in row.keys() else "",
             error=row["error"] if "error" in row.keys() else "",
             created_at=row["created_at"],
@@ -204,12 +204,12 @@ class TaskManager:
                     if "executable_hash" in row.keys()
                     else "",
                     input_hash=row["input_hash"] if "input_hash" in row.keys() else "",
-                    runtime=row["runtime"] if "runtime" in row.keys() else "wasm",
+                    runtime=row["runtime"] if "runtime" in row.keys() else "python",
                     gpu_required=bool(row["gpu_required"])
                     if "gpu_required" in row.keys()
                     else False,
                     error=row["error"] if "error" in row.keys() else "",
-                    task_type=row["task_type"] if "task_type" in row.keys() else "wasm",
+                    task_type=row["task_type"] if "task_type" in row.keys() else "whisper",
                     requirements_json=row["requirements_json"]
                     if "requirements_json" in row.keys()
                     else "{}",

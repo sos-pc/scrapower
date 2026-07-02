@@ -56,9 +56,8 @@ def _build_capabilities(
     """Build the capabilities dict sent to the coordinator on every pull."""
     has_gpu = gpu_vram_mb > 0
     caps: dict = {
-        "task_types": task_types
-        or (["whisper", "python", "wasm"] if has_gpu else ["wasm", "python"]),
-        "runtimes": ["wasm", "python"],
+        "task_types": task_types or (["whisper", "python"] if has_gpu else ["python"]),
+        "runtimes": ["python"],
         "resources": {
             "cpu_cores": cpu_cores,
             "ram_mb": ram_mb,
@@ -166,7 +165,7 @@ def main() -> None:
     )
 
     # Ensure runtime dependencies
-    for pkg in ["aiohttp", "wasmtime"]:
+    for pkg in ["aiohttp"]:
         try:
             __import__(pkg.replace("-", "_"))
         except ImportError:

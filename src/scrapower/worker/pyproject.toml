@@ -5,7 +5,6 @@ description = "Scrapower worker — Mode B HTTP pull/submit client"
 requires-python = ">=3.10"
 dependencies = [
     "aiohttp>=3.8",
-    "wasmtime>=14",
 ]
 
 [build-system]

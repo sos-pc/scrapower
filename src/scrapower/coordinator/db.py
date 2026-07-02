@@ -27,10 +27,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     output_hash    TEXT,
     executable_hash TEXT DEFAULT '',
     input_hash     TEXT DEFAULT '',
-    runtime        TEXT DEFAULT 'wasm',
+    runtime        TEXT DEFAULT 'python',
     gpu_required   INTEGER NOT NULL DEFAULT 0,
     error          TEXT DEFAULT '',
-        task_type      TEXT DEFAULT 'wasm',
+        task_type      TEXT DEFAULT 'whisper',
     requirements_json TEXT DEFAULT '{}',
 created_at     TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at     TEXT NOT NULL DEFAULT (datetime('now'))

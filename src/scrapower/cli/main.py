@@ -23,10 +23,10 @@ def main():
 
     # submit
     p = sub.add_parser("submit", help="Submit a task")
-    p.add_argument("--wasm", required=True, help="Path to .wasm file")
+    p.add_argument("--executable", required=True, help="Path to executable file")
     p.add_argument("--input", required=True, help="Path to input file")
     p.add_argument("--coordinator", default="http://localhost:8777")
-    p.add_argument("--runtime", default="wasm")
+    p.add_argument("--runtime", default="python")
     p.add_argument("--client-id", default="cli")
 
     args = parser.parse_args()
@@ -57,17 +57,17 @@ async def _serve(args):
 
 
 async def _submit(args):
-    wasm_path = Path(args.wasm)
+    exec_path = Path(args.executable)
     input_path = Path(args.input)
     coord_url = args.coordinator.rstrip("/")
 
-    wasm_data = wasm_path.read_bytes()
+    exec_data = exec_path.read_bytes()
     input_data = input_path.read_bytes()
     task_id = uuid.uuid4().hex
 
     async with httpx.AsyncClient() as client:
         # Upload blobs
-        r = await client.put(f"{coord_url}/blobs", content=wasm_data)
+        r = await client.put(f"{coord_url}/blobs", content=exec_data)
         exec_hash = r.json()["hash"]
         r = await client.put(f"{coord_url}/blobs", content=input_data)
         input_hash = r.json()["hash"]

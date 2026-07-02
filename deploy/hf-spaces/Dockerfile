@@ -3,7 +3,6 @@
 # Design decisions:
 #   - No faster-whisper or yt-dlp: this worker targets CPU tasks
 #     (WASM, Python). GPU tasks go to Kaggle/Modal via capability matching.
-#   - wasmtime included for WASM runtime (fuel-metered sandbox).
 #   - aiohttp for HTTP pull/submit (Mode B protocol).
 #   - Python 3.12 slim for small image size (faster cold start).
 #   - Port 7860 exposed for HF Spaces health check requirement.
@@ -18,7 +17,7 @@ WORKDIR /app
 
 # Only the dependencies this CPU worker actually uses.
 # Whisper/GPU deps are NOT installed — GPU tasks are routed to Kaggle/Modal.
-RUN pip install --no-cache-dir aiohttp wasmtime
+RUN pip install --no-cache-dir aiohttp
 
 # Copy worker runtime files (from src/scrapower/worker/ in the repo).
 # The Harvester bundles these into the upload folder before deploying.
