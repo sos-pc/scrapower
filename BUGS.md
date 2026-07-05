@@ -11,19 +11,13 @@
 - **Problème** : `execute_wasm()` chargeait le module sans appeler `compute()`. Résultat factice.
 - **Résolution** : Supprimé (commit `b986055`). Zéro tâche WASM en production. Préservé sur `archive/browser-worker`.
 
-### 2. `config.py:153` — KeyError si sections TOML mal agencées
+### 2. `config.py:153` — KeyError si sections TOML mal agencées ✅ Résolu
 - **Fichier** : `src/scrapower/coordinator/config.py`
-- **Ligne** : 153
-- **Problème** : `sec = data["security"]` est à l'intérieur du bloc `if "worker_gateway" in data:`. Si `[worker_gateway]` présent mais `[security]` absent → `KeyError`. Si `[security]` présent mais `[worker_gateway]` absent → config silencieusement ignorée.
-- **Impact** : Crash au démarrage ou config partielle.
-- **Action** : Sortir la lecture de `security` hors du bloc `worker_gateway`.
+- **Résolution** : `sec = data["security"]` sorti du bloc `if "worker_gateway"`. Chaque section a son propre `if` indépendant. (commit `be8d2db`)
 
-### 3. `main.py:377` — `_cleanup_loop()` code mort
+### 3. `main.py:377` — `_cleanup_loop()` code mort ✅ Résolu
 - **Fichier** : `src/scrapower/coordinator/main.py`
-- **Lignes** : 377-386
-- **Problème** : `_cleanup_loop()` est définie mais jamais appelée. `_maintenance_loop()` fait déjà le cleanup.
-- **Impact** : Aucun (code mort inoffensif), mais confusion.
-- **Action** : Supprimer `_cleanup_loop()`.
+- **Résolution** : Fonction supprimée. `_maintenance_loop()` fait déjà `cleanup_expired()` toutes les 5 min. (commit `be8d2db`)
 
 ### 4. `main.py:37-38` — Variables globales `config` et `db`
 - **Fichier** : `src/scrapower/coordinator/main.py`
