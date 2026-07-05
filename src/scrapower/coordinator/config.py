@@ -150,6 +150,8 @@ def _apply_toml(config: Config, data: dict[str, Any]) -> None:
         config.task_accept_timeout_sec = wg.get(
             "task_accept_timeout_sec", config.task_accept_timeout_sec
         )
+
+    if "security" in data:
         sec = data["security"]
         config.max_anonymous_workers = sec.get(
             "max_anonymous_workers", config.max_anonymous_workers

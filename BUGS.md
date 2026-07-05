@@ -6,11 +6,10 @@
 
 ## 🔴 P0 — Critique
 
-### 1. `wasm.py` — WASM jamais exécuté (stub)
+### 1. `wasm.py` — WASM jamais exécuté (stub) ✅ Résolu
 - **Fichier** : `src/scrapower/worker/runtimes/wasm.py`
-- **Problème** : `execute_wasm()` charge le module via wasmtime (Engine, Store, Module, Memory) mais n'appelle **aucune fonction exportée**. Le « résultat » est un double SHA256 de l'input. Aucun code WASM n'est jamais exécuté.
-- **Impact** : Toute tâche `runtime=wasm` produit un résultat factice.
-- **Action** : Soit implémenter l'appel à `compute()`, soit supprimer le runtime WASM s'il n'est pas utilisé en production.
+- **Problème** : `execute_wasm()` chargeait le module sans appeler `compute()`. Résultat factice.
+- **Résolution** : Supprimé (commit `b986055`). Zéro tâche WASM en production. Préservé sur `archive/browser-worker`.
 
 ### 2. `config.py:153` — KeyError si sections TOML mal agencées
 - **Fichier** : `src/scrapower/coordinator/config.py`

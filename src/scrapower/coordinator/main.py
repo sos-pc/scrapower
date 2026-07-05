@@ -374,19 +374,6 @@ async def _maintenance_loop(task_service, log) -> None:
                 log.exception("cleanup failed")
 
 
-async def _cleanup_loop(task_service, log) -> None:
-    """Release expired tasks and their blob references every 5 minutes."""
-    while True:
-        await asyncio.sleep(300)
-        try:
-            cleaned = await task_service.cleanup_expired()
-            if cleaned:
-                log.info("cleanup completed", cleaned_tasks=cleaned)
-        except Exception:
-            log.exception("cleanup failed")
-
-
-# ──────────────────────────────────────────────────────────────
 # App
 # ──────────────────────────────────────────────────────────────
 app = FastAPI(

@@ -76,6 +76,50 @@
 
 ---
 
+## 🚧 v0.7.2 — NVIDIA Brev provider (JUIL 2026)
+
+Brev (`brev.nvidia.com`) fournit des sandboxes GPU à la demande sur AWS, GCP et
+Lambda Labs avec SSH complet. Pas de limite de temps d'exécution, prix du cloud
+standard. Modèle similaire à Kaggle (lancement → exécution → nettoyage).
+
+### Authentification
+- [ ] **Brev CLI login** — `brev login` (OAuth NVIDIA/KAS via `api.ngc.nvidia.com`)
+- [ ] **Token stocké** — `~/.brev/credentials.json` → `access_token` JWT + `refresh_token`
+- [ ] **Refresh automatique** — `GET api.ngc.nvidia.com/token` avec `sessionKey:deviceID`
+- [ ] **Pas de clé API `bak-*`** — feature cachée/post-acquisition, on utilise le token OAuth
+
+### BrevHarvester (WorkerProvider)
+- [ ] **`BrevHarvester`** — `src/scrapower/coordinator/harvester/brev.py`
+- [ ] **`refresh_quota()`** — crédits restants via l'API Brev (`GET /api/me` + org billing)
+- [ ] **`launch_worker()`** — `brev create worker-{ts} --type {gpu} -s @worker_startup.sh`
+- [ ] **`cleanup_stale()`** — `brev ls --json` + `brev delete` pour les instances terminées
+- [ ] **`status()`** — agrégation GPU type, workers actifs, coût estimé
+- [ ] **Mode B** — le worker télécharge `worker.py` au startup → pull/submit coordinator
+
+### Configuration comptes
+- [ ] **`BREV_ACCOUNTS`** env var — JSON `[{"email": "x", "org_id": "org-..."}]`
+- [ ] **`BREV_GPU_TYPE`** — type GPU par défaut (`g6.xlarge` L4 à $0.97/h)
+- [ ] **`BREV_ENABLED`** — toggle on/off
+- [ ] **Multi-comptes** — round-robin sur plusieurs orgs Brev
+
+### GPUs disponibles (API publique `api.brev.dev/v1/instance/types`)
+| GPU | Instance | VRAM | Prix/h | Provider |
+|-----|----------|------|--------|----------|
+| L4 | `g6.xlarge` | 22 GB | $0.97 | AWS |
+| T4 | `g4dn.xlarge` | 16 GB | $0.63 | AWS |
+| A10G | `g5.xlarge` | 22 GB | $1.21 | AWS |
+| L40S | `g6e.xlarge` | 44 GB | $2.23 | AWS |
+| RTX PRO 6000 | `g7e.2xlarge` | 48 GB | $4.04 | AWS |
+| A100 | `gpu_1x_a100_sxm4` | 80 GB | $2.39 | Lambda |
+| H100 | `gpu_1x_h100_pcie` | 80 GB | $3.95 | Lambda |
+
+### Intégration registry
+- [ ] **`AccountRegistry`** — nouveaux comptes `brev:{org_id}` avec `gpu_type` configurable
+- [ ] **`candidates_for_task()`** — tri par quota décroissant, support GPU type matching
+- [ ] **`/stats`** — nouvelle ligne Brev dans le dashboard
+
+---
+
 ## 🔮 v0.8 — Multi-workload & runtimes
 
 ### Tâches génériques (pas que transcription)
