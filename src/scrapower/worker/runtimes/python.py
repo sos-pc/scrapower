@@ -109,13 +109,3 @@ async def execute_python(
         stderr_str = "\n".join(stderr_lines)
 
     return output, output_hash, exit_code, stderr_str
-
-
-class PythonRuntime:
-    """Execute a Python script with JSON input, capture JSON output.
-
-    Same interface for pluggable use in WorkerLoop.
-    """
-
-    async def execute(self, executable: bytes, input_data: bytes) -> tuple[bytes, str, int, str]:
-        return await execute_python(executable, input_data)
