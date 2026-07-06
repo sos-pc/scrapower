@@ -23,11 +23,9 @@
 - **Fichier** : `src/scrapower/coordinator/main.py`
 - **Résolution** : Globales supprimées. Les 3 endpoints blob (`upload`, `download`, `check`) lisent `request.app.state`. (commit `79e93f0`)
 
-### 5. `ephemeral.py` — `workers_active` toujours à 0
-- **Fichier** : `src/scrapower/coordinator/harvester/ephemeral.py` + `accounts.py`
-- **Problème** : `Account.update_workers()` n'est **jamais appelé**. La condition `total_active >= queued` est toujours `0 >= N` → jamais vraie. La régulation de capacité est inopérante.
-- **Impact** : Le harvester tente toujours de lancer des workers même s'il y en a déjà assez. Atténué par les cooldowns des providers, mais gaspillage potentiel de quota.
-- **Action** : Appeler `update_workers()` dans le harvester après chaque lancement/cleanup.
+### 5. `ephemeral.py` — `workers_active` toujours à 0 ✅ Résolu
+- **Fichiers** : `ephemeral.py` + `accounts.py` + 3 providers
+- **Résolution** : `refresh()` appelle `registry.update_workers()` dans chaque provider. Kaggle utilise `len(_kernel_refs)`, Modal `len(_sandbox_ids)`, HF `SessionManager`. (commit `9a1eba6`)
 
 ### 6. `kaggle.py:315` — `return` dans la boucle `for`
 - **Fichier** : `src/scrapower/coordinator/harvester/kaggle.py`

@@ -1,4 +1,4 @@
-"""Kaggle Harvester — auto-start workers when tasks are waiting.
+"""Kaggle Harvester â auto-start workers when tasks are waiting.
 
 Uses kaggle CLI to create/run kernels on demand.
 Supports multiple accounts via KAGGLE_ACCOUNTS env var.
@@ -48,7 +48,7 @@ class KaggleHarvester(WorkerProvider):
                 return c
         raise FileNotFoundError("Kaggle notebook template not found")
 
-    # ── WorkerProvider interface ──────────────────────────────
+    # ââ WorkerProvider interface ââââââââââââââââââââââââââââââ
 
     async def refresh(self, registry) -> None:
         """Update per-account quota and active worker count in registry."""
@@ -83,7 +83,7 @@ class KaggleHarvester(WorkerProvider):
         """Delete dead kernels and sync local tracking."""
         await self._cleanup_old_kernels(registry)
 
-    # ── Internal ──────────────────────────────────────────────
+    # ââ Internal ââââââââââââââââââââââââââââââââââââââââââââââ
 
     async def _get_quota_for(self, account: Account) -> dict | None:
         try:
@@ -272,29 +272,3 @@ class KaggleHarvester(WorkerProvider):
         if cleaned:
             log.info("harvester cleanup: deleted %d kernels", cleaned)
 
-    async def _count_active_kernels(self, registry) -> int:
-        active = 0
-        for account in registry.by_provider("kaggle"):
-            try:
-                env = os.environ.copy()
-                env["KAGGLE_API_TOKEN"] = account.credentials["token"]
-                proc = await asyncio.create_subprocess_exec(
-                    KAGGLE_BIN,
-                    "kernels",
-                    "list",
-                    "-m",
-                    "--csv",
-                    "--page-size",
-                    "5",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    env=env,
-                )
-                stdout, _ = await proc.communicate()
-                if proc.returncode == 0:
-                    for line in stdout.decode().strip().split("\n")[1:]:
-                        if "scrapower-auto" in line and "RUNNING" in line:
-                            active += 1
-            except Exception:
-                log.debug("kaggle count active failed for %s", account.id)
-            return active
