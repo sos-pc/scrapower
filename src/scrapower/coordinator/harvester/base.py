@@ -2,27 +2,14 @@
 
 Chaque provider (Kaggle, Modal, HF Spaces) implémente cette interface.
 Le EphemeralHarvester interroge l'AccountRegistry directement pour
-décider quel compte lancer, puis appelle launch_worker(account).
+ décider quel compte lancer, puis appelle launch_worker(account).
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
 
 from ..accounts import Account
-
-
-@dataclass
-class ProviderStatus:
-    """Aggregate status for display (dashboard, stats). Not used for decisions."""
-
-    name: str
-    provider_type: str
-    gpu_type: str
-    remaining_pct: float  # best account's quota (indicative)
-    workers_active: int
-    quota_detail: dict | None = None
 
 
 class WorkerProvider(ABC):
@@ -36,8 +23,8 @@ class WorkerProvider(ABC):
     provider_name: str = ""  # set by subclass
 
     @abstractmethod
-    async def refresh_quota(self, registry) -> None:
-        """Update quota for all accounts of this provider in the registry."""
+    async def refresh(self, registry) -> None:
+        """Update quota and active worker count for all accounts in registry."""
         ...
 
     @abstractmethod
@@ -48,9 +35,4 @@ class WorkerProvider(ABC):
     @abstractmethod
     async def cleanup_stale(self, registry) -> None:
         """Clean up stale workers for all accounts of this provider."""
-        ...
-
-    @abstractmethod
-    async def status(self, registry) -> ProviderStatus:
-        """Aggregate status for display purposes."""
         ...

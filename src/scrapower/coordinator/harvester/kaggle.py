@@ -15,7 +15,7 @@ import tempfile
 import time
 
 from ..accounts import Account
-from .base import ProviderStatus, WorkerProvider
+from .base import WorkerProvider
 
 log = logging.getLogger(__name__)
 
@@ -50,8 +50,8 @@ class KaggleHarvester(WorkerProvider):
 
     # ── WorkerProvider interface ──────────────────────────────
 
-    async def refresh_quota(self, registry) -> None:
-        """Update per-account quota in registry from Kaggle API."""
+    async def refresh(self, registry) -> None:
+        """Update per-account quota and active worker count in registry."""
         for aid in self._account_ids:
             account = registry.get(aid)
             if not account or not account.enabled:
@@ -60,6 +60,7 @@ class KaggleHarvester(WorkerProvider):
             if q:
                 pct = min(100.0, q["remaining_h"] / q["total_h"] * 100)
                 registry.update_quota(aid, pct, q)
+            registry.update_workers(aid, len(self._kernel_refs))
 
     async def launch_worker(self, account: Account) -> bool:
         """Launch a Kaggle kernel on a specific account."""
@@ -81,22 +82,6 @@ class KaggleHarvester(WorkerProvider):
     async def cleanup_stale(self, registry) -> None:
         """Delete dead kernels and sync local tracking."""
         await self._cleanup_old_kernels(registry)
-        actual = await self._count_active_kernels(registry)
-        if len(self._kernel_refs) > actual:
-            self._kernel_refs = self._kernel_refs[-actual:] if actual > 0 else []
-
-    async def status(self, registry) -> ProviderStatus:
-        """Aggregate Kaggle status (indicative)."""
-        accounts = [registry.get(aid) for aid in self._account_ids if registry.get(aid)]
-        best_pct = max((a.remaining_pct for a in accounts if a.enabled), default=0.0)
-        return ProviderStatus(
-            name="kaggle",
-            provider_type="kaggle",
-            gpu_type="T4",
-            remaining_pct=best_pct,
-            workers_active=len(self._kernel_refs),
-            quota_detail={"accounts": len(accounts)},
-        )
 
     # ── Internal ──────────────────────────────────────────────
 

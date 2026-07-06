@@ -13,7 +13,7 @@ import time
 from typing import Any
 
 from ..accounts import Account
-from .base import ProviderStatus, WorkerProvider
+from .base import WorkerProvider
 
 log = logging.getLogger(__name__)
 
@@ -54,10 +54,12 @@ class ModalHarvester(WorkerProvider):
 
     # ── WorkerProvider interface ──────────────────────────────
 
-    async def refresh_quota(self, registry) -> None:
-        """Update per-account billing from Modal API."""
+    async def refresh(self, registry) -> None:
+        """Update per-account billing and active worker count."""
         now = time.time()
         if now - self._billing_last_check <= 600:
+            for aid in self._account_ids:
+                registry.update_workers(aid, len(self._sandbox_ids))
             return  # cache still fresh
         try:
             now_utc = datetime.datetime.now(datetime.timezone.utc)
@@ -82,6 +84,9 @@ class ModalHarvester(WorkerProvider):
             total_budget = self._budget_monthly * len(self._account_ids)
             used_pct = total_cost / total_budget * 100 if total_budget > 0 else 0
             log.info("modal billing: $%.2f / $%.0f (%.0f%%)", total_cost, total_budget, used_pct)
+            # Update workers_active after billing refresh
+            for aid in self._account_ids:
+                registry.update_workers(aid, len(self._sandbox_ids))
         except Exception:
             log.debug("modal billing refresh failed")
 
@@ -152,25 +157,6 @@ class ModalHarvester(WorkerProvider):
             self._save_state()
         except Exception:
             log.debug("modal cleanup stale failed")
-
-    async def status(self, registry) -> ProviderStatus:
-        """Aggregate Modal status (indicative)."""
-        accounts = [registry.get(aid) for aid in self._account_ids if registry.get(aid)]
-        best_pct = max((a.remaining_pct for a in accounts if a.enabled), default=0.0)
-        return ProviderStatus(
-            name="modal",
-            provider_type="modal",
-            gpu_type=self._gpu_type,
-            remaining_pct=best_pct,
-            workers_active=len(self._sandbox_ids),
-            quota_detail={
-                "accounts": len(accounts),
-                "budget_monthly_usd": self._budget_monthly,
-                "cost_per_hour": {"T4": 0.59, "L4": 0.80, "A10": 1.10, "L40S": 1.95}.get(
-                    self._gpu_type, 0.59
-                ),
-            },
-        )
 
     # ── Internal ──────────────────────────────────────────────
 

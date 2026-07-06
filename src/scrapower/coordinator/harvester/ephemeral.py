@@ -60,9 +60,9 @@ class EphemeralHarvester:
         # 1. Refresh quotas for all accounts via their providers
         for p in self._providers:
             try:
-                await p.refresh_quota(self._registry)
+                await p.refresh(self._registry)
             except Exception:
-                log.exception("harvester: refresh_quota failed for %s", type(p).__name__)
+                log.exception("harvester: refresh failed for %s", type(p).__name__)
 
         # 2. Cleanup stale workers (always runs, provider-wide)
         for p in self._providers:

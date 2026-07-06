@@ -19,12 +19,9 @@
 - **Fichier** : `src/scrapower/coordinator/main.py`
 - **Résolution** : Fonction supprimée. `_maintenance_loop()` fait déjà `cleanup_expired()` toutes les 5 min. (commit `be8d2db`)
 
-### 4. `main.py:37-38` — Variables globales `config` et `db`
+### 4. `main.py:37-38` — Variables globales `config` et `db` ✅ Résolu
 - **Fichier** : `src/scrapower/coordinator/main.py`
-- **Lignes** : 37-38
-- **Problème** : `config` et `db` déclarés comme variables globales, utilisés par les endpoints `/blobs`. Devraient être sur `app.state`.
-- **Impact** : Anti-pattern, risque en contexte multi-thread.
-- **Action** : Déplacer sur `app.state` (déjà fait pour `task_service`, `registry`, `providers`).
+- **Résolution** : Globales supprimées. Les 3 endpoints blob (`upload`, `download`, `check`) lisent `request.app.state`. (commit `79e93f0`)
 
 ### 5. `ephemeral.py` — `workers_active` toujours à 0
 - **Fichier** : `src/scrapower/coordinator/harvester/ephemeral.py` + `accounts.py`

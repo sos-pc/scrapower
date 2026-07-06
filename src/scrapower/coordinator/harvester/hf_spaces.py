@@ -34,7 +34,7 @@ from pathlib import Path
 import aiohttp
 from huggingface_hub import HfApi
 
-from .base import ProviderStatus, WorkerProvider
+from .base import WorkerProvider
 
 log = logging.getLogger(__name__)
 
@@ -82,9 +82,11 @@ class HuggingFaceHarvester(WorkerProvider):
 
     # -- WorkerProvider interface ------------------------------------
 
-    async def refresh_quota(self, registry) -> None:
-        """HF CPU is free and unlimited. Always 100%."""
+    async def refresh(self, registry) -> None:
+        """Update quota and active worker count for HF Spaces."""
         registry.update_quota(self._account_id, 100.0)
+        workers = self._session_manager.mode_b_active_count("hf-") if self._session_manager else 0
+        registry.update_workers(self._account_id, workers)
 
     async def launch_worker(self, account) -> bool:
         """Ensure the HF Space is running (deploy or wake)."""
@@ -122,25 +124,6 @@ class HuggingFaceHarvester(WorkerProvider):
     async def cleanup_stale(self, registry) -> None:
         """Nothing to clean — the worker manages its own lifecycle."""
         pass
-
-    async def status(self, registry) -> ProviderStatus:
-        """Aggregate status (indicative)."""
-        account = registry.get(self._account_id)
-        try:
-            rt = self._api.get_space_runtime(self._space_id)
-            stage = rt.stage
-        except Exception:
-            stage = "unknown"
-        return ProviderStatus(
-            name="hf",
-            provider_type="hf-spaces",
-            gpu_type="none",
-            remaining_pct=account.remaining_pct if account else 100.0,
-            workers_active=(
-                self._session_manager.mode_b_active_count("hf-") if self._session_manager else 0
-            ),
-            quota_detail={"stage": stage},
-        )
 
     # -- Internal: first deployment ---------------------------------
 
