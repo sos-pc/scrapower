@@ -241,11 +241,11 @@ class KaggleHarvester(WorkerProvider):
                         try:
                             last_run = parts[3] if len(parts) > 3 else ""
                             if last_run:
-                                from datetime import UTC, datetime
+                                from datetime import datetime, timezone
 
                                 run_dt = datetime.strptime(
                                     last_run.strip(), "%Y-%m-%d %H:%M:%S.%f"
-                                ).replace(tzinfo=UTC)
+                                ).replace(tzinfo=timezone.utc)
                                 if (now - run_dt.timestamp()) > 3600:
                                     should_delete = True
                         except (ValueError, IndexError):
@@ -271,4 +271,3 @@ class KaggleHarvester(WorkerProvider):
                 log.debug("kaggle cleanup failed for account %s", account.id)
         if cleaned:
             log.info("harvester cleanup: deleted %d kernels", cleaned)
-
