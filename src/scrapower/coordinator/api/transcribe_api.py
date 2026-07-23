@@ -38,6 +38,17 @@ WHISPER_RUNNER_HASH = _compute_whisper_hash()
 
 log = logging.getLogger(__name__)
 
+# Keep strong references to background prepare tasks: asyncio only holds a weak
+# reference to the task, so without this the GC can collect (and cancel) an
+# in-flight download, silently stranding the task in PENDING.
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _spawn(coro) -> None:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
 
 @router.post("")
 async def transcribe(request: Request):
@@ -90,7 +101,7 @@ async def transcribe(request: Request):
             url, model, language, fmt, cookies_hash, coordinator_url, db, config.blob_dir
         )
 
-    asyncio.create_task(task_service.run_prepare(task_id, _prepare, log))
+    _spawn(task_service.run_prepare(task_id, _prepare, log))
 
     return JSONResponse(
         {
@@ -231,7 +242,7 @@ async def batch_transcribe(request: Request):
                 url, model, language, fmt, cookies_hash, coordinator_url, db, config.blob_dir
             )
 
-        asyncio.create_task(task_service.run_prepare(task_id, _prepare, log))
+        _spawn(task_service.run_prepare(task_id, _prepare, log))
         tasks.append({"task_id": task_id, "url": v["url"], "title": v.get("title", "")})
 
     return JSONResponse(

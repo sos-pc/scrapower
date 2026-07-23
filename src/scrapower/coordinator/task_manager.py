@@ -328,9 +328,12 @@ class TaskManager:
                 "UPDATE blobs SET ref_count = ref_count + 1 WHERE hash = ?", (output_hash,)
             )
             if cursor.rowcount == 0:
-                # Blob not found. Return False so the transaction rolls back
-                # (the UPDATE tasks above is discarded). Task stays ASSIGNED;
-                # requeue_stale will recover it after deadline_ms.
+                # Blob not found. Roll back so the UPDATE tasks (output_hash)
+                # above is discarded — otherwise it lingers uncommitted and
+                # gets flushed by the next commit(), leaving a ghost result on
+                # an ASSIGNED task. Task stays ASSIGNED; requeue_stale recovers
+                # it after deadline_ms.
+                await self._db.rollback()
                 logging.getLogger(__name__).warning(
                     "complete rejected: blob not found task=%s hash=%s",
                     task_id[:12],

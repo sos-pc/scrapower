@@ -60,7 +60,12 @@ class KaggleHarvester(WorkerProvider):
             if q:
                 pct = min(100.0, q["remaining_h"] / q["total_h"] * 100)
                 registry.update_quota(aid, pct, q)
-            registry.update_workers(aid, len(self._kernel_refs))
+            # Count only this account's kernels — kernel_id is "username/...".
+            # (Previously assigned the provider-wide total to every account,
+            # so the harvester thought it had N× the workers and under-launched.)
+            username = account.credentials.get("username", "")
+            n = sum(1 for ref in self._kernel_refs if ref.startswith(f"{username}/"))
+            registry.update_workers(aid, n)
 
     async def launch_worker(self, account: Account) -> bool:
         """Launch a Kaggle kernel on a specific account."""

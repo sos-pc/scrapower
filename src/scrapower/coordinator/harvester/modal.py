@@ -54,12 +54,24 @@ class ModalHarvester(WorkerProvider):
 
     # ── WorkerProvider interface ──────────────────────────────
 
+    def _active_for(self, aid: str, registry) -> int:
+        """Count sandboxes belonging to this account only.
+
+        Sandboxes are keyed by their creating token in _sandbox_tokens;
+        match on the account's token_id. (Previously every account got the
+        provider-wide total, so the harvester under-launched workers.)"""
+        account = registry.get(aid)
+        tid = account.credentials.get("token_id", "") if account else ""
+        return sum(
+            1 for sid in self._sandbox_ids if self._sandbox_tokens.get(sid, ("", ""))[0] == tid
+        )
+
     async def refresh(self, registry) -> None:
         """Update per-account billing and active worker count."""
         now = time.time()
         if now - self._billing_last_check <= 600:
             for aid in self._account_ids:
-                registry.update_workers(aid, len(self._sandbox_ids))
+                registry.update_workers(aid, self._active_for(aid, registry))
             return  # cache still fresh
         try:
             now_utc = datetime.datetime.now(datetime.timezone.utc)
@@ -86,7 +98,7 @@ class ModalHarvester(WorkerProvider):
             log.info("modal billing: $%.2f / $%.0f (%.0f%%)", total_cost, total_budget, used_pct)
             # Update workers_active after billing refresh
             for aid in self._account_ids:
-                registry.update_workers(aid, len(self._sandbox_ids))
+                registry.update_workers(aid, self._active_for(aid, registry))
         except Exception:
             log.debug("modal billing refresh failed")
 

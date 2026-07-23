@@ -188,24 +188,6 @@ class TaskService:
             )
         return count
 
-    async def requeue_for_worker(self, worker_id: str) -> int:
-        """Requeue all tasks assigned to a dead worker.
-
-        Bridge between zombie_watchdog (session lifecycle) and
-        requeue_stale (task lifecycle). Called immediately when
-        a WS session is detected as dead - no need to wait for
-        the periodic requeue_stale scan (up to 90s).
-        """
-        import time as _time
-
-        now = _time.time()
-        cursor = await self._tm._db.execute(
-            "UPDATE tasks SET state = ?, updated_at = ? WHERE state = ? AND assigned_worker_id = ?",
-            (TaskState.TIMEOUT, str(now), TaskState.ASSIGNED, worker_id),
-        )
-        await self._tm._db.commit()
-        return cursor.rowcount
-
     async def cleanup_expired(
         self, completed_ttl_sec: float = 2592000, pending_ttl_sec: float = 3600
     ) -> int:
@@ -248,7 +230,7 @@ class TaskService:
         # PENDING tasks stuck > pending_ttl_sec → FAILED
         cursor = await self._tm._db.execute(
             """UPDATE tasks SET state = 'failed',
-                   output_hash = 'download lost after coordinator restart',
+                   error = 'download lost after coordinator restart',
                    updated_at = ?
                WHERE state = 'pending' AND created_at < ?""",
             (str(now), str(now - pending_ttl_sec)),
