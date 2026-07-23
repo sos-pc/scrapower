@@ -83,14 +83,12 @@ class ModalHarvester(WorkerProvider):
             # that a fresh monthly credit already covers).
             start = now_utc.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
             total_cost = 0.0
-            per_account_cost: dict[str, float] = {}
             for aid in self._account_ids:
                 account = registry.get(aid)
                 if not account:
                     continue
                 cost = await self._billing_for_account(account, start, now_utc)
                 total_cost += cost
-                per_account_cost[aid] = cost
                 # Per-account remaining: budget - cost incurred this calendar month
                 remaining = max(0.0, self._budget_monthly - cost)
                 pct = remaining / self._budget_monthly * 100

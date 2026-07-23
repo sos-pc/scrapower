@@ -161,7 +161,7 @@ class TaskManager:
         return task
 
     async def get(self, task_id: str) -> Task | None:
-        cursor = cursor = await self._db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
+        cursor = await self._db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
         row = await cursor.fetchone()
         if row is None:
             return None
@@ -188,7 +188,7 @@ class TaskManager:
         )
 
     async def get_queued(self, limit: int = 100) -> list[Task]:
-        cursor = cursor = await self._db.execute(
+        cursor = await self._db.execute(
             "SELECT * FROM tasks WHERE state = ? ORDER BY created_at ASC LIMIT ?",
             (TaskState.QUEUED, limit),
         )
@@ -277,7 +277,7 @@ class TaskManager:
         """Assign a task to a worker. Returns (success, assignment_token)."""
         token = uuid.uuid4().hex
         now = time.time()
-        cursor = cursor = await self._db.execute(
+        cursor = await self._db.execute(
             """UPDATE tasks SET state = ?, current_assignment_token = ?,
                assigned_worker_id = ?, assigned_at = ?, updated_at = ?
                WHERE id = ? AND state = ?""",
