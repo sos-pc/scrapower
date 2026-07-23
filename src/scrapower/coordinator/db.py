@@ -10,7 +10,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS blobs (
     hash       TEXT PRIMARY KEY,
     size       INTEGER NOT NULL,
-    ref_count  INTEGER NOT NULL DEFAULT 1,
+    ref_count  INTEGER NOT NULL DEFAULT 0,
     is_checkpoint BOOLEAN NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

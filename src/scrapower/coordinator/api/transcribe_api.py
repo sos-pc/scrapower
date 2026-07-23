@@ -155,6 +155,16 @@ async def update_cookies(request: Request):
     if not await blob_exists(db, config.blob_dir, new_hash):
         raise HTTPException(404, {"error": "Blob not found in store. Upload via PUT /blobs first."})
 
+    # Pin the cookies blob: workers fetch it by hash embedded in the task
+    # input (not via ref_count), so give it a standing reference + checkpoint
+    # flag so GC never reclaims the active cookies. Idempotent per hash.
+    await db.execute(
+        "UPDATE blobs SET ref_count = ref_count + 1, is_checkpoint = 1 "
+        "WHERE hash = ? AND is_checkpoint = 0",
+        (new_hash,),
+    )
+    await db.commit()
+
     os.environ["SCRAPOWER_YT_COOKIES_HASH"] = new_hash
     log.info("cookies hash updated to %s", new_hash[:12])
 

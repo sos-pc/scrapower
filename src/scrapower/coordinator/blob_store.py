@@ -40,36 +40,60 @@ async def store_blob(
     data: bytes,
     is_checkpoint: bool = False,
 ) -> str:
-    """Store a blob, return its SHA256 hash. If already exists, bump ref_count."""
+    """Store a blob (content-addressed, idempotent); return its SHA256 hash.
+
+    References are owned by *tasks* (ref_count is bumped in
+    TaskManager.create/complete and TaskService.set_queued) and by explicit
+    pins (is_checkpoint). Uploading does NOT take a reference: a new blob is
+    registered at ref_count=0 and re-uploading an existing blob is a no-op.
+    This keeps ``ref_count == (task references + pin)`` so it reliably reaches
+    0 once nothing points at the blob, letting run_gc() reclaim it. (Storing
+    at ref_count=1 was the historical leak: nothing ever released that ref.)
+    """
     hash_hex = compute_hash(data)
     file_path = _blob_path(blob_dir, hash_hex)
 
-    # Check if already in DB
-    cursor = await db.execute("SELECT hash, ref_count FROM blobs WHERE hash = ?", (hash_hex,))
+    cursor = await db.execute("SELECT hash FROM blobs WHERE hash = ?", (hash_hex,))
     existing = await cursor.fetchone()
-
     if existing:
-        await db.execute(
-            "UPDATE blobs SET ref_count = ref_count + 1 WHERE hash = ?",
-            (hash_hex,),
-        )
-        await db.commit()
-        return hash_hex
+        return hash_hex  # already stored — idempotent, no ref bump
 
-    # Write to disk
+    # Write to disk atomically (temp + rename)
     file_path.parent.mkdir(parents=True, exist_ok=True)
-    # Use atomic write: write to temp, then rename
     tmp_path = file_path.with_suffix(file_path.suffix + ".tmp")
     tmp_path.write_bytes(data)
     os.replace(tmp_path, file_path)
 
-    # Register in DB
+    # Register at ref_count=0 — unreferenced until a task (or pin) adopts it.
     await db.execute(
-        "INSERT INTO blobs (hash, size, is_checkpoint) VALUES (?, ?, ?)",
+        "INSERT INTO blobs (hash, size, ref_count, is_checkpoint) VALUES (?, ?, 0, ?)",
         (hash_hex, len(data), 1 if is_checkpoint else 0),
     )
     await db.commit()
     return hash_hex
+
+
+async def reconcile_ref_counts(db: aiosqlite.Connection) -> None:
+    """Recompute every blob's ref_count from the references that actually exist.
+
+    ``ref_count = (# tasks referencing it via executable/input/output_hash)
+                 + (1 if pinned via is_checkpoint else 0)``
+
+    Idempotent and safe to run at every startup. It repairs drift from the
+    historical double-counting bug (blobs stuck at ref_count>=1 forever, so
+    run_gc never reclaimed them) — after reconciliation, orphaned blobs drop
+    to 0 and become eligible for GC once past their TTL.
+    """
+    await db.execute(
+        """
+        UPDATE blobs SET ref_count =
+            (SELECT COUNT(*) FROM tasks WHERE tasks.executable_hash = blobs.hash)
+          + (SELECT COUNT(*) FROM tasks WHERE tasks.input_hash = blobs.hash)
+          + (SELECT COUNT(*) FROM tasks WHERE tasks.output_hash = blobs.hash)
+          + (CASE WHEN is_checkpoint = 1 THEN 1 ELSE 0 END)
+        """
+    )
+    await db.commit()
 
 
 async def get_blob(
@@ -91,36 +115,6 @@ async def blob_exists(
 ) -> bool:
     """Check if a blob exists."""
     return _blob_path(blob_dir, hash_hex).exists()
-
-
-async def delete_blob(
-    db: aiosqlite.Connection,
-    blob_dir: str,
-    hash_hex: str,
-) -> bool:
-    """Decrement ref_count. If 0, delete from disk and DB. Returns True if fully deleted."""
-    cursor = await db.execute("SELECT ref_count FROM blobs WHERE hash = ?", (hash_hex,))
-    row = await cursor.fetchone()
-    if not row:
-        return False
-
-    new_count = row["ref_count"] - 1
-    if new_count <= 0:
-        await db.execute("DELETE FROM blobs WHERE hash = ?", (hash_hex,))
-        file_path = _blob_path(blob_dir, hash_hex)
-        try:
-            file_path.unlink()
-        except FileNotFoundError:
-            pass
-        await db.commit()
-        return True
-    else:
-        await db.execute(
-            "UPDATE blobs SET ref_count = ? WHERE hash = ?",
-            (new_count, hash_hex),
-        )
-        await db.commit()
-        return False
 
 
 async def run_gc(

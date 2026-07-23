@@ -195,14 +195,23 @@ async def lifespan(app: FastAPI):
     # Seed blob store with whisper_runner.py so tasks can reference it
     from pathlib import Path as _Path
 
+    from .blob_store import reconcile_ref_counts as _reconcile
     from .blob_store import store_blob as _store_blob
 
     whisper_path = _Path(__file__).parent.parent / "worker" / "runtimes" / "whisper_runner.py"
     if whisper_path.exists():
         whisper_hash = await _store_blob(db, config.blob_dir, whisper_path.read_bytes())
+        # Pin the worker executable: every whisper task references it, so it
+        # must survive GC even during idle periods with no active tasks.
+        await db.execute("UPDATE blobs SET is_checkpoint = 1 WHERE hash = ?", (whisper_hash,))
+        await db.commit()
         log.info("whisper runner seeded", hash=whisper_hash[:12])
     else:
         log.warning("whisper runner not found at %s", whisper_path)
+
+    # Repair historical ref_count drift so GC can reclaim orphaned blobs
+    # (ref_count = live task references + pin). Idempotent, cheap at startup.
+    await _reconcile(db)
 
     # VPN pre-flight check (retry - VPN container may still be booting)
     vpn_proxy = os.environ.get("SCRAPOWER_VPN_PROXY", "")
