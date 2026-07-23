@@ -101,7 +101,7 @@ def bundle() -> None:
 
     output = HEADER + "\n".join(sections) + MODAL_FOOTER
     DST.write_text(output, encoding="utf-8")
-    print(f"Bundled {len(files)} modules → {DST} ({len(output)} bytes)")
+    print(f"Bundled {len(files)} modules -> {DST} ({len(output)} bytes)")
 
 
 if __name__ == "__main__":

@@ -73,6 +73,10 @@ class WorkerLoop:
         self._log_lines.clear()
         return chunk
 
+    def _auth_headers(self) -> dict:
+        """API-key header sent on every authenticated worker endpoint."""
+        return {"X-API-Key": self.api_key} if self.api_key else {}
+
     # -- Task execution --------------------------------------------------
 
     async def _run_task(
@@ -99,6 +103,7 @@ class WorkerLoop:
                         "assignment_token": self._log_token,
                         "logs": logs,
                     },
+                    headers=self._auth_headers(),
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as r:
                     if r.status == 200:
@@ -136,7 +141,7 @@ class WorkerLoop:
                                 "capabilities": self.capabilities,
                                 "logs": logs_chunk,
                             },
-                            headers=({"X-API-Key": self.api_key} if self.api_key else {}),
+                            headers=self._auth_headers(),
                             timeout=aiohttp.ClientTimeout(total=10),
                         ) as r:
                             if r.status >= 500:
@@ -243,6 +248,7 @@ class WorkerLoop:
                                     },
                                 },
                             },
+                            headers=self._auth_headers(),
                             timeout=aiohttp.ClientTimeout(total=10),
                         ) as r:
                             result = await r.json()

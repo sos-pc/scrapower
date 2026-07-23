@@ -18,6 +18,7 @@ Flow:
 from __future__ import annotations
 
 import logging
+import re
 import time
 
 from fastapi import Request
@@ -28,6 +29,11 @@ from ..task_manager import TaskState
 from .session import SessionManager
 
 log = logging.getLogger(__name__)
+
+# Worker/task ids get used in log file paths, so they must be filesystem-safe
+# to prevent path traversal (e.g. task_id="../../etc/cron.d/x"). Valid ids are
+# uuid hex ("a1b2...") or worker ids like "kaggle-ab12cd34" — both match this.
+_SAFE_ID = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
 
 # ── Rate limiting ──────────────────────────────────────────────
 # Per-worker_id sliding window. Every worker must authenticate
@@ -183,6 +189,12 @@ async def submit(request: Request, sessions: SessionManager):
             status_code=400,
         )
 
+    if not verify_api_key(request):
+        return JSONResponse(
+            {"type": "error", "code": "UNAUTHORIZED", "message": "API key required - add X-API-Key header"},
+            status_code=401,
+        )
+
     task_id = body.get("task_id", "")
     assignment_token = body.get("assignment_token", "")
     output_hash = body.get("result", {}).get("output_hash", "")
@@ -213,14 +225,33 @@ async def submit(request: Request, sessions: SessionManager):
     if stderr_info:
         await _save_worker_logs(task_id, stderr_info)
 
-    # Reject empty/error results — mark TIMEOUT so they requeue
+    # Reject empty/error results — mark TIMEOUT so they requeue.
+    # Verify the assignment_token first: only the worker that holds the
+    # current assignment may force its own task back into the queue.
     if not output_hash or status != 0:
+        task = await task_service.get(task_id)
+        if not task or not assignment_token or task.current_assignment_token != assignment_token:
+            log.warning(
+                "mode-b submit: error result with invalid/missing token, ignoring: task=%s",
+                task_id[:12],
+            )
+            return JSONResponse(
+                {
+                    "type": "submit_ack",
+                    "task_id": task_id,
+                    "accepted": False,
+                    "reason": "invalid_token",
+                },
+                status_code=403,
+            )
         log.warning(
             "mode-b submit: empty/error result, marking TIMEOUT: task=%s exit_code=%s",
             task_id[:12],
             status,
         )
-        await task_service._tm.transition(task_id, TaskState.TIMEOUT)
+        await task_service._tm.transition(
+            task_id, TaskState.TIMEOUT, assignment_token=assignment_token
+        )
         return JSONResponse(
             {
                 "type": "submit_ack",
@@ -273,9 +304,15 @@ async def _touch_task(task_service, task_id: str, prefix: str = "") -> None:
 
 
 async def _save_worker_logs(task_id: str, stderr: str, prefix: str = "submit"):
-    """Save worker stderr to a log file for debugging."""
-    import os
+    """Save worker stderr to a log file for debugging.
+
+    ``task_id`` becomes the log filename, so it must be filesystem-safe:
+    reject anything that could escape the log directory (path traversal)."""
     from pathlib import Path
+
+    if not task_id or not _SAFE_ID.match(task_id):
+        log.warning("refusing to save logs for unsafe id=%r", str(task_id)[:40])
+        return
 
     log_dir = Path("data/logs")
     log_dir.mkdir(parents=True, exist_ok=True)

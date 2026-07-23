@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from ..security import verify_api_key
 from .http_handler import _save_worker_logs, pull, submit
 from .session import SessionManager
 
@@ -52,6 +53,12 @@ async def worker_heartbeat(request: Request):
         return JSONResponse(
             {"type": "error", "code": "INVALID_MESSAGE", "message": "Expected type=heartbeat"},
             status_code=400,
+        )
+
+    if not verify_api_key(request):
+        return JSONResponse(
+            {"type": "error", "code": "UNAUTHORIZED", "message": "API key required - add X-API-Key header"},
+            status_code=401,
         )
 
     worker_id = body.get("worker_id", "unknown")
