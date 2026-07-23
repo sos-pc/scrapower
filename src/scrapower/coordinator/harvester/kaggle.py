@@ -1,4 +1,4 @@
-"""Kaggle Harvester â auto-start workers when tasks are waiting.
+"""Kaggle Harvester - auto-start workers when tasks are waiting.
 
 Uses kaggle CLI to create/run kernels on demand.
 Supports multiple accounts via KAGGLE_ACCOUNTS env var.
@@ -48,7 +48,7 @@ class KaggleHarvester(WorkerProvider):
                 return c
         raise FileNotFoundError("Kaggle notebook template not found")
 
-    # ââ WorkerProvider interface ââââââââââââââââââââââââââââââ
+    # -- WorkerProvider interface --
 
     async def refresh(self, registry) -> None:
         """Update per-account quota and active worker count in registry."""
@@ -83,7 +83,7 @@ class KaggleHarvester(WorkerProvider):
         """Delete dead kernels and sync local tracking."""
         await self._cleanup_old_kernels(registry)
 
-    # ââ Internal ââââââââââââââââââââââââââââââââââââââââââââââ
+    # -- Internal --
 
     async def _get_quota_for(self, account: Account) -> dict | None:
         try:
