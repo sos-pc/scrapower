@@ -75,7 +75,13 @@ class ModalHarvester(WorkerProvider):
             return  # cache still fresh
         try:
             now_utc = datetime.datetime.now(datetime.UTC)
-            start = now_utc - datetime.timedelta(days=30)
+            # Modal's $/month free credit resets on the calendar month, not on a
+            # rolling 30-day window (verified empirically: accounts showing 100%
+            # credit on Modal's own dashboard had $0 spend since day 1 of the
+            # current UTC month, but nonzero spend in the trailing 30 days from
+            # late in the *previous* month — a rolling window double-counts spend
+            # that a fresh monthly credit already covers).
+            start = now_utc.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
             total_cost = 0.0
             per_account_cost: dict[str, float] = {}
             for aid in self._account_ids:
@@ -85,11 +91,11 @@ class ModalHarvester(WorkerProvider):
                 cost = await self._billing_for_account(account, start, now_utc)
                 total_cost += cost
                 per_account_cost[aid] = cost
-                # Per-account remaining: budget - cost
+                # Per-account remaining: budget - cost incurred this calendar month
                 remaining = max(0.0, self._budget_monthly - cost)
                 pct = remaining / self._budget_monthly * 100
                 registry.update_quota(
-                    aid, pct, {"cost_30d": round(cost, 2), "budget": self._budget_monthly}
+                    aid, pct, {"cost_mtd": round(cost, 2), "budget": self._budget_monthly}
                 )
             self._billing_cost_cached = total_cost
             self._billing_last_check = now
