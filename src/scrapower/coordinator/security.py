@@ -42,7 +42,7 @@ def _log_audit(event: str, request: Request, **extra) -> None:
 
 def verify_api_key(request: Request) -> bool:
     """Check if request has valid API key in header or query param."""
-    token = request.headers.get("X-API-Key", "")  # Header only — query params leak in logs
+    token = request.headers.get("X-API-Key", "")  # Header only - query params leak in logs
     if not token or not API_KEY:
         return False
     # Constant-time comparison (prevents timing side-channel)

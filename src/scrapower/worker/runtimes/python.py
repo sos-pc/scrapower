@@ -78,7 +78,7 @@ async def execute_python(
             stdout_data = await asyncio.wait_for(
                 proc.stdout.read(), timeout=STDERR_READER_TIMEOUT_SEC
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             proc.kill()
             stdout_data = b""
             if log_fn:

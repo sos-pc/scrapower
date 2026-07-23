@@ -191,7 +191,11 @@ async def submit(request: Request, sessions: SessionManager):
 
     if not verify_api_key(request):
         return JSONResponse(
-            {"type": "error", "code": "UNAUTHORIZED", "message": "API key required - add X-API-Key header"},
+            {
+                "type": "error",
+                "code": "UNAUTHORIZED",
+                "message": "API key required - add X-API-Key header",
+            },
             status_code=401,
         )
 

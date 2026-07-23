@@ -74,7 +74,7 @@ class ModalHarvester(WorkerProvider):
                 registry.update_workers(aid, self._active_for(aid, registry))
             return  # cache still fresh
         try:
-            now_utc = datetime.datetime.now(datetime.timezone.utc)
+            now_utc = datetime.datetime.now(datetime.UTC)
             start = now_utc - datetime.timedelta(days=30)
             total_cost = 0.0
             per_account_cost: dict[str, float] = {}

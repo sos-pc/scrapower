@@ -104,7 +104,8 @@ def main() -> None:
         import torch
 
         print(
-            f"torch {torch.__version__}, CUDA {torch.version.cuda}, cuDNN {torch.backends.cudnn.version()}",
+            f"torch {torch.__version__}, CUDA {torch.version.cuda}, "
+            f"cuDNN {torch.backends.cudnn.version()}",
             file=sys.stderr,
         )
         print(f"torch.cuda.is_available={torch.cuda.is_available()}", file=sys.stderr)
@@ -123,7 +124,8 @@ def main() -> None:
         import ctranslate2
 
         print(
-            f"ctranslate2 {ctranslate2.__version__}, CUDA devices={ctranslate2.get_cuda_device_count()}",
+            f"ctranslate2 {ctranslate2.__version__}, "
+            f"CUDA devices={ctranslate2.get_cuda_device_count()}",
             file=sys.stderr,
         )
     except Exception as _e:

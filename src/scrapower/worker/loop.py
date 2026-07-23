@@ -8,7 +8,6 @@ Auto-stops after idle timeout to save resources.
 from __future__ import annotations
 
 import asyncio
-import json as _json
 import time
 from typing import Any
 

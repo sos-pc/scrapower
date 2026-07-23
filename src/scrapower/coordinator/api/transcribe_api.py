@@ -288,7 +288,7 @@ async def _extract_playlist_urls(
         )
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             proc.kill()
             raise HTTPException(500, {"error": "Playlist extraction timed out"})
 

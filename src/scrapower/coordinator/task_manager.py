@@ -128,7 +128,7 @@ class TaskManager:
             created_at=str(now),
             updated_at=str(now),
         )
-        cursor = await self._db.execute(
+        await self._db.execute(
             """INSERT INTO tasks (id, client_id, state, definition_json, retries,
                executable_hash, input_hash, runtime, gpu_required, deadline_ms,
                max_retries, task_type, requirements_json, created_at, updated_at)

@@ -7,7 +7,7 @@ This middleware adds the necessary CORS headers.
 
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 # Allowed origins for CORS (wildcard for public embed, restrict in production)
 ALLOWED_ORIGINS = ["*"]

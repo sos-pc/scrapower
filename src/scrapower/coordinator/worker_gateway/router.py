@@ -57,7 +57,11 @@ async def worker_heartbeat(request: Request):
 
     if not verify_api_key(request):
         return JSONResponse(
-            {"type": "error", "code": "UNAUTHORIZED", "message": "API key required - add X-API-Key header"},
+            {
+                "type": "error",
+                "code": "UNAUTHORIZED",
+                "message": "API key required - add X-API-Key header",
+            },
             status_code=401,
         )
 

@@ -13,6 +13,7 @@ import logging
 import os
 import tempfile
 import time
+from datetime import UTC
 
 from ..accounts import Account
 from .base import WorkerProvider
@@ -246,11 +247,11 @@ class KaggleHarvester(WorkerProvider):
                         try:
                             last_run = parts[3] if len(parts) > 3 else ""
                             if last_run:
-                                from datetime import datetime, timezone
+                                from datetime import datetime
 
                                 run_dt = datetime.strptime(
                                     last_run.strip(), "%Y-%m-%d %H:%M:%S.%f"
-                                ).replace(tzinfo=timezone.utc)
+                                ).replace(tzinfo=UTC)
                                 if (now - run_dt.timestamp()) > 3600:
                                     should_delete = True
                         except (ValueError, IndexError):

@@ -74,7 +74,8 @@ def _download_audio(url, workdir, cookies_path=None):
                 subprocess.run(args_no_cookies, check=True, capture_output=True, timeout=600)
             except subprocess.CalledProcessError as e2:
                 raise DownloadError(
-                    f"yt-dlp failed (rc={e2.returncode}): {e2.stderr.decode()[-500:] if e2.stderr else 'no stderr'}"
+                    f"yt-dlp failed (rc={e2.returncode}): "
+                    f"{e2.stderr.decode()[-500:] if e2.stderr else 'no stderr'}"
                 )
         else:
             raise DownloadError(f"yt-dlp failed (rc={e.returncode}): {stderr}")

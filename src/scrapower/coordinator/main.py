@@ -10,9 +10,7 @@ import json
 import logging
 import os
 from contextlib import asynccontextmanager
-from pathlib import Path
 
-import aiosqlite
 import structlog
 import uvicorn
 from fastapi import Depends, FastAPI, Request
