@@ -3,8 +3,9 @@
 ## Overview
 
 Scrapower is a distributed computing aggregator that dispatches typed tasks
-(whisper, wasm, python, fetch) to ephemeral GPU workers (Kaggle, Modal) via
-an HTTP pull protocol. A quota-based harvester picks the least-used provider.
+(whisper transcription, run via the `python` runtime) to ephemeral GPU workers
+(Kaggle, Modal) via an HTTP pull protocol. A quota-based harvester picks the
+least-used provider.
 
 ```
 Client ──POST /tasks {type, requirements}──→ Coordinator (Oracle)
@@ -15,9 +16,8 @@ Client ──POST /tasks {type, requirements}──→ Coordinator (Oracle)
                                                   │
                                                   ├─ Task matching: _match_capabilities()
                                                   ├─ Blob store (SHA-256 content-addressed)
-                                                  ├─ SQLite (tasks, blobs, sessions)
-                                                  ├─ WireGuard homelab VPN (SOCKS5 proxy)
-                                                  └─ Reactive fallback (worker DL fail → coordinator DL)
+                                                  ├─ SQLite (tasks, blobs)
+                                                  └─ WireGuard homelab VPN (SOCKS5 proxy)
 ```
 
 ## Protocol: Mode B (HTTP pull/submit) — PRIMARY
@@ -40,11 +40,16 @@ Worker                              Coordinator
 
 The `exit_code` controls the flow:
 - `0` → success → COMPLETED
-- `1` → general error → retry
-- `2` → DOWNLOAD_FAILED → coordinator fallback (download audio) → retry
+- non-zero → error → task requeued (TIMEOUT → QUEUED) until max retries
 
-Mode A (WebSocket push) is retained for future browser workers.
-Toggle via `SCRAPOWER_WS_ASSIGN_ENABLED`.
+> The worker still emits `exit_code=2` on a download failure (`DownloadError`),
+> but the coordinator currently treats every non-zero code the same way: mark
+> TIMEOUT and retry. The "reactive fallback" (coordinator downloads the audio
+> itself and requeues with an `audio_hash`) is **not implemented** — workers
+> always fetch audio themselves via the WireGuard SOCKS5 proxy.
+
+There is no WebSocket/Mode A path in the code: Mode B (HTTP pull) is the only
+protocol. `/worker/ws` and `SCRAPOWER_WS_ASSIGN_ENABLED` no longer exist.
 
 ## Task Types & Matching
 
@@ -116,14 +121,13 @@ PENDING → DOWNLOADING → QUEUED → ASSIGNED → COMPLETED
 7. Client polls GET /results/{task_id} → transcript
 
 If download fails (exit_code=2):
-  → Coordinator fallback: download audio via homelab VPN
-  → Store as blob → task requeued with audio_hash
-  → Worker retries with blob (no internet needed)
+  → Worker submit is rejected, task marked TIMEOUT → requeued
+  → Retried on the next available worker (max 3 retries → FAILED)
 ```
 
-> **Note**: The coordinator-side download is a TEMPORARY BANDAGE.
-> Target: workers always download themselves via WireGuard.
-> Remove fallback once WG is confirmed stable on all workers.
+> **Note**: There is no coordinator-side audio download. Workers always fetch
+> audio themselves through the homelab WireGuard SOCKS5 proxy. A download
+> failure simply retries on another worker.
 
 ## Harvester (EphemeralHarvester)
 
@@ -148,11 +152,10 @@ A Kaggle account at 93% runs before a Modal account at 80%.
 
 ### WorkerProvider interface
 
-- `remaining_pct()` — quota % (0-100), cross-platform comparable
-- `has_quota()` — above minimum threshold
-- `launch_worker()` — creates a worker
-- `cleanup_stale()` — removes dead workers
-- `status()` — returns ProviderStatus
+- `refresh(registry)` — update each account's quota % and active-worker count
+- `launch_worker(account)` — launch a worker on a specific account
+- `cleanup_stale(registry)` — remove dead workers
+- `ensure_running(account)` — (persistent providers, e.g. HF) deploy or wake
 
 ### KaggleHarvester
 
@@ -216,15 +219,20 @@ PUT  /blobs        → hash = SHA-256(data)
 GET  /blobs/{hash} → data
 ```
 
-Ref_count incremented on task reference, decremented on cleanup.
-GC deletes blobs at ref_count=0.
+`ref_count` counts live references: uploads register a blob at 0, tasks take a
+reference in create/queue/complete and release it in cleanup_expired. Blobs
+referenced implicitly (hash embedded in a task input, not via ref_count) — the
+seeded whisper executable and the active YouTube cookies — are **pinned**
+(`is_checkpoint`, standing +1). GC deletes blobs at ref_count=0 past their TTL;
+`reconcile_ref_counts()` at startup recomputes counts from live references.
 
 ## Scheduler
 
 - **Mode B (HTTP pull)**: Workers pull tasks. Pull handler does atomic assign + `_match_capabilities()`.
 - **Mode A (WS push)**: Scheduler pushes tasks to connected WS workers. Uses same `_match_capabilities()`.
 - **requeue_stale()**: ASSIGNED tasks past 90s timeout are requeued. All worker signals (pull, heartbeat, submit) reset `assigned_at`.
-- **cleanup_expired()**: COMPLETED/FAILED tasks deleted after 24h, blob refs released.
+- **cleanup_expired()**: COMPLETED/FAILED/CANCELLED tasks deleted after 30 days
+  (blob refs released); PENDING stuck > 1h marked FAILED.
 
 ## Workers
 
@@ -254,17 +262,19 @@ GC deletes blobs at ref_count=0.
 | GET | `/results/{id}` | Task output blob |
 | PUT | `/blobs` | Upload blob (auth: API key or assignment_token) |
 | GET | `/blobs/{hash}` | Download blob |
-| POST | `/worker/pull` | Mode B: worker polls for task |
-| POST | `/worker/submit` | Mode B: worker returns result |
-| POST | `/worker/heartbeat` | Worker liveness + logs during execution |
-| WS | `/worker/ws` | Mode A: browser connection |
+| POST | `/worker/pull` | Worker polls for task (auth: API key) |
+| POST | `/worker/submit` | Worker returns result (auth: API key) |
+| POST | `/worker/heartbeat` | Worker liveness + logs during execution (auth: API key) |
+| POST | `/transcribe/update-cookies` | Update active YouTube cookies hash |
 | GET | `/stats` | Infrastructure capacity |
 | GET | `/health` | Health check |
 
 ## Security
 
 - **API key**: `X-API-Key` header on client endpoints
-- **Worker auth**: same header on `/worker/pull` (dual-mode: auth 30/min, anon 6/min)
-- **`assignment_token`**: anti-race-condition on task submit
+- **Worker auth**: same header required on `/worker/pull`, `/worker/submit`,
+  and `/worker/heartbeat` — no anonymous access
+- **`assignment_token`**: anti-race-condition on task submit; also required to
+  requeue a task on an error result
 - **TLS**: Caddy reverse proxy, Let's Encrypt
-- **Rate limiting**: per-worker_id (auth) or per-IP (anon), sliding window
+- **Rate limiting**: per-worker_id sliding window (30 pulls/min)
