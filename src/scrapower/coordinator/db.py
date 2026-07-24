@@ -39,6 +39,32 @@ created_at     TEXT NOT NULL DEFAULT (datetime('now')),
 CREATE INDEX IF NOT EXISTS idx_tasks_state ON tasks(state);
 CREATE INDEX IF NOT EXISTS idx_tasks_client ON tasks(client_id);
 CREATE INDEX IF NOT EXISTS idx_blobs_created ON blobs(created_at);
+
+-- Channel transcription subsystem (isolated; see coordinator/channel/)
+CREATE TABLE IF NOT EXISTS channel_jobs (
+    id          TEXT PRIMARY KEY,
+    channel_url TEXT NOT NULL,
+    model       TEXT NOT NULL DEFAULT 'turbo',
+    config_json TEXT NOT NULL DEFAULT '{}',
+    state       TEXT NOT NULL DEFAULT 'discovering',
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS channel_videos (
+    job_id         TEXT NOT NULL,
+    video_id       TEXT NOT NULL,
+    url            TEXT NOT NULL,
+    title          TEXT,
+    duration       INTEGER,
+    playlists_json TEXT NOT NULL DEFAULT '[]',
+    task_id        TEXT,
+    delivered      INTEGER NOT NULL DEFAULT 0,
+    delivered_at   TEXT,
+    PRIMARY KEY (job_id, video_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_channel_videos_task ON channel_videos(task_id);
 """
 
 

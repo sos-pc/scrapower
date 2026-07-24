@@ -271,6 +271,12 @@ async def lifespan(app: FastAPI):
     # Start GC
     gc_task = asyncio.create_task(_gc_loop(config, db))
 
+    # Start delivery sweep (renders + delivers channel transcripts; no-op until
+    # a channel job produces completed transcripts, Drive gated by config)
+    from .channel.delivery import delivery_loop
+
+    delivery_task = asyncio.create_task(delivery_loop(db, config.blob_dir, config))
+
     harvester_task: asyncio.Task | None = None
     if providers:
         app.state.registry = registry
@@ -285,10 +291,10 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        for t in (gc_task, maint_task, harvester_task):
+        for t in (gc_task, maint_task, harvester_task, delivery_task):
             if t is not None:
                 t.cancel()
-        for t in (gc_task, maint_task, harvester_task):
+        for t in (gc_task, maint_task, harvester_task, delivery_task):
             if t is not None:
                 try:
                     await t
@@ -400,6 +406,11 @@ app.include_router(stats_router, dependencies=[Depends(require_auth)])
 from .api.transcribe_api import router as transcribe_router
 
 app.include_router(transcribe_router, dependencies=[Depends(require_auth)])
+
+# Channel transcription endpoint (requires auth)
+from .api.channel_api import router as channel_router
+
+app.include_router(channel_router, dependencies=[Depends(require_auth)])
 
 log = structlog.get_logger()
 

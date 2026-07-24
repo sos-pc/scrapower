@@ -54,6 +54,12 @@ class Config:
     # Logging
     log_level: str = "INFO"
 
+    # Channel transcription / delivery
+    transcripts_dir: str = "data/transcripts"
+    drive_token_path: str = ""  # path to OAuth token.json; empty => Drive disabled
+    drive_root_folder_id: str = ""
+    delivery_interval_sec: int = 30
+
     def __post_init__(self) -> None:
         self._apply_env_overrides()
 
@@ -69,6 +75,10 @@ class Config:
             "SCRAPOWER_BLOB_TTL_DAYS": ("blob_ttl_days", int),
             "SCRAPOWER_LOG_LEVEL": ("log_level", str),
             "SCRAPOWER_COORDINATOR_URL": ("coordinator_url", str),
+            "SCRAPOWER_TRANSCRIPTS_DIR": ("transcripts_dir", str),
+            "SCRAPOWER_DRIVE_TOKEN": ("drive_token_path", str),
+            "SCRAPOWER_DRIVE_ROOT_FOLDER_ID": ("drive_root_folder_id", str),
+            "SCRAPOWER_DELIVERY_INTERVAL_SEC": ("delivery_interval_sec", int),
         }
         for env_var, (attr, typ) in env_map.items():
             val = os.environ.get(env_var)
