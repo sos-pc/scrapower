@@ -16,7 +16,7 @@ import aiohttp
 from .runtimes.python import execute_python
 
 HEARTBEAT_INTERVAL_SEC = 30
-STDERR_READER_TIMEOUT_SEC = 1800
+STDERR_READER_TIMEOUT_SEC = 7200
 
 
 class WorkerLoop:

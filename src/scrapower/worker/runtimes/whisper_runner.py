@@ -65,13 +65,13 @@ def _download_audio(url, workdir, cookies_path=None):
         args += ["--cookies", cookies_path]
     args.append(url)
     try:
-        subprocess.run(args, check=True, capture_output=True, timeout=600)
+        subprocess.run(args, check=True, capture_output=True, timeout=1800)
     except subprocess.CalledProcessError as e:
         stderr = e.stderr.decode()[-500:] if e.stderr else ""
         if "Requested format is not available" in stderr and cookies_path:
             args_no_cookies = [a for a in args if a != "--cookies" and a != cookies_path]
             try:
-                subprocess.run(args_no_cookies, check=True, capture_output=True, timeout=600)
+                subprocess.run(args_no_cookies, check=True, capture_output=True, timeout=1800)
             except subprocess.CalledProcessError as e2:
                 raise DownloadError(
                     f"yt-dlp failed (rc={e2.returncode}): "

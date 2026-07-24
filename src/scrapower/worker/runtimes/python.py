@@ -15,7 +15,9 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
-STDERR_READER_TIMEOUT_SEC = 1800
+# Cap on total subprocess runtime (download + whisper). Long lectures (1-2h)
+# with large-v3 (~2-3x realtime) can take ~1h, so allow up to 2h.
+STDERR_READER_TIMEOUT_SEC = 7200
 
 
 async def execute_python(
