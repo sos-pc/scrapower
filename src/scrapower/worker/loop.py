@@ -80,6 +80,25 @@ class WorkerLoop:
         """API-key header sent on every authenticated worker endpoint."""
         return {"X-API-Key": self.api_key} if self.api_key else {}
 
+    async def _fetch_blob(self, session: aiohttp.ClientSession, blob_hash: str, kind: str) -> bytes:
+        """Download a blob, refusing to treat an error body as content.
+
+        Without the status check a 404 JSON body became the task's executable
+        and blew up as a SyntaxError, which read like a broken task rather than
+        a missing blob.
+        """
+        async with session.get(
+            f"{self.coordinator_url}/blobs/{blob_hash}",
+            timeout=aiohttp.ClientTimeout(total=30),
+        ) as r:
+            body = await r.read()
+            if r.status != 200:
+                raise RuntimeError(
+                    f"{kind} blob {blob_hash[:12]} -> HTTP {r.status}: "
+                    f"{body[:200].decode(errors='replace')}"
+                )
+            return body
+
     # -- Task execution --------------------------------------------------
 
     async def _run_task(
@@ -154,6 +173,22 @@ class WorkerLoop:
                                 self._log(f"Pull 5xx ({r.status}), retry {attempt + 1}/3")
                                 await asyncio.sleep(2**attempt)
                                 continue
+                            # Distinguish real failures from "queue is empty":
+                            # both used to fall through to task=None and look
+                            # identical in the logs until the idle timeout.
+                            if r.status == 401:
+                                self._log("Pull UNAUTHORIZED (401) - API key rejected")
+                                await asyncio.sleep(2**attempt)
+                                continue
+                            if r.status == 429:
+                                self._log("Pull RATE LIMITED (429) - backing off")
+                                await asyncio.sleep(max(5, 2**attempt))
+                                continue
+                            if r.status != 200:
+                                body = (await r.text())[:200]
+                                self._log(f"Pull unexpected HTTP {r.status}: {body}")
+                                await asyncio.sleep(2**attempt)
+                                continue
                             data = await r.json()
                             break
                     except Exception as e:
@@ -162,7 +197,16 @@ class WorkerLoop:
                         continue
 
                 if data is None:
+                    # Apply the idle deadline here too. Otherwise a worker whose
+                    # key was revoked (or that is permanently rate-limited) spins
+                    # on this branch forever, burning GPU quota doing nothing
+                    # until the platform kills it at max lifetime.
                     self._log("Pull failed after 3 retries")
+                    if time.time() - self._last_task_time > self.idle_timeout_sec:
+                        self._log(
+                            f"No work obtainable for {self.idle_timeout_sec}s - stopping"
+                        )
+                        break
                     await asyncio.sleep(self.poll_interval_sec)
                     continue
 
@@ -181,20 +225,19 @@ class WorkerLoop:
                 rt = task.get("runtime", "python")
                 self._log(f"Task: {tid}... (runtime={rt})")
 
-                # Download blobs
+                # Download blobs. Status must be checked: a 404 body would
+                # otherwise be handed to the runtime as the "executable" and
+                # reported as a task bug instead of a missing blob.
                 try:
-                    async with session.get(
-                        f"{self.coordinator_url}/blobs/{task['payload']['executable_hash']}",
-                        timeout=aiohttp.ClientTimeout(total=30),
-                    ) as r:
-                        executable = await r.read()
-                    async with session.get(
-                        f"{self.coordinator_url}/blobs/{task['payload']['input_hash']}",
-                        timeout=aiohttp.ClientTimeout(total=30),
-                    ) as r:
-                        input_data = await r.read()
+                    executable = await self._fetch_blob(
+                        session, task["payload"]["executable_hash"], "executable"
+                    )
+                    input_data = await self._fetch_blob(
+                        session, task["payload"]["input_hash"], "input"
+                    )
                 except Exception as e:
                     self._log(f"Blob download failed: {e}")
+                    await asyncio.sleep(self.poll_interval_sec)
                     continue
 
                 # Start heartbeat during task execution
@@ -236,7 +279,11 @@ class WorkerLoop:
                 # UPLOAD + SUBMIT — retry up to 3 times
                 submitted = False
                 for attempt in range(3):
-                    # Upload result blob
+                    # Upload result blob. A rejected upload used to fall back to
+                    # the locally computed hash, so the worker "succeeded" here
+                    # and then burned its 3 submit attempts on a blob the
+                    # coordinator never stored — with the real cause (413 too
+                    # large, 401 bad token) never logged.
                     try:
                         async with session.put(
                             f"{self.coordinator_url}/blobs?assignment_token={tok}",
@@ -245,8 +292,28 @@ class WorkerLoop:
                                 total=min(300, max(30, 10 + len(output) // 50_000))
                             ),
                         ) as r:
+                            if r.status != 200:
+                                detail = (await r.text())[:200]
+                                self._log(
+                                    f"Blob upload REJECTED (HTTP {r.status}) "
+                                    f"size={len(output)}B attempt {attempt + 1}/3: {detail}"
+                                )
+                                await asyncio.sleep(1)
+                                continue
                             up = await r.json()
-                        output_hash = up.get("hash", output_hash)
+                        uploaded_hash = up.get("hash", "")
+                        if not uploaded_hash:
+                            self._log("Blob upload returned no hash - retrying")
+                            await asyncio.sleep(1)
+                            continue
+                        if uploaded_hash != output_hash:
+                            # The coordinator hashes what it actually stored, so
+                            # trust it over our local computation.
+                            self._log(
+                                f"Upload hash differs (local={output_hash[:12]} "
+                                f"stored={uploaded_hash[:12]}) - using stored"
+                            )
+                        output_hash = uploaded_hash
                     except Exception as e:
                         self._log(f"Blob upload failed (attempt {attempt + 1}/3): {e}")
                         await asyncio.sleep(1)
@@ -271,9 +338,24 @@ class WorkerLoop:
                             headers=self._auth_headers(),
                             timeout=aiohttp.ClientTimeout(total=10),
                         ) as r:
+                            if r.status not in (200, 400, 403):
+                                # 400/403 carry a JSON submit_ack we still want to
+                                # read; anything else (401, 5xx) is not a verdict
+                                # on the result, so surface it instead of letting
+                                # r.json() raise something unrelated.
+                                detail = (await r.text())[:200]
+                                self._log(
+                                    f"Submit HTTP {r.status} (attempt {attempt + 1}/3): {detail}"
+                                )
+                                await asyncio.sleep(1)
+                                continue
                             result = await r.json()
                         accepted = result.get("accepted", False)
-                        self._log(f"Submit: accepted={accepted}")
+                        reason = result.get("reason", "")
+                        self._log(
+                            f"Submit: accepted={accepted}"
+                            + (f" reason={reason}" if reason else "")
+                        )
                         if accepted:
                             self.total_completed += 1
                             self._log(f"Total completed: {self.total_completed}")
