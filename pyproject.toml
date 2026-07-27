@@ -30,6 +30,10 @@ drive = [
 # parallel unpinned list in the Dockerfile.
 providers = [
     "kaggle>=1.6",
+    # kagglesdk (pulled in by kaggle) crashed on TimeDelta values without a
+    # fractional part, e.g. "0s"; we used to hot-patch the installed source.
+    # Fixed upstream in 0.1.35 — floored here so the patch stays unnecessary.
+    "kagglesdk>=0.1.35",
     "modal>=1.0",
     "huggingface_hub>=0.24",
     "yt-dlp>=2025.1.1",

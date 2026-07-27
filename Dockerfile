@@ -18,8 +18,8 @@ RUN pip install --no-cache-dir ".[drive,providers]"
 
 COPY deploy/ deploy/
 
-# Patch kagglesdk bug: TimeDeltaSerializer crashes on "0s" values
-RUN python3 /app/deploy/patch_kagglesdk.py /usr/local/lib/python3.12/site-packages/kagglesdk/kaggle_object.py
+# (The kagglesdk TimeDeltaSerializer "0s" patch is gone: fixed upstream in
+# kagglesdk 0.1.35, which pyproject now floors. See providers extra.)
 
 # Data directory (mounted as volume in production)
 RUN mkdir -p data/blobs && chown -R 1000:1000 /app
