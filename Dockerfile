@@ -8,15 +8,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl ca-certificates ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy and install Python dependencies
+# Install Python dependencies from pyproject — single source of truth for
+# versions (this used to be a parallel, unpinned pip list that drifted).
+# faster-whisper is deliberately absent: nothing in the coordinator imports it,
+# workers install their own (see ModalHarvester's sandbox image spec).
 COPY pyproject.toml .
-RUN pip install --no-cache-dir \
-    fastapi "uvicorn[standard]" pydantic aiosqlite aiofiles \
-    structlog aiohttp cryptography kaggle faster-whisper yt-dlp modal huggingface_hub \
-    google-api-python-client google-auth google-auth-oauthlib
-
-# Copy application source (package lives in src/scrapower/)
 COPY src/ src/
+RUN pip install --no-cache-dir ".[drive,providers]"
+
 COPY deploy/ deploy/
 
 # Patch kagglesdk bug: TimeDeltaSerializer crashes on "0s" values

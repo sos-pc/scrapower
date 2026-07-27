@@ -422,11 +422,19 @@ log = structlog.get_logger()
 
 @app.put("/blobs", status_code=200)
 async def upload_blob(request: Request, _rate=Depends(rate_limit)):
-    """Upload a blob. Workers use assignment_token, admins use API key."""
-    body = await request.body()
-    assignment_token = request.query_params.get("assignment_token", "")
+    """Upload a blob. Workers use assignment_token, admins use API key.
+
+    Order matters: authenticate and check the declared size BEFORE reading the
+    body, otherwise an unauthenticated caller can make us buffer an arbitrarily
+    large payload in RAM (max_blob_size_mb only ever protected the disk). Both
+    credentials are available pre-body — the token is a query param, the API key
+    a header.
+    """
     db = request.app.state.db
     cfg = request.app.state.config
+    max_bytes = cfg.max_blob_size_mb * 1024 * 1024
+
+    assignment_token = request.query_params.get("assignment_token", "")
     is_worker = assignment_token and await _verify_assignment_token(db, assignment_token)
     is_admin = verify_api_key(request)
     if not is_worker and not is_admin:
@@ -434,11 +442,27 @@ async def upload_blob(request: Request, _rate=Depends(rate_limit)):
             {"error": "UNAUTHORIZED", "hint": "Use API key or assignment_token"},
             status_code=401,
         )
-    if len(body) > cfg.max_blob_size_mb * 1024 * 1024:
+
+    # Reject oversized uploads on the declared length, before reading anything.
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > max_bytes:
         return JSONResponse(
             {"error": "PAYLOAD_TOO_LARGE", "max_size_mb": cfg.max_blob_size_mb},
             status_code=413,
         )
+
+    # Read with a hard cap so a missing or lying Content-Length can't blow memory.
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > max_bytes:
+            return JSONResponse(
+                {"error": "PAYLOAD_TOO_LARGE", "max_size_mb": cfg.max_blob_size_mb},
+                status_code=413,
+            )
+        chunks.append(chunk)
+    body = b"".join(chunks)
     hash_hex = await store_blob(db, cfg.blob_dir, body)
     return {"hash": hash_hex}
 

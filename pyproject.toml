@@ -8,15 +8,15 @@ dependencies = [
     "uvicorn[standard]>=0.34",
     "pydantic>=2.0",
     "aiosqlite>=0.20",
-    "aiofiles>=24.0",
     "structlog>=24.0",
     "aiohttp>=3.10",
-    "cryptography>=42.0",
+    # httpx is a runtime dep: cli/main.py imports it at module level, so the
+    # `scrapower` entry point breaks on a plain install without it.
+    "httpx>=0.28",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "httpx>=0.28",
     "mypy>=1.14",
     "ruff>=0.8",
 ]
@@ -24,6 +24,15 @@ drive = [
     "google-api-python-client>=2.100",
     "google-auth>=2.20",
     "google-auth-oauthlib>=1.0",
+]
+# Worker providers the coordinator drives: modal/huggingface_hub are imported,
+# kaggle and yt-dlp are invoked as CLIs. Previously installed only via a
+# parallel unpinned list in the Dockerfile.
+providers = [
+    "kaggle>=1.6",
+    "modal>=1.0",
+    "huggingface_hub>=0.24",
+    "yt-dlp>=2025.1.1",
 ]
 
 [project.scripts]
