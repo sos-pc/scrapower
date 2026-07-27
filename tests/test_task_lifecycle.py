@@ -126,6 +126,92 @@ async def test_terminal_states_are_final(task_service, task_manager):
     assert await task_manager.transition(task_id, TaskState.QUEUED) is False
 
 
+async def test_task_mirrors_every_stored_column(db, task_manager):
+    """Audit §1: get()/get_queued() each forgot different columns, so deadline_ms
+    always read 60000 and max_retries always 3 whatever was stored."""
+    task_id = "j" * 32
+    await task_manager.create(
+        task_id=task_id,
+        client_id="client-x",
+        runtime="python",
+        executable_hash="e" * 64,
+        input_hash="i" * 64,
+        task_type="whisper",
+        requirements_json='{"gpu": true, "network": "outbound"}',
+        max_retries=7,
+        deadline_ms=900000,
+        gpu_required=True,
+        initial_state=TaskState.QUEUED,
+    )
+
+    for label, task in (
+        ("get", await task_manager.get(task_id)),
+        ("get_queued", (await task_manager.get_queued())[0]),
+    ):
+        assert task.deadline_ms == 900000, f"{label} must read the stored deadline"
+        assert task.max_retries == 7, f"{label} must read the stored max_retries"
+        assert task.task_type == "whisper", label
+        assert task.requirements_json == '{"gpu": true, "network": "outbound"}', label
+        assert task.gpu_required is True, label
+        assert task.runtime == "python", label
+        assert task.executable_hash == "e" * 64, label
+        assert task.input_hash == "i" * 64, label
+        assert task.client_id == "client-x", label
+
+
+async def test_can_retry_uses_the_stored_max_retries(db, task_manager):
+    """transition() reads can_retry via get(); a hardcoded 3 broke retry logic."""
+    task_id = "k" * 32
+    await task_manager.create(
+        task_id=task_id,
+        client_id="c",
+        runtime="python",
+        executable_hash="",
+        input_hash="",
+        max_retries=1,
+        initial_state=TaskState.QUEUED,
+    )
+
+    await task_manager.assign(task_id, "w")
+    await task_manager.transition(task_id, TaskState.TIMEOUT)
+    assert (await task_manager.get(task_id)).state == TaskState.QUEUED, "1 retry allowed"
+
+    await task_manager.assign(task_id, "w")
+    await task_manager.transition(task_id, TaskState.TIMEOUT)
+    assert (
+        await task_manager.get(task_id)
+    ).state == TaskState.FAILED, "max_retries=1 exhausted, must not requeue again"
+
+
+async def test_queued_task_carries_real_deadline_to_matching(db, task_manager):
+    """_match_capabilities() compares deadline_ms against a worker's remaining
+    lifetime; reading 60000 instead of 900000 would mis-assign long tasks."""
+    from scrapower.coordinator.domain import _match_capabilities
+
+    task_id = "m" * 32
+    await task_manager.create(
+        task_id=task_id,
+        client_id="c",
+        runtime="python",
+        executable_hash="",
+        input_hash="",
+        task_type="whisper",
+        deadline_ms=900000,
+        gpu_required=True,
+        initial_state=TaskState.QUEUED,
+    )
+    task = (await task_manager.get_queued())[0]
+
+    dying_worker = {
+        "task_types": ["whisper"],
+        "runtimes": ["python"],
+        "resources": {"ram_mb": 30720, "gpu": {"supported": True}},
+        "network": {"connectivity": "outgoing_only"},
+        "lifecycle": {"expected_remaining_sec": 300},  # 5 min < the real 15 min
+    }
+    assert _match_capabilities(task, dying_worker) is False
+
+
 async def test_expired_pending_fails_with_reason_in_error_column(db, task_service, task_manager):
     """The reason belongs in `error`, not in `output_hash` (which clients read)."""
     task_id = "i" * 32

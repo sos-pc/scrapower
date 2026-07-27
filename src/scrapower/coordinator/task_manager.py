@@ -93,6 +93,57 @@ class Task:
         return self.retries < self.max_retries
 
 
+def _col(row, name: str, default):
+    """Read a column, tolerating its absence.
+
+    db.py applies migrations best-effort (``ALTER TABLE`` in a try/except), so a
+    column added later may be missing on an old database. Reads go through here
+    rather than being guarded ad hoc — the previous code checked the columns that
+    were always present and read the migration-added ones unguarded, which was
+    exactly backwards.
+    """
+    try:
+        if name not in row.keys():
+            return default
+    except AttributeError:  # not a sqlite3.Row-like mapping
+        return default
+    value = row[name]
+    return default if value is None else value
+
+
+def _row_to_task(row) -> Task:
+    """Rebuild a Task from a ``SELECT *`` row.
+
+    Single source of truth for get() and get_queued(): both used to reconstruct
+    Task by hand and each forgot different columns, so deadline_ms silently read
+    60000 and max_retries 3 whatever the database said — making
+    ``task.can_retry`` and ``_match_capabilities()`` reason on wrong values.
+    """
+    assigned_at = _col(row, "assigned_at", None)
+    return Task(
+        id=row["id"],
+        client_id=row["client_id"],
+        state=TaskState(row["state"]),
+        definition_json=_col(row, "definition_json", "{}"),
+        retries=int(_col(row, "retries", 0)),
+        max_retries=int(_col(row, "max_retries", 3)),
+        current_assignment_token=_col(row, "current_assignment_token", None),
+        assigned_worker_id=_col(row, "assigned_worker_id", None),
+        assigned_at=float(assigned_at) if assigned_at else None,
+        deadline_ms=int(_col(row, "deadline_ms", 60000)),
+        executable_hash=_col(row, "executable_hash", ""),
+        input_hash=_col(row, "input_hash", ""),
+        runtime=_col(row, "runtime", "python"),
+        gpu_required=bool(_col(row, "gpu_required", False)),
+        output_hash=_col(row, "output_hash", ""),
+        error=_col(row, "error", ""),
+        task_type=_col(row, "task_type", "whisper"),
+        requirements_json=_col(row, "requirements_json", "{}"),
+        created_at=_col(row, "created_at", ""),
+        updated_at=_col(row, "updated_at", ""),
+    )
+
+
 # --- Task lifecycle ---
 # States: PENDING → QUEUED → ASSIGNED → VALIDATED/FAILED/TIMEOUT
 # TIMEOUT can loop back to QUEUED if retries remain (max 3).
@@ -168,61 +219,14 @@ class TaskManager:
     async def get(self, task_id: str) -> Task | None:
         cursor = await self._db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
         row = await cursor.fetchone()
-        if row is None:
-            return None
-        return Task(
-            id=row["id"],
-            client_id=row["client_id"],
-            state=TaskState(row["state"]),
-            retries=row["retries"],
-            current_assignment_token=row["current_assignment_token"]
-            if "current_assignment_token" in row.keys()
-            else None,
-            assigned_worker_id=row["assigned_worker_id"]
-            if "assigned_worker_id" in row.keys()
-            else None,
-            assigned_at=float(row["assigned_at"]) if row["assigned_at"] else None,
-            gpu_required=bool(row["gpu_required"]) if "gpu_required" in row.keys() else False,
-            executable_hash=row["executable_hash"] if "executable_hash" in row.keys() else "",
-            input_hash=row["input_hash"] if "input_hash" in row.keys() else "",
-            runtime=row["runtime"] if "runtime" in row.keys() else "python",
-            output_hash=row["output_hash"] if "output_hash" in row.keys() else "",
-            error=row["error"] if "error" in row.keys() else "",
-            created_at=row["created_at"],
-            updated_at=row["updated_at"],
-        )
+        return None if row is None else _row_to_task(row)
 
     async def get_queued(self, limit: int = 100) -> list[Task]:
         cursor = await self._db.execute(
             "SELECT * FROM tasks WHERE state = ? ORDER BY created_at ASC LIMIT ?",
             (TaskState.QUEUED, limit),
         )
-        tasks = []
-        async for row in cursor:
-            tasks.append(
-                Task(
-                    id=row["id"],
-                    client_id=row["client_id"],
-                    state=TaskState(row["state"]),
-                    retries=row["retries"],
-                    executable_hash=row["executable_hash"]
-                    if "executable_hash" in row.keys()
-                    else "",
-                    input_hash=row["input_hash"] if "input_hash" in row.keys() else "",
-                    runtime=row["runtime"] if "runtime" in row.keys() else "python",
-                    gpu_required=bool(row["gpu_required"])
-                    if "gpu_required" in row.keys()
-                    else False,
-                    error=row["error"] if "error" in row.keys() else "",
-                    task_type=row["task_type"] if "task_type" in row.keys() else "whisper",
-                    requirements_json=row["requirements_json"]
-                    if "requirements_json" in row.keys()
-                    else "{}",
-                    created_at=row["created_at"],
-                    updated_at=row["updated_at"],
-                )
-            )
-        return tasks
+        return [_row_to_task(row) async for row in cursor]
 
     async def transition(
         self,
