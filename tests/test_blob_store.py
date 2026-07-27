@@ -7,6 +7,7 @@ nothing ever releasing that reference, so run_gc() never reclaimed anything
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -109,6 +110,48 @@ async def test_gc_collects_orphans_but_never_pins(db, blob_dir):
     assert not _path(blob_dir, orphan).exists()
     assert _path(blob_dir, pinned).exists(), "a pin must survive GC even when aged"
     assert await _ref(db, pinned) == (1, 1)
+
+
+async def test_small_blobs_round_trip_inline(db, blob_dir, monkeypatch):
+    """Below the threshold nothing is dispatched to a thread: at the real blob
+    sizes (0.2KB median, 198KB max in production) that would only add overhead."""
+    calls = []
+    real = asyncio.to_thread
+
+    async def spy(fn, *a, **kw):
+        calls.append(getattr(fn, "__name__", str(fn)))
+        return await real(fn, *a, **kw)
+
+    monkeypatch.setattr(asyncio, "to_thread", spy)
+
+    payload = b"x" * 200_000  # ~200KB, the observed maximum
+    h = await bs.store_blob(db, blob_dir, payload)
+    assert await bs.get_blob(db, blob_dir, h) == payload
+    assert calls == [], f"small I/O must stay inline, dispatched: {calls}"
+
+
+async def test_large_blobs_go_off_the_event_loop(db, blob_dir, monkeypatch):
+    """max_blob_size_mb still allows 50MB, where a sync read/write stalls every
+    other pull/heartbeat/submit for tens of milliseconds."""
+    calls = []
+    real = asyncio.to_thread
+
+    async def spy(fn, *a, **kw):
+        calls.append(getattr(fn, "__name__", str(fn)))
+        return await real(fn, *a, **kw)
+
+    monkeypatch.setattr(asyncio, "to_thread", spy)
+
+    payload = b"y" * (bs.OFFLOAD_THRESHOLD_BYTES + 1)
+    h = await bs.store_blob(db, blob_dir, payload)
+    assert len(calls) == 1, "the write must be offloaded"
+
+    assert await bs.get_blob(db, blob_dir, h) == payload
+    assert len(calls) == 2, "the read must be offloaded too"
+
+
+async def test_missing_blob_returns_none_without_reading(db, blob_dir):
+    assert await bs.get_blob(db, blob_dir, "d" * 64) is None
 
 
 async def test_invalid_hash_is_rejected(db, blob_dir):

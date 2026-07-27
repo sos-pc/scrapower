@@ -6,11 +6,21 @@ Storage layout: data/blobs/XX/XXXXXX... (2-char prefix for filesystem friendline
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 from pathlib import Path
 
 import aiosqlite
+
+# Above this size, filesystem work goes to a worker thread so it can't stall the
+# event loop (i.e. every in-flight pull/heartbeat/submit). Below it, staying
+# inline is *faster*: measured on the production VM, a 0.2KB-200KB read/write
+# costs well under 1ms, while dispatching to a thread adds ~3ms of overhead.
+# Only past a few MB does the trade flip (10MB: 6.4ms stall inline vs 0.5ms
+# threaded; 50MB: 31.6ms vs 2.1ms). Real blobs today are ~0.2KB median, 198KB
+# max — the guard exists for the 50MB ceiling max_blob_size_mb still allows.
+OFFLOAD_THRESHOLD_BYTES = 4 * 1024 * 1024
 
 
 def _blob_path(blob_dir: str, hash_hex: str) -> Path:
@@ -58,11 +68,18 @@ async def store_blob(
     if existing:
         return hash_hex  # already stored — idempotent, no ref bump
 
-    # Write to disk atomically (temp + rename)
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = file_path.with_suffix(file_path.suffix + ".tmp")
-    tmp_path.write_bytes(data)
-    os.replace(tmp_path, file_path)
+    # Write to disk atomically (temp + rename), off the event loop when the
+    # payload is big enough for the stall to matter (see OFFLOAD_THRESHOLD_BYTES).
+    def _write() -> None:
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = file_path.with_suffix(file_path.suffix + ".tmp")
+        tmp_path.write_bytes(data)
+        os.replace(tmp_path, file_path)
+
+    if len(data) >= OFFLOAD_THRESHOLD_BYTES:
+        await asyncio.to_thread(_write)
+    else:
+        _write()
 
     # Register at ref_count=0 — unreferenced until a task (or pin) adopts it.
     await db.execute(
@@ -101,10 +118,18 @@ async def get_blob(
     blob_dir: str,
     hash_hex: str,
 ) -> bytes | None:
-    """Retrieve a blob by hash. Returns None if not found."""
+    """Retrieve a blob by hash. Returns None if not found.
+
+    Large reads go to a thread so serving a blob can't stall the event loop;
+    small ones stay inline, where that would only add overhead.
+    """
     file_path = _blob_path(blob_dir, hash_hex)
-    if not file_path.exists():
+    try:
+        size = file_path.stat().st_size
+    except FileNotFoundError:
         return None
+    if size >= OFFLOAD_THRESHOLD_BYTES:
+        return await asyncio.to_thread(file_path.read_bytes)
     return file_path.read_bytes()
 
 
