@@ -356,7 +356,7 @@ async def _maintenance_loop(task_service, log) -> None:
     """Recover stale tasks and clean up expired ones.
 
     Runs every 15 seconds:
-      - requeue_stale(): recover ASSIGNED tasks with no heartbeat for 90s
+      - requeue_stale(): recover ASSIGNED tasks silent for config.stale_after_sec
       - cleanup_expired(): delete old COMPLETED/FAILED tasks (every 5 min)"""
     tick = 0
     while True:

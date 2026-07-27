@@ -153,7 +153,7 @@ class TaskService:
         row = await cursor.fetchone()
         return row["n"] if row else 0
 
-    async def requeue_stale(self, silence_timeout_sec: float = 90) -> int:
+    async def requeue_stale(self, silence_timeout_sec: float | None = None) -> int:
         """Re-queue ASSIGNED tasks whose worker hasn't signalled recently.
 
         Uses transition(TIMEOUT) which handles can_retry, retries++,
@@ -163,9 +163,13 @@ class TaskService:
 
         Args:
             silence_timeout_sec: seconds without any signal before timeout.
-                Default 90s (3 heartbeat intervals at 30s).
+                Defaults to the config's ``stale_after_sec`` (heartbeat interval
+                x miss threshold) rather than a hardcoded 90, so the deadline
+                and the heartbeat can no longer drift apart.
 
         Returns number of tasks requeued."""
+        if silence_timeout_sec is None:
+            silence_timeout_sec = getattr(self._config, "stale_after_sec", 90)
         import time as _time
 
         now = _time.time()

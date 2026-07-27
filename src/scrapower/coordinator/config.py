@@ -28,28 +28,18 @@ class Config:
 
     # Limits
     max_blob_size_mb: int = 50
-    max_task_retries: int = 3
     blob_ttl_days: int = 7
     checkpoint_ttl_days: int = 30
 
-    # Worker gateway
-    heartbeat_interval_sec: int = 10
+    # Worker gateway.
+    # heartbeat_interval_sec must mirror what the workers actually send
+    # (scrapower.worker.loop.HEARTBEAT_INTERVAL_SEC): stale_after_sec is derived
+    # from it, so a value below the real interval would requeue live workers.
+    heartbeat_interval_sec: int = 30
     heartbeat_miss_threshold: int = 3
-    task_accept_timeout_sec: int = 5
 
     # Network
     coordinator_url: str = "http://localhost:8777"
-
-    # Security
-    max_anonymous_workers: int = 100
-
-    # Keepalive
-    keepalive_enabled: bool = True
-    keepalive_duration_sec: int = 2
-
-    # Verification
-    # "trust" (no check) | "challenge" (10% double-exec) | "redundant" (100% double-exec)
-    default_verification_mode: str = "trust"
 
     # Logging
     log_level: str = "INFO"
@@ -59,6 +49,16 @@ class Config:
     drive_token_path: str = ""  # path to OAuth token.json; empty => Drive disabled
     drive_root_folder_id: str = ""
     delivery_interval_sec: int = 30
+
+    @property
+    def stale_after_sec(self) -> int:
+        """Silence after which a worker is presumed dead.
+
+        Single source for the "is it dead yet" deadline, which used to be
+        hardcoded as 90 in two unrelated places while Config carried 10 x 3 = 30
+        that SessionManager accepted and discarded.
+        """
+        return self.heartbeat_interval_sec * self.heartbeat_miss_threshold
 
     def __post_init__(self) -> None:
         self._apply_env_overrides()
@@ -71,8 +71,10 @@ class Config:
             "SCRAPOWER_DATA_DIR": ("data_dir", str),
             "SCRAPOWER_DB_PATH": ("db_path", str),
             "SCRAPOWER_MAX_BLOB_SIZE_MB": ("max_blob_size_mb", int),
-            "SCRAPOWER_MAX_TASK_RETRIES": ("max_task_retries", int),
             "SCRAPOWER_BLOB_TTL_DAYS": ("blob_ttl_days", int),
+            "SCRAPOWER_CHECKPOINT_TTL_DAYS": ("checkpoint_ttl_days", int),
+            "SCRAPOWER_HEARTBEAT_INTERVAL_SEC": ("heartbeat_interval_sec", int),
+            "SCRAPOWER_HEARTBEAT_MISS_THRESHOLD": ("heartbeat_miss_threshold", int),
             "SCRAPOWER_LOG_LEVEL": ("log_level", str),
             "SCRAPOWER_COORDINATOR_URL": ("coordinator_url", str),
             "SCRAPOWER_TRANSCRIPTS_DIR": ("transcripts_dir", str),
@@ -146,7 +148,6 @@ def _apply_toml(config: Config, data: dict[str, Any]) -> None:
     if "limits" in data:
         limits = data["limits"]
         config.max_blob_size_mb = limits.get("max_blob_size_mb", config.max_blob_size_mb)
-        config.max_task_retries = limits.get("max_task_retries", config.max_task_retries)
         config.blob_ttl_days = limits.get("blob_ttl_days", config.blob_ttl_days)
         config.checkpoint_ttl_days = limits.get("checkpoint_ttl_days", config.checkpoint_ttl_days)
 
@@ -158,24 +159,13 @@ def _apply_toml(config: Config, data: dict[str, Any]) -> None:
         config.heartbeat_miss_threshold = wg.get(
             "heartbeat_miss_threshold", config.heartbeat_miss_threshold
         )
-        config.task_accept_timeout_sec = wg.get(
-            "task_accept_timeout_sec", config.task_accept_timeout_sec
-        )
 
-    if "security" in data:
-        sec = data["security"]
-        config.max_anonymous_workers = sec.get(
-            "max_anonymous_workers", config.max_anonymous_workers
-        )
-
-    if "keepalive" in data:
-        ka = data["keepalive"]
-        config.keepalive_enabled = ka.get("enabled", config.keepalive_enabled)
-        config.keepalive_duration_sec = ka.get("duration_sec", config.keepalive_duration_sec)
-
-    if "verification" in data:
-        v = data["verification"]
-        config.default_verification_mode = v.get("default_mode", config.default_verification_mode)
+    if "delivery" in data:
+        d = data["delivery"]
+        config.transcripts_dir = d.get("transcripts_dir", config.transcripts_dir)
+        config.drive_token_path = d.get("drive_token_path", config.drive_token_path)
+        config.drive_root_folder_id = d.get("drive_root_folder_id", config.drive_root_folder_id)
+        config.delivery_interval_sec = d.get("delivery_interval_sec", config.delivery_interval_sec)
 
     if "logging" in data:
         config.log_level = data["logging"].get("level", config.log_level)
