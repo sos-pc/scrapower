@@ -29,6 +29,7 @@ async def execute_python(
     input_data: bytes,
     *,
     log_fn: Callable[[str], None] | None = None,
+    cancel_event: asyncio.Event | None = None,
 ) -> tuple[bytes, str, int, str]:
     """Execute a Python script in a sandboxed async subprocess.
 
@@ -79,6 +80,19 @@ async def execute_python(
 
         stderr_task = asyncio.ensure_future(_read_stderr())
 
+        # Abort watcher: if the coordinator reassigned this task, kill the
+        # subprocess instead of burning GPU-hours on a result that will be
+        # rejected for a stale token.
+        async def _watch_cancel() -> None:
+            assert cancel_event is not None
+            await cancel_event.wait()
+            if proc.returncode is None:
+                if log_fn:
+                    log_fn("[sub] ABORT: assignment no longer valid, killing subprocess")
+                proc.kill()
+
+        cancel_task = asyncio.ensure_future(_watch_cancel()) if cancel_event else None
+
         # Read stdout with timeout
         try:
             stdout_data = await asyncio.wait_for(
@@ -92,6 +106,12 @@ async def execute_python(
 
         exit_code = await proc.wait()
         await stderr_task
+        if cancel_task is not None:
+            cancel_task.cancel()
+            try:
+                await cancel_task
+            except asyncio.CancelledError:
+                pass
 
         # Parse JSON output (whisper_runner format) or fall back to raw
         try:
@@ -161,6 +181,10 @@ class WorkerLoop:
         self._log_task_id: str = ""
         self._log_token: str = ""
 
+        # Set by _heartbeat when the coordinator reports the assignment is no
+        # longer ours; the running subprocess watches it and aborts.
+        self._abort = asyncio.Event()
+
         # Stats
         self.total_completed: int = 0
         self._last_task_time: float = time.time()
@@ -194,7 +218,9 @@ class WorkerLoop:
     ) -> tuple[bytes, str, int, str]:
         """Execute a task. Stderr is streamed via log_fn (set by caller)."""
         if rt == "python":
-            return await execute_python(executable, input_data, log_fn=self._log)
+            return await execute_python(
+                executable, input_data, log_fn=self._log, cancel_event=self._abort
+            )
         raise ValueError(f"Unknown runtime: {rt}")
 
     # -- Heartbeat (async, runs as background task) --------------------
@@ -220,6 +246,7 @@ class WorkerLoop:
                         ack = await r.json()
                         if not ack.get("task_valid"):
                             self._log("Heartbeat: task reassigned, aborting")
+                            self._abort.set()  # kills the running subprocess
                             self._log_task_id = ""
                             return
             except asyncio.CancelledError:
@@ -302,6 +329,7 @@ class WorkerLoop:
                     continue
 
                 # Start heartbeat during task execution
+                self._abort.clear()  # fresh abort flag per task
                 self._log_task_id = task["id"]
                 self._log_token = tok
                 hb_task = asyncio.create_task(self._heartbeat(session))
@@ -321,7 +349,20 @@ class WorkerLoop:
                     self._log_task_id = ""
                     self._log_token = ""
 
-                self._log(f"OK: {output_hash[:12]}... exit_code={exit_code}")
+                # Aborted mid-execution: the task belongs to another worker now,
+                # so uploading and submitting would only be rejected on a stale
+                # token. Skip straight to the next pull.
+                if self._abort.is_set():
+                    self._log("Task aborted (reassigned) - skipping upload/submit")
+                    hb_task.cancel()
+                    try:
+                        await hb_task
+                    except asyncio.CancelledError:
+                        pass
+                    await asyncio.sleep(self.poll_interval_sec)
+                    continue
+
+                self._log(f"Result: {output_hash[:12]}... exit_code={exit_code}")
 
                 # UPLOAD + SUBMIT â€” retry up to 3 times
                 submitted = False

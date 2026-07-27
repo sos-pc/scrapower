@@ -25,6 +25,7 @@ async def execute_python(
     input_data: bytes,
     *,
     log_fn: Callable[[str], None] | None = None,
+    cancel_event: asyncio.Event | None = None,
 ) -> tuple[bytes, str, int, str]:
     """Execute a Python script in a sandboxed async subprocess.
 
@@ -75,6 +76,19 @@ async def execute_python(
 
         stderr_task = asyncio.ensure_future(_read_stderr())
 
+        # Abort watcher: if the coordinator reassigned this task, kill the
+        # subprocess instead of burning GPU-hours on a result that will be
+        # rejected for a stale token.
+        async def _watch_cancel() -> None:
+            assert cancel_event is not None
+            await cancel_event.wait()
+            if proc.returncode is None:
+                if log_fn:
+                    log_fn("[sub] ABORT: assignment no longer valid, killing subprocess")
+                proc.kill()
+
+        cancel_task = asyncio.ensure_future(_watch_cancel()) if cancel_event else None
+
         # Read stdout with timeout
         try:
             stdout_data = await asyncio.wait_for(
@@ -88,6 +102,12 @@ async def execute_python(
 
         exit_code = await proc.wait()
         await stderr_task
+        if cancel_task is not None:
+            cancel_task.cancel()
+            try:
+                await cancel_task
+            except asyncio.CancelledError:
+                pass
 
         # Parse JSON output (whisper_runner format) or fall back to raw
         try:

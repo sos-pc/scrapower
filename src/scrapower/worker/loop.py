@@ -50,6 +50,10 @@ class WorkerLoop:
         self._log_task_id: str = ""
         self._log_token: str = ""
 
+        # Set by _heartbeat when the coordinator reports the assignment is no
+        # longer ours; the running subprocess watches it and aborts.
+        self._abort = asyncio.Event()
+
         # Stats
         self.total_completed: int = 0
         self._last_task_time: float = time.time()
@@ -83,7 +87,9 @@ class WorkerLoop:
     ) -> tuple[bytes, str, int, str]:
         """Execute a task. Stderr is streamed via log_fn (set by caller)."""
         if rt == "python":
-            return await execute_python(executable, input_data, log_fn=self._log)
+            return await execute_python(
+                executable, input_data, log_fn=self._log, cancel_event=self._abort
+            )
         raise ValueError(f"Unknown runtime: {rt}")
 
     # -- Heartbeat (async, runs as background task) --------------------
@@ -109,6 +115,7 @@ class WorkerLoop:
                         ack = await r.json()
                         if not ack.get("task_valid"):
                             self._log("Heartbeat: task reassigned, aborting")
+                            self._abort.set()  # kills the running subprocess
                             self._log_task_id = ""
                             return
             except asyncio.CancelledError:
@@ -191,6 +198,7 @@ class WorkerLoop:
                     continue
 
                 # Start heartbeat during task execution
+                self._abort.clear()  # fresh abort flag per task
                 self._log_task_id = task["id"]
                 self._log_token = tok
                 hb_task = asyncio.create_task(self._heartbeat(session))
@@ -210,7 +218,20 @@ class WorkerLoop:
                     self._log_task_id = ""
                     self._log_token = ""
 
-                self._log(f"OK: {output_hash[:12]}... exit_code={exit_code}")
+                # Aborted mid-execution: the task belongs to another worker now,
+                # so uploading and submitting would only be rejected on a stale
+                # token. Skip straight to the next pull.
+                if self._abort.is_set():
+                    self._log("Task aborted (reassigned) - skipping upload/submit")
+                    hb_task.cancel()
+                    try:
+                        await hb_task
+                    except asyncio.CancelledError:
+                        pass
+                    await asyncio.sleep(self.poll_interval_sec)
+                    continue
+
+                self._log(f"Result: {output_hash[:12]}... exit_code={exit_code}")
 
                 # UPLOAD + SUBMIT — retry up to 3 times
                 submitted = False
