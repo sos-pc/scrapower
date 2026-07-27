@@ -19,6 +19,8 @@ dependencies = [
 dev = [
     "mypy>=1.14",
     "ruff>=0.8",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
 ]
 drive = [
     "google-api-python-client>=2.100",
@@ -45,6 +47,11 @@ scrapower = "scrapower.cli.main:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = ["ignore::DeprecationWarning"]
 
 [tool.ruff]
 line-length = 100
