@@ -41,7 +41,12 @@ VALID_TRANSITIONS: dict[TaskState, set[TaskState]] = {
         TaskState.FAILED,
         TaskState.CANCELLED,
     },
-    TaskState.DOWNLOADING: {TaskState.QUEUED, TaskState.FAILED, TaskState.PENDING},
+    TaskState.DOWNLOADING: {
+        TaskState.QUEUED,
+        TaskState.FAILED,
+        TaskState.PENDING,
+        TaskState.CANCELLED,
+    },
     TaskState.QUEUED: {TaskState.ASSIGNED, TaskState.CANCELLED},
     TaskState.ASSIGNED: {
         TaskState.COMPLETED,

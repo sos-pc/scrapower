@@ -155,6 +155,71 @@ async def run_job(db, task_service, config, job_id: str) -> None:
     log.info("channel job %s: submitted %d task(s)", job_id, len(to_submit))
 
 
+async def cancel_job(db, job_id: str) -> int:
+    """Cancel a job: stop every task of it that hasn't finished yet.
+
+    Bulk UPDATE rather than per-task transition(): one query instead of N
+    round-trips for a 200+ video job, and it also covers DOWNLOADING tasks.
+    Workers already running a cancelled task get their submit rejected and
+    drain themselves via idle timeout — nothing to kill server-side.
+    Returns the number of tasks cancelled.
+    """
+    cur = await db.execute(
+        """UPDATE tasks SET state = 'cancelled', updated_at = ?
+           WHERE client_id = ?
+             AND state NOT IN ('completed', 'failed', 'cancelled')""",
+        (_now(), f"channel:{job_id}"),
+    )
+    cancelled = cur.rowcount
+    await db.execute(
+        "UPDATE channel_jobs SET state = 'cancelled', updated_at = ? WHERE id = ?",
+        (_now(), job_id),
+    )
+    await db.commit()
+    log.info("channel job %s cancelled (%d task(s) stopped)", job_id, cancelled)
+    return cancelled
+
+
+async def finalize_jobs(db) -> int:
+    """Move finished jobs out of 'running' (they used to stay there forever).
+
+    A job is finished once no video is still in flight — i.e. none is waiting
+    on a task that could still progress, and none is completed-but-undelivered.
+    Then: 'done' if every video was delivered, else 'partial' (some videos
+    failed permanently, e.g. the video is private or blocked on YouTube).
+    Returns how many jobs were finalized.
+    """
+    cur = await db.execute(
+        "SELECT id FROM channel_jobs WHERE state IN ('running', 'submitting')"
+    )
+    finalized = 0
+    for row in await cur.fetchall():
+        job_id = row["id"]
+        cur2 = await db.execute(
+            """SELECT COUNT(*) AS videos,
+                      SUM(CASE WHEN cv.delivered = 1 THEN 1 ELSE 0 END) AS delivered,
+                      SUM(CASE WHEN cv.task_id IS NULL
+                                 OR t.state IN ('pending','downloading','queued','assigned')
+                                 OR (t.state = 'completed' AND cv.delivered = 0)
+                               THEN 1 ELSE 0 END) AS in_flight
+               FROM channel_videos cv LEFT JOIN tasks t ON cv.task_id = t.id
+               WHERE cv.job_id = ?""",
+            (job_id,),
+        )
+        t = await cur2.fetchone()
+        videos = t["videos"] or 0
+        if videos == 0 or (t["in_flight"] or 0) > 0:
+            continue
+        state = "done" if (t["delivered"] or 0) == videos else "partial"
+        await _set_state(db, job_id, state)
+        log.info(
+            "channel job %s finished: %s (%d/%d delivered)",
+            job_id, state, t["delivered"] or 0, videos,
+        )
+        finalized += 1
+    return finalized
+
+
 async def job_status(db, job_id: str) -> dict | None:
     cur = await db.execute(
         "SELECT channel_url, model, state, config_json FROM channel_jobs WHERE id = ?", (job_id,)

@@ -14,7 +14,7 @@ import logging
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from ..channel.job import create_job, job_status, run_job
+from ..channel.job import cancel_job, create_job, job_status, run_job
 
 router = APIRouter(prefix="/transcribe/channel", tags=["channel"])
 log = logging.getLogger(__name__)
@@ -73,3 +73,20 @@ async def get_channel_job(job_id: str, request: Request):
     if status is None:
         raise HTTPException(404, {"error": "NOT_FOUND"})
     return JSONResponse(status)
+
+
+@router.delete("/{job_id}")
+async def cancel_channel_job(job_id: str, request: Request):
+    """Cancel a job: stop every task of it that hasn't finished yet.
+
+    Already-delivered transcripts are kept. Workers running a cancelled task
+    drain themselves via idle timeout.
+    """
+    db = request.app.state.db
+    status = await job_status(db, job_id)
+    if status is None:
+        raise HTTPException(404, {"error": "NOT_FOUND"})
+    cancelled = await cancel_job(db, job_id)
+    return JSONResponse(
+        {"job_id": job_id, "state": "cancelled", "tasks_cancelled": cancelled}
+    )

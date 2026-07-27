@@ -234,7 +234,9 @@ async def deliver_completed(db, blob_dir: str, config) -> int:
 
 
 async def delivery_loop(db, blob_dir: str, config) -> None:
-    """Background sweep: periodically deliver newly-completed transcripts."""
+    """Background sweep: deliver newly-completed transcripts, then finalize jobs."""
+    from .job import finalize_jobs  # local import: avoids an import cycle
+
     interval = getattr(config, "delivery_interval_sec", 30)
     while True:
         await asyncio.sleep(interval)
@@ -242,3 +244,7 @@ async def delivery_loop(db, blob_dir: str, config) -> None:
             await deliver_completed(db, blob_dir, config)
         except Exception:
             log.exception("delivery sweep failed")
+        try:
+            await finalize_jobs(db)
+        except Exception:
+            log.exception("job finalize failed")
