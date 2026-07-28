@@ -7,6 +7,7 @@ The coordinator is a lightweight orchestrator — no yt-dlp, no audio download.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import tempfile
@@ -57,6 +58,58 @@ VALID_TASKS = ("transcribe", "translate")
 NO_TRANSLATE_MODELS = ("turbo",)
 
 
+DEFAULT_SINGLE_FOLDER = "_videos"
+
+
+async def _register_delivery(
+    db,
+    task_id: str,
+    url: str,
+    folder: str,
+    model: str,
+    formats: list[str],
+) -> None:
+    """Make a single-video transcript eligible for the existing delivery sweep.
+
+    Rather than duplicating the render/upload path, a one-video synthetic job is
+    recorded in the same tables the channel subsystem uses, so delivery,
+    markdown rendering, idempotency and job finalisation are all shared. The
+    destination folder rides along as the "playlist" name.
+    """
+    import time as _time
+
+    from ..channel.discovery import fetch_video_meta
+
+    meta = await fetch_video_meta(url)
+    video_id = meta.get("id") or task_id[:12]
+    title = meta.get("title") or video_id
+
+    now = str(_time.time())
+    job_id = f"single-{task_id[:16]}"
+    await db.execute(
+        """INSERT OR IGNORE INTO channel_jobs
+           (id, channel_url, model, config_json, state, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 'running', ?, ?)""",
+        (job_id, url, model, json.dumps({"formats": formats}), now, now),
+    )
+    await db.execute(
+        """INSERT OR IGNORE INTO channel_videos
+           (job_id, video_id, url, title, duration, playlists_json, task_id, delivered)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 0)""",
+        (
+            job_id,
+            video_id,
+            url,
+            title,
+            meta.get("duration"),
+            json.dumps([folder], ensure_ascii=False),
+            task_id,
+        ),
+    )
+    await db.commit()
+    log.info("delivery registered for %s -> folder %r (title=%r)", task_id[:12], folder, title[:60])
+
+
 def _validate_task(raw, model: str) -> str:
     """Normalise the requested Whisper task, rejecting combinations that can't work."""
     task = (raw or "transcribe").strip().lower()
@@ -98,6 +151,8 @@ async def transcribe(request: Request):
     language = body.get("language") or None
     fmt = body.get("format", "json")
     whisper_task = _validate_task(body.get("task"), model)
+    folder = (body.get("folder") or DEFAULT_SINGLE_FOLDER).strip() or DEFAULT_SINGLE_FOLDER
+    deliver = bool(body.get("deliver", True))
     cookies_hash = body.get("cookies_hash") or os.environ.get("SCRAPOWER_YT_COOKIES_HASH", "")
 
     task_service = request.app.state.task_service
@@ -138,13 +193,21 @@ async def transcribe(request: Request):
 
     _spawn(task_service.run_prepare(task_id, _prepare, log))
 
+    if deliver:
+        # Registered in the background: it costs a yt-dlp metadata lookup (a few
+        # seconds through the residential proxy) and must not delay the response.
+        formats = body.get("formats") or ["md", "json"]
+        _spawn(_register_delivery(db, task_id, url, folder, model, formats))
+
     return JSONResponse(
         {
             "task_id": task_id,
             "status": "pending",
             "model": model,
             "language": language or "auto",
+            "task": whisper_task,
             "format": fmt,
+            "delivery": {"enabled": deliver, "folder": folder} if deliver else {"enabled": False},
             "hint": f"GET /results/{task_id} for transcript",
         }
     )

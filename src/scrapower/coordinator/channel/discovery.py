@@ -96,6 +96,38 @@ async def _yt_dlp_flat(url: str, proxy: str, timeout: float = 90.0) -> list[dict
     return parse_flat_entries(stdout.decode())
 
 
+async def fetch_video_meta(url: str, proxy: str | None = None) -> dict:
+    """Best-effort {id, title, duration} for a single video.
+
+    Used to name delivered files after the real video title instead of an opaque
+    id. Failure is not fatal: the caller falls back to the id, so a slow or
+    unreachable site delays nothing important.
+    """
+    if proxy is None:
+        proxy = os.environ.get("SCRAPOWER_WG_PROXY", "") or os.environ.get(
+            "SCRAPOWER_VPN_PROXY", ""
+        )
+    args = ["yt-dlp", "--skip-download", "-j", "--no-warnings", "--no-playlist"]
+    if proxy:
+        args += ["--proxy", proxy]
+    args.append(url)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
+        if proc.returncode != 0:
+            return {}
+        entries = parse_flat_entries(stdout.decode())
+    except (TimeoutError, OSError) as e:
+        log.warning("metadata lookup failed for %s: %s", url, e)
+        return {}
+    if not entries:
+        return {}
+    e = entries[0]
+    return {"id": e.get("id", ""), "title": e.get("title", ""), "duration": e.get("duration")}
+
+
 async def discover_channel(
     channel_url: str, include_shorts: bool = False, proxy: str | None = None
 ) -> list[dict]:
