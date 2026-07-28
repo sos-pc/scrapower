@@ -50,6 +50,32 @@ def _spawn(coro) -> None:
     task.add_done_callback(_background_tasks.discard)
 
 
+# Whisper's own task selector. Note it is not an output-language switch:
+# "translate" only ever targets English (the model has no other translation
+# direction), and `turbo` was not trained for it at all.
+VALID_TASKS = ("transcribe", "translate")
+NO_TRANSLATE_MODELS = ("turbo",)
+
+
+def _validate_task(raw, model: str) -> str:
+    """Normalise the requested Whisper task, rejecting combinations that can't work."""
+    task = (raw or "transcribe").strip().lower()
+    if task not in VALID_TASKS:
+        raise HTTPException(
+            400, {"error": f"task must be one of {VALID_TASKS}", "got": task}
+        )
+    if task == "translate" and any(m in model for m in NO_TRANSLATE_MODELS):
+        raise HTTPException(
+            400,
+            {
+                "error": "this model is not trained for translation",
+                "model": model,
+                "hint": "use large-v3 (or another non-turbo model) for task=translate",
+            },
+        )
+    return task
+
+
 @router.post("")
 async def transcribe(request: Request):
     """Submit a video for transcription. Returns immediately.
@@ -71,6 +97,7 @@ async def transcribe(request: Request):
     model = body.get("model", "turbo")
     language = body.get("language") or None
     fmt = body.get("format", "json")
+    whisper_task = _validate_task(body.get("task"), model)
     cookies_hash = body.get("cookies_hash") or os.environ.get("SCRAPOWER_YT_COOKIES_HASH", "")
 
     task_service = request.app.state.task_service
@@ -98,7 +125,15 @@ async def transcribe(request: Request):
 
     async def _prepare():
         return await _prepare_whisper_input(
-            url, model, language, fmt, cookies_hash, coordinator_url, db, config.blob_dir
+            url,
+            model,
+            language,
+            fmt,
+            cookies_hash,
+            coordinator_url,
+            db,
+            config.blob_dir,
+            task=whisper_task,
         )
 
     _spawn(task_service.run_prepare(task_id, _prepare, log))
@@ -124,6 +159,7 @@ async def _prepare_whisper_input(
     coordinator_url: str,
     db,
     blob_dir: str,
+    task: str = "transcribe",
 ) -> str:
     """Build input config for worker. Worker downloads audio + runs whisper."""
     import json as _json
@@ -138,6 +174,7 @@ async def _prepare_whisper_input(
             "model": model,
             "language": language,
             "format": fmt,
+            "task": task,
         }
     ).encode()
 
@@ -204,6 +241,7 @@ async def batch_transcribe(request: Request):
     model = body.get("model", "turbo")
     language = body.get("language") or None
     fmt = body.get("format", "json")
+    whisper_task = _validate_task(body.get("task"), model)
     max_videos = min(body.get("max_videos", 10), 50)
     cookies_hash = body.get("cookies_hash") or os.environ.get("SCRAPOWER_YT_COOKIES_HASH", "")
 
@@ -239,7 +277,15 @@ async def batch_transcribe(request: Request):
 
         async def _prepare(url=v["url"]):
             return await _prepare_whisper_input(
-                url, model, language, fmt, cookies_hash, coordinator_url, db, config.blob_dir
+                url,
+                model,
+                language,
+                fmt,
+                cookies_hash,
+                coordinator_url,
+                db,
+                config.blob_dir,
+                task=whisper_task,
             )
 
         _spawn(task_service.run_prepare(task_id, _prepare, log))
