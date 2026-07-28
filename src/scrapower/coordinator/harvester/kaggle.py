@@ -24,6 +24,27 @@ COOLDOWN_SEC = 60
 KAGGLE_BIN = "kaggle"
 
 
+def split_proxy_url(url: str) -> tuple[str, str, str]:
+    """Split ``socks5://user:pass@host:port`` into ``(user, password, host)``.
+
+    Raises ValueError when any part is missing, so a malformed proxy surfaces at
+    launch time instead of silently producing "socks5://:@:1081" in the notebook.
+    """
+    try:
+        rest = url.split("://", 1)[1]
+        auth, host_port = rest.split("@", 1)
+        user, passwd = auth.split(":", 1)
+        host = host_port.rsplit(":", 1)[0]
+    except (ValueError, IndexError) as e:
+        raise ValueError(f"cannot parse proxy URL (expected scheme://user:pass@host:port): {e}")
+    if not (user and passwd and host):
+        missing = [
+            name for name, val in (("user", user), ("password", passwd), ("host", host)) if not val
+        ]
+        raise ValueError(f"proxy URL is missing {', '.join(missing)}")
+    return user, passwd, host
+
+
 class KaggleHarvester(WorkerProvider):
     provider_name = "kaggle"
 
@@ -127,6 +148,34 @@ class KaggleHarvester(WorkerProvider):
         with open(self._notebook_template) as f:
             nb = json.load(f)
 
+        # Resolve the proxy once, before touching the cells (this used to be
+        # re-read and re-parsed for every code cell).
+        wg_proxy = os.environ.get("SCRAPOWER_WG_PROXY_PUBLIC", "") or os.environ.get(
+            "SCRAPOWER_WG_PROXY", ""
+        )
+        if wg_proxy:
+            try:
+                user, passwd, host = split_proxy_url(wg_proxy)
+            except ValueError as e:
+                # Refuse rather than launch a doomed worker: the old code fell
+                # back to empty strings, so the notebook built "socks5://:@:1081"
+                # and every YouTube download failed with nothing in the logs
+                # pointing at the malformed proxy.
+                log.error(
+                    "kaggle: refusing to launch on %s - unusable proxy config: %s",
+                    account.id,
+                    e,
+                )
+                return False
+        else:
+            # No proxy at all is a deliberate (if unusual) configuration: workers
+            # then download from a datacenter IP, which YouTube often blocks.
+            log.warning(
+                "kaggle: no WG proxy configured (SCRAPOWER_WG_PROXY_PUBLIC) - "
+                "workers will download without a proxy and may be blocked"
+            )
+            user = passwd = host = ""
+
         for cell in nb.get("cells", []):
             if cell.get("cell_type") != "code":
                 continue
@@ -135,26 +184,9 @@ class KaggleHarvester(WorkerProvider):
                 src = "".join(src)
             src = src.replace("{{COORDINATOR_URL}}", self._coordinator_url)
             src = src.replace("{{API_KEY}}", self._api_key)
-            wg_proxy = os.environ.get("SCRAPOWER_WG_PROXY_PUBLIC", "") or os.environ.get(
-                "SCRAPOWER_WG_PROXY", ""
-            )
-            if wg_proxy:
-                try:
-                    rest = wg_proxy.split("://", 1)[1]
-                    auth, host_port = rest.split("@", 1)
-                    user, passwd = auth.split(":", 1)
-                    host = host_port.rsplit(":", 1)[0]
-                except (ValueError, IndexError):
-                    user, passwd, host = "", "", ""
-                src = src.replace("{{WG_USER}}", user)
-                src = src.replace("{{WG_PASS}}", passwd)
-                src = src.replace("{{WG_HOST}}", host)
-            else:
-                src = (
-                    src.replace("{{WG_USER}}", "")
-                    .replace("{{WG_PASS}}", "")
-                    .replace("{{WG_HOST}}", "")
-                )
+            src = src.replace("{{WG_USER}}", user)
+            src = src.replace("{{WG_PASS}}", passwd)
+            src = src.replace("{{WG_HOST}}", host)
             cell["source"] = src
 
         with tempfile.TemporaryDirectory() as tmp:
