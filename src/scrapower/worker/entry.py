@@ -41,6 +41,69 @@ def _detect_gpu() -> tuple[str, int]:
     return gpu_type, gpu_vram_mb
 
 
+def _bootstrap_credentials(coordinator_url: str, attempts: int = 5) -> str:
+    """Trade SCRAPOWER_BOOTSTRAP_TOKEN for the real credentials.
+
+    Returns the API key and, as a side effect, exports WG_PROXY so the
+    transcription runtime downloads through the residential proxy.
+
+    Retries with backoff: the exchange is the single point between "worker
+    booted" and "worker can do anything", and a transient network failure here
+    would otherwise waste a whole GPU session. The coordinator allows a token to
+    be redeemed more than once within its TTL precisely so this is safe.
+    """
+    import json
+    import time as _time
+    import urllib.error
+    import urllib.request
+
+    token = os.environ.get("SCRAPOWER_BOOTSTRAP_TOKEN", "")
+    if not token:
+        print(
+            "FATAL: neither SCRAPOWER_API_KEY nor SCRAPOWER_BOOTSTRAP_TOKEN is set",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    url = f"{coordinator_url.rstrip('/')}/worker/bootstrap"
+    payload = json.dumps({"token": token}).encode()
+    for attempt in range(attempts):
+        try:
+            req = urllib.request.Request(
+                url, data=payload, headers={"Content-Type": "application/json"}
+            )
+            with urllib.request.urlopen(req, timeout=20) as r:
+                data = json.loads(r.read().decode())
+            key = data.get("api_key", "")
+            if not key:
+                print("FATAL: bootstrap returned no api_key", file=sys.stderr)
+                sys.exit(1)
+            proxy = data.get("wg_proxy", "")
+            if proxy:
+                os.environ["WG_PROXY"] = proxy
+            print(
+                f"Bootstrap OK (attempt {attempt + 1}): credentials received"
+                f"{', proxy configured' if proxy else ', NO proxy'}",
+                file=sys.stderr,
+            )
+            return key
+        except urllib.error.HTTPError as e:
+            # 401 carries a machine-readable reason (expired/unknown/exhausted);
+            # surface it instead of retrying blindly into the same wall.
+            body = e.read().decode(errors="replace")[:200]
+            print(f"Bootstrap HTTP {e.code}: {body}", file=sys.stderr)
+            if e.code == 401:
+                print("FATAL: bootstrap token rejected - not retrying", file=sys.stderr)
+                sys.exit(1)
+        except Exception as e:
+            print(f"Bootstrap attempt {attempt + 1}/{attempts} failed: {e}", file=sys.stderr)
+        if attempt < attempts - 1:
+            _time.sleep(min(30, 2**attempt))
+
+    print("FATAL: bootstrap failed after all attempts", file=sys.stderr)
+    sys.exit(1)
+
+
 def _build_capabilities(
     *,
     gpu_type: str,
@@ -95,6 +158,12 @@ def main() -> None:
         sys.exit(1)
 
     api_key = os.environ.get("SCRAPOWER_API_KEY", "")
+    if not api_key:
+        # No key baked in: this worker was launched with a bootstrap token
+        # instead, so that no long-lived secret sits in a provider-stored
+        # artifact (e.g. Kaggle keeps notebook source and version history).
+        api_key = _bootstrap_credentials(coordinator_url)
+
     worker_prefix = os.environ.get("SCRAPOWER_WORKER_PREFIX", "worker")
     worker_id = f"{worker_prefix}-{uuid.uuid4().hex[:8]}"
 

@@ -65,6 +65,22 @@ CREATE TABLE IF NOT EXISTS channel_videos (
 );
 
 CREATE INDEX IF NOT EXISTS idx_channel_videos_task ON channel_videos(task_id);
+
+-- Bootstrap tokens: short-lived, opaque credentials embedded in a launched
+-- worker (e.g. a Kaggle notebook, whose source Kaggle stores and versions).
+-- The worker exchanges one for the real API key + proxy at startup, so no
+-- long-lived secret is ever written into a provider-stored artifact.
+CREATE TABLE IF NOT EXISTS bootstrap_tokens (
+    token        TEXT PRIMARY KEY,
+    provider     TEXT NOT NULL,
+    account_id   TEXT NOT NULL,
+    expires_at   REAL NOT NULL,
+    used_count   INTEGER NOT NULL DEFAULT 0,
+    last_used_at REAL,
+    created_at   REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_bootstrap_expires ON bootstrap_tokens(expires_at);
 """
 
 

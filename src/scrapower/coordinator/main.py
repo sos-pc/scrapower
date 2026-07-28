@@ -36,6 +36,7 @@ def _build_registry(
     api_key: str,
     log: logging.Logger,
     session_manager: SessionManager | None = None,
+    db=None,
 ) -> tuple[AccountRegistry, list[WorkerProvider]]:
     """Build AccountRegistry and WorkerProvider list from environment.
 
@@ -78,6 +79,7 @@ def _build_registry(
                         account_ids=kaggle_ids,
                         coordinator_url=coordinator_url,
                         api_key=api_key,
+                        db=db,  # enables bootstrap tokens instead of baked secrets
                     )
                 )
         except json.JSONDecodeError:
@@ -261,12 +263,12 @@ async def lifespan(app: FastAPI):
     await _purge_orphaned_assignments(db, log)
 
     # Start maintenance loop (requeue stale + cleanup expired tasks)
-    maint_task = asyncio.create_task(_maintenance_loop(task_service, log))
+    maint_task = asyncio.create_task(_maintenance_loop(task_service, log, db))
 
     # Ephemeral harvester - builds AccountRegistry + WorkerProviders from env
     coordinator_url = config.coordinator_url
     api_key = os.environ.get("SCRAPOWER_API_KEY", "")
-    registry, providers = _build_registry(config, coordinator_url, api_key, log, manager)
+    registry, providers = _build_registry(config, coordinator_url, api_key, log, manager, db)
 
     # Start GC
     gc_task = asyncio.create_task(_gc_loop(config, db))
@@ -352,12 +354,13 @@ async def _gc_loop(config: Config, db) -> None:
             log.exception("gc failed")
 
 
-async def _maintenance_loop(task_service, log) -> None:
+async def _maintenance_loop(task_service, log, db=None) -> None:
     """Recover stale tasks and clean up expired ones.
 
     Runs every 15 seconds:
       - requeue_stale(): recover ASSIGNED tasks silent for config.stale_after_sec
-      - cleanup_expired(): delete old COMPLETED/FAILED tasks (every 5 min)"""
+      - cleanup_expired(): delete old COMPLETED/FAILED tasks (every 5 min)
+      - purge_expired(): drop spent bootstrap tokens (every 5 min)"""
     tick = 0
     while True:
         await asyncio.sleep(15)
@@ -375,6 +378,13 @@ async def _maintenance_loop(task_service, log) -> None:
                     log.info("cleanup completed", cleaned_tasks=cleaned)
             except Exception:
                 log.exception("cleanup failed")
+            if db is not None:
+                try:
+                    from .bootstrap import purge_expired
+
+                    await purge_expired(db)
+                except Exception:
+                    log.exception("bootstrap token purge failed")
 
 
 # App

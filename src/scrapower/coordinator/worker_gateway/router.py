@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+import logging
+import os
+
+import structlog
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
-from ..security import verify_api_key
+from ..bootstrap import BootstrapError, redeem_token
+from ..security import rate_limit, verify_api_key
 from .http_handler import _save_worker_logs, pull, submit
 from .session import SessionManager
+
+log = logging.getLogger(__name__)
+# structlog (like security.py) so the structured kwargs below actually render;
+# a stdlib logger would raise on them.
+_audit = structlog.get_logger("audit")
 
 router = APIRouter()
 
@@ -15,6 +25,48 @@ router = APIRouter()
 session_manager: SessionManager | None = None
 task_manager = None  # set by coordinator lifespan
 task_service = None  # type: ignore[assignment]
+
+
+@router.post("/worker/bootstrap")
+async def worker_bootstrap(request: Request, _rate=Depends(rate_limit)):
+    """Exchange a short-lived bootstrap token for the worker's credentials.
+
+    Deliberately NOT protected by the API key: the whole point is that a freshly
+    launched worker does not have it yet. The token is the credential — opaque,
+    short-lived, scoped to this exchange only. Rate-limited per IP and audited.
+
+    Body:     { "token": "..." }
+    Returns:  { "api_key": "...", "wg_proxy": "socks5://..." }
+    """
+    ip = request.client.host if request.client else "unknown"
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "INVALID_BODY"}, status_code=400)
+
+    token = body.get("token", "")
+    db = request.app.state.db
+    try:
+        info = await redeem_token(db, token)
+    except BootstrapError as e:
+        # Distinct reasons so a stranded worker's logs say why.
+        _audit.warning("BOOTSTRAP_REJECTED", ip=ip, reason=e.reason)
+        return JSONResponse({"error": "UNAUTHORIZED", "reason": e.reason}, status_code=401)
+
+    _audit.warning(
+        "BOOTSTRAP_REDEEMED",
+        ip=ip,
+        account=info["account_id"],
+        provider=info["provider"],
+        use=info["use_count"],
+    )
+    return JSONResponse(
+        {
+            "api_key": os.environ.get("SCRAPOWER_API_KEY", ""),
+            "wg_proxy": os.environ.get("SCRAPOWER_WG_PROXY_PUBLIC", "")
+            or os.environ.get("SCRAPOWER_WG_PROXY", ""),
+        }
+    )
 
 
 @router.post("/worker/pull")

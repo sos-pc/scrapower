@@ -54,10 +54,16 @@ class KaggleHarvester(WorkerProvider):
         coordinator_url: str = "",
         api_key: str = "",
         notebook_template: str | None = None,
+        db=None,
     ):
         self._account_ids = account_ids
         self._coordinator_url = coordinator_url
         self._api_key = api_key
+        # When set, kernels get a short-lived bootstrap token instead of the API
+        # key and proxy password (Kaggle stores notebook source + history).
+        # Without it we fall back to embedding them, so an older deployment or a
+        # test without a database still works.
+        self._db = db
         self._notebook_template = notebook_template or self._find_notebook()
         self._last_start: dict[str, float] = {}
         self._last_cleanup: float = 0
@@ -176,6 +182,15 @@ class KaggleHarvester(WorkerProvider):
             )
             user = passwd = host = ""
 
+        # Prefer a bootstrap token: Kaggle keeps notebook source and version
+        # history, so the API key and proxy password must not be written into it.
+        # The worker trades the token for them over HTTPS at startup.
+        bootstrap_token = ""
+        if self._db is not None:
+            from ..bootstrap import issue_token
+
+            bootstrap_token = await issue_token(self._db, "kaggle", account.id)
+
         for cell in nb.get("cells", []):
             if cell.get("cell_type") != "code":
                 continue
@@ -183,10 +198,19 @@ class KaggleHarvester(WorkerProvider):
             if isinstance(src, list):
                 src = "".join(src)
             src = src.replace("{{COORDINATOR_URL}}", self._coordinator_url)
-            src = src.replace("{{API_KEY}}", self._api_key)
-            src = src.replace("{{WG_USER}}", user)
-            src = src.replace("{{WG_PASS}}", passwd)
-            src = src.replace("{{WG_HOST}}", host)
+            src = src.replace("{{BOOTSTRAP_TOKEN}}", bootstrap_token)
+            if bootstrap_token:
+                # Nothing sensitive goes into the notebook; the worker fetches
+                # both the key and the proxy after redeeming the token.
+                src = src.replace("{{API_KEY}}", "")
+                src = src.replace("{{WG_USER}}", "")
+                src = src.replace("{{WG_PASS}}", "")
+                src = src.replace("{{WG_HOST}}", "")
+            else:
+                src = src.replace("{{API_KEY}}", self._api_key)
+                src = src.replace("{{WG_USER}}", user)
+                src = src.replace("{{WG_PASS}}", passwd)
+                src = src.replace("{{WG_HOST}}", host)
             cell["source"] = src
 
         with tempfile.TemporaryDirectory() as tmp:
