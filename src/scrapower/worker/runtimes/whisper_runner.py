@@ -89,6 +89,24 @@ def _with_format(args, fmt):
     return out
 
 
+def _clear_partials(workdir):
+    """Drop half-downloaded files before retrying with a different format.
+
+    yt-dlp resumes a .part file by default, and it keys that file on the video
+    id, not on the format. So a fallback to another rendition appends its bytes
+    to whatever the failed attempt left behind -- 161 bytes of nothing, in the
+    case that prompted this -- and the result is a corrupt container that decodes
+    to a fraction of the audio. Both attempts then produce the same wrong length,
+    which is what gave the game away.
+    """
+    for f in list(workdir.glob("*.part")) + list(workdir.glob("*.ytdl")):
+        try:
+            f.unlink()
+            print(f"[whisper_runner] discarded partial {f.name}", file=sys.stderr)
+        except OSError:
+            pass
+
+
 def _download_audio(url, workdir, cookies_path=None):
     is_direct = any(url.lower().endswith(e) for e in DIRECT_EXTS) or "/blobs/" in url
     if is_direct:
@@ -139,6 +157,7 @@ def _download_audio(url, workdir, cookies_path=None):
         print(
             "[whisper_runner] stream truncated, retrying a different audio format", file=sys.stderr
         )
+        _clear_partials(workdir)
         ok, rc, stderr = _run_ytdlp(_with_format(args, FALLBACK_FORMAT))
 
     if not ok:

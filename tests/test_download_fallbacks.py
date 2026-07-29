@@ -56,6 +56,36 @@ def test_a_truncated_stream_retries_another_format(runs, tmp_path, capsys):
     assert "truncated" in capsys.readouterr().err
 
 
+def test_the_failed_attempts_partial_file_is_discarded(runs, tmp_path, capsys):
+    """yt-dlp resumes .part by video id, not by format, so a leftover from the
+    broken rendition would be prepended to the fallback's bytes."""
+    calls, script = runs
+    script.append((False, 1, TRUNCATED))
+    script.append((True, 0, ""))
+    stale = tmp_path / "vid.m4a.part"
+    stale.write_bytes(b"x" * 161)
+    (tmp_path / "vid.ytdl").write_text("{}", encoding="utf-8")
+    (tmp_path / "vid.m4a").write_bytes(b"audio")
+
+    wr._download_audio("https://www.bilibili.com/video/BV1x/?p=9", tmp_path)
+
+    assert not stale.exists(), "the fallback must not resume another format's bytes"
+    assert not (tmp_path / "vid.ytdl").exists(), "the resume ledger goes too"
+    assert "discarded partial" in capsys.readouterr().err
+
+
+def test_partials_are_kept_when_no_format_retry_happens(runs, tmp_path):
+    """A successful download's own .part handling is yt-dlp's business."""
+    calls, _ = runs
+    stale = tmp_path / "vid.m4a.part"
+    stale.write_bytes(b"x")
+    (tmp_path / "vid.m4a").write_bytes(b"audio")
+
+    wr._download_audio("https://youtu.be/x", tmp_path)
+
+    assert stale.exists(), "nothing to clean up when the first attempt worked"
+
+
 def test_a_successful_download_does_not_retry(runs, tmp_path):
     calls, _ = runs
     (tmp_path / "vid.m4a").write_bytes(b"audio")
