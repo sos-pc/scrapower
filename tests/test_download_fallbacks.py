@@ -142,41 +142,44 @@ def test_a_timeout_becomes_a_download_error(monkeypatch, tmp_path):
 # ── Truncation guard ───────────────────────────────────────────────────────
 
 
-@pytest.fixture
-def probe(monkeypatch):
-    """Control the measured audio duration."""
-
-    def set_to(seconds):
-        monkeypatch.setattr(wr, "_audio_duration", lambda p: seconds)
-
-    return set_to
-
-
 def _advertise(tmp_path, seconds):
     (tmp_path / "vid.info.json").write_text(json.dumps({"duration": seconds}), encoding="utf-8")
     (tmp_path / "vid.m4a").write_bytes(b"audio")
 
 
-def test_a_truncated_file_is_rejected(tmp_path, probe):
-    """The bug this exists for: 54s of audio delivered for a 7320s lecture."""
-    _advertise(tmp_path, 7320)
-    probe(54.4)
-
+def test_a_truncated_download_is_rejected():
+    """The bug this exists for: 54s decoded from a 7347s lecture, delivered."""
     with pytest.raises(wr.DownloadError, match="truncated download"):
-        wr._verify_complete(tmp_path / "vid.m4a", tmp_path)
+        wr._verify_duration(54.4, 7347.0)
 
 
-def test_a_complete_file_passes(tmp_path, probe):
-    _advertise(tmp_path, 7320)
-    probe(7318.0)
-    wr._verify_complete(tmp_path / "vid.m4a", tmp_path)
+def test_a_complete_download_passes():
+    wr._verify_duration(7345.0, 7347.0)
 
 
-def test_small_shortfalls_are_tolerated(tmp_path, probe):
-    """Container duration and stream duration rarely agree to the second."""
-    _advertise(tmp_path, 1000)
-    probe(1000 * wr.MIN_DURATION_RATIO + 1)
-    wr._verify_complete(tmp_path / "vid.m4a", tmp_path)
+def test_small_shortfalls_are_tolerated():
+    """Decoded length and advertised length rarely agree to the second."""
+    wr._verify_duration(1000 * wr.MIN_DURATION_RATIO + 1, 1000)
+
+
+@pytest.mark.parametrize(
+    ("actual", "expected", "reason"),
+    [
+        (12.0, 0.0, "site advertised nothing"),
+        (0.0, 7347.0, "decoder reported nothing"),
+    ],
+)
+def test_no_opinion_without_both_numbers(actual, expected, reason):
+    """Never fail a task just because a reference is missing."""
+    wr._verify_duration(actual, expected)
+
+
+# ── Advertised duration ────────────────────────────────────────────────────
+
+
+def test_the_advertised_duration_is_read(tmp_path):
+    _advertise(tmp_path, 7347)
+    assert wr._expected_duration(tmp_path) == 7347.0
 
 
 @pytest.mark.parametrize(
@@ -190,36 +193,10 @@ def test_small_shortfalls_are_tolerated(tmp_path, probe):
         ('{"duration": {"nested": 1}}', "duration is not a scalar"),
     ],
 )
-def test_the_guard_stays_out_of_the_way_without_a_reference(tmp_path, probe, info, reason):
-    """No expected duration means no opinion -- never fail a task over that."""
-    (tmp_path / "vid.m4a").write_bytes(b"audio")
+def test_an_unusable_info_json_yields_no_reference(tmp_path, info, reason):
     if info is not None:
         (tmp_path / "vid.info.json").write_text(info, encoding="utf-8")
-    probe(12.0)
-    wr._verify_complete(tmp_path / "vid.m4a", tmp_path)
-
-
-def test_a_missing_ffprobe_does_not_fail_the_task(tmp_path, monkeypatch):
-    _advertise(tmp_path, 7320)
-    monkeypatch.setattr(wr, "_audio_duration", lambda p: None)
-    wr._verify_complete(tmp_path / "vid.m4a", tmp_path)
-
-
-def test_audio_duration_returns_none_when_ffprobe_is_absent(monkeypatch, tmp_path):
-    def no_binary(*a, **kw):
-        raise FileNotFoundError("ffprobe")
-
-    monkeypatch.setattr(wr.subprocess, "run", no_binary)
-    assert wr._audio_duration(tmp_path / "x.m4a") is None
-
-
-def test_the_download_path_applies_the_guard(runs, tmp_path, probe):
-    """Wiring: a truncated file must not reach the transcriber."""
-    _advertise(tmp_path, 7320)
-    probe(54.4)
-
-    with pytest.raises(wr.DownloadError, match="truncated download"):
-        wr._download_audio("https://www.bilibili.com/video/BV1x/?p=9", tmp_path)
+    assert wr._expected_duration(tmp_path) == 0.0
 
 
 def test_the_info_json_is_requested(runs, tmp_path):
@@ -227,6 +204,94 @@ def test_the_info_json_is_requested(runs, tmp_path):
     (tmp_path / "vid.m4a").write_bytes(b"audio")
     wr._download_audio("https://youtu.be/x", tmp_path)
     assert "--write-info-json" in calls[0], "without it there is nothing to compare against"
+
+
+def test_transcribe_rejects_a_short_decode(monkeypatch, tmp_path):
+    """Wiring: the check must sit on the path that produces the transcript."""
+
+    class Seg:
+        start, end, text = 0.0, 54.4, " fragment"
+
+    monkeypatch.setattr(
+        wr, "_transcribe_faster_whisper", lambda *a, **kw: ([Seg()], "zh", 54.4, "cuda")
+    )
+    with pytest.raises(wr.DownloadError, match="truncated download"):
+        wr._transcribe(tmp_path / "vid.m4a", "large-v3", "zh", "json", expected_duration=7347.0)
+
+
+def test_transcribe_returns_normally_without_an_expected_duration(monkeypatch, tmp_path):
+    """A coordinator-supplied audio blob has no advertised duration to check."""
+
+    class Seg:
+        start, end, text = 0.0, 54.4, " fragment"
+
+    monkeypatch.setattr(
+        wr, "_transcribe_faster_whisper", lambda *a, **kw: ([Seg()], "zh", 54.4, "cuda")
+    )
+    out = wr._transcribe(tmp_path / "vid.m4a", "large-v3", "zh", "json")
+    assert "fragment" in out
+
+
+# ── main(): the wiring that actually runs in production ────────────────────
+
+
+class _Seg:
+    start, end, text = 0.0, 54.4, " fragment"
+
+
+@pytest.fixture
+def fake_worker(monkeypatch, tmp_path):
+    """Run main() without network, pip or a GPU.
+
+    Covers the one line that matters most: main() has to hand the advertised
+    duration to _transcribe. Nothing else notices if it stops doing so.
+    """
+
+    def setup(advertised, decoded):
+        monkeypatch.setattr(wr, "_ensure_deps", lambda: None)
+
+        def fake_download(url, workdir, cookies_path=None):
+            (workdir / "vid.info.json").write_text(
+                json.dumps({"duration": advertised}), encoding="utf-8"
+            )
+            audio = workdir / "vid.m4a"
+            audio.write_bytes(b"audio")
+            return audio
+
+        monkeypatch.setattr(wr, "_download_audio", fake_download)
+        monkeypatch.setattr(
+            wr,
+            "_transcribe_faster_whisper",
+            lambda *a, **kw: ([_Seg()], "zh", decoded, "cuda"),
+        )
+        monkeypatch.setattr(
+            wr.sys, "argv", ["whisper_runner", json.dumps({"url": "https://x/v", "format": "json"})]
+        )
+
+    return setup
+
+
+def _result(capsys):
+    return json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+
+
+def test_main_reports_a_truncated_download_as_a_download_error(fake_worker, capsys):
+    """exit_code 2 is what tells the coordinator to retry the download."""
+    fake_worker(advertised=7347, decoded=54.4)
+    wr.main()
+
+    out = _result(capsys)
+    assert out["exit_code"] == 2, "a fragment must not come back as a success"
+    assert "truncated download" in bytes.fromhex(out["output_bytes"]).decode()
+
+
+def test_main_succeeds_on_a_complete_download(fake_worker, capsys):
+    fake_worker(advertised=7347, decoded=7345.0)
+    wr.main()
+
+    out = _result(capsys)
+    assert out["exit_code"] == 0
+    assert "fragment" in bytes.fromhex(out["output_bytes"]).decode()
 
 
 def test_with_format_replaces_only_the_format(runs):

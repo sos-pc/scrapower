@@ -146,61 +146,50 @@ def _download_audio(url, workdir, cookies_path=None):
 
     for f in workdir.iterdir():
         if f.suffix in (".m4a", ".opus", ".webm", ".mp3"):
-            _verify_complete(f, workdir)
             return f
     raise FileNotFoundError(f"No audio in {workdir}")
 
 
 # A truncated download is worse than a failed one: yt-dlp can exit 0 on a partial
-# file, Whisper transcribes the fragment without complaining, and a 54-second
-# transcript of a two-hour lecture gets delivered as if it were valid. That
-# happened. So compare what landed against what the site advertised.
+# file, Whisper transcribes the fragment without complaining, and 54 seconds of a
+# 7347-second lecture get delivered as a valid transcript. That happened.
+#
+# The check has to use a *decoded* length. An m4a's container metadata still
+# claims the full duration after truncation -- `ffprobe -show_entries
+# format=duration` reported 7347s for the very file Whisper decoded as 54s -- so
+# reading the header is not merely weak, it actively passes the bad case.
+# faster-whisper's info.duration is measured by decoding, and it is the length
+# that actually got transcribed, so that is the number to trust. Checking after
+# transcription costs GPU time in proportion to how truncated the audio was: the
+# 54-second fragment took 30 seconds to transcribe.
 MIN_DURATION_RATIO = 0.9
 
 
-def _audio_duration(path):
-    """Seconds of decodable audio, or None if ffprobe is unavailable."""
-    try:
-        out = subprocess.run(
-            [
-                "ffprobe",
-                "-v",
-                "error",
-                "-show_entries",
-                "format=duration",
-                "-of",
-                "default=noprint_wrappers=1:nokey=1",
-                str(path),
-            ],
-            check=True,
-            capture_output=True,
-            timeout=120,
-        )
-        return float(out.stdout.decode().strip())
-    except (OSError, subprocess.SubprocessError, ValueError) as e:
-        print(f"[whisper_runner] duration probe unavailable: {e}", file=sys.stderr)
-        return None
-
-
-def _verify_complete(audio_path, workdir):
-    """Raise DownloadError if the audio is materially shorter than advertised."""
+def _expected_duration(workdir):
+    """Seconds the site advertised, or 0 when there is nothing to compare against."""
     info = next(workdir.glob("*.info.json"), None)
     if info is None:
-        return  # nothing to compare against; not worth failing the task over
+        return 0.0
     try:
-        expected = float(json.loads(info.read_text(encoding="utf-8")).get("duration") or 0)
+        return float(json.loads(info.read_text(encoding="utf-8")).get("duration") or 0)
     except (json.JSONDecodeError, OSError, TypeError, ValueError, AttributeError):
-        # Anything unreadable, non-numeric, or not even an object: no reference,
-        # so no opinion. This guard exists to catch bad downloads, not to invent
-        # new ways for a good one to fail.
+        # Unreadable, non-numeric, or not even an object: no reference, so no
+        # opinion. This guard exists to catch bad downloads, not to invent new
+        # ways for a good one to fail.
+        return 0.0
+
+
+def _verify_duration(actual, expected):
+    """Raise DownloadError if the decoded audio is materially short."""
+    if not expected or not actual:
         return
-    actual = _audio_duration(audio_path)
-    if not expected or actual is None:
-        return
-    print(f"[whisper_runner] audio {actual:.0f}s of {expected:.0f}s advertised", file=sys.stderr)
+    print(
+        f"[whisper_runner] decoded {actual:.0f}s of {expected:.0f}s advertised",
+        file=sys.stderr,
+    )
     if actual < expected * MIN_DURATION_RATIO:
         raise DownloadError(
-            f"truncated download: {actual:.0f}s of audio, expected {expected:.0f}s "
+            f"truncated download: decoded {actual:.0f}s, expected {expected:.0f}s "
             f"({actual / expected:.0%})"
         )
 
@@ -323,7 +312,14 @@ def _transcribe_faster_whisper(
 
 
 def _transcribe(
-    audio_path, model_name, language, fmt, task="transcribe", initial_prompt="", hotwords=""
+    audio_path,
+    model_name,
+    language,
+    fmt,
+    task="transcribe",
+    initial_prompt="",
+    hotwords="",
+    expected_duration=0.0,
 ):
     """Transcribe (or translate to English) audio. Tries CUDA first, then CPU."""
     result = _transcribe_faster_whisper(
@@ -337,6 +333,9 @@ def _transcribe(
     if result is None:
         raise RuntimeError("No viable device for WhisperModel")
     seg_list, lang, dur, _ = result
+    # `dur` is decoded, not read off the container header, so this is the one
+    # place that can tell a short download from a short video.
+    _verify_duration(dur, expected_duration)
     return _format_segments(seg_list, lang, dur, fmt)
 
 
@@ -377,6 +376,9 @@ def main():
                 audio_path = _download_audio(url, workdir, cookies_path)
             else:
                 raise ValueError("Neither audio_hash nor url provided")
+            # Only the URL path has an advertised duration to check against; a
+            # coordinator-supplied blob has already been accepted upstream.
+            expected_duration = _expected_duration(workdir) if not audio_hash else 0.0
             print(f"Transcribing: {model_name} (task={task})", file=sys.stderr)
             start = time.time()
             transcript = _transcribe(
@@ -387,6 +389,7 @@ def main():
                 task=task,
                 initial_prompt=initial_prompt,
                 hotwords=hotwords,
+                expected_duration=expected_duration,
             )
             print(f"Done in {time.time() - start:.1f}s", file=sys.stderr)
         output = transcript.encode("utf-8")
