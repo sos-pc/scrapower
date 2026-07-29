@@ -25,12 +25,20 @@ _FOLDER_MIME = "application/vnd.google-apps.folder"
 # ── Pure rendering helpers (unit-tested) ───────────────────────────────────
 
 
+def _col(row, name: str, default=""):
+    """Read a column that a migration may not have added yet (see db.py)."""
+    try:
+        return (row[name] if name in row.keys() else default) or default
+    except (AttributeError, IndexError, KeyError):
+        return default
+
+
 def sanitize_name(name: str, max_len: int = 120) -> str:
     """Make a title safe as a file/folder name on disk and Drive."""
     name = name.strip().replace("/", "-").replace("\\", "-")
     name = re.sub(r'[<>:"|?*\x00-\x1f]', "", name)
     name = re.sub(r"\s+", " ", name).strip(" .")
-    return (name[:max_len].rstrip() or "sans-titre")
+    return name[:max_len].rstrip() or "sans-titre"
 
 
 def _fmt_ts(sec: float) -> str:
@@ -46,8 +54,39 @@ def _fmt_duration(sec) -> str:
     return f"{h}h {m:02d}min" if h else f"{m}min"
 
 
-def render_markdown(meta: dict, transcript_json: str, model: str = "turbo") -> str:
-    """Render one transcript (whisper JSON output) to Markdown with timestamps."""
+def apply_glossary(text: str, glossary: dict[str, str] | None) -> str:
+    """Replace known mistranslations, longest key first.
+
+    Whisper renders some entities literally rather than as their established
+    name — a Chinese lecture came back with BRICS spelled five different ways
+    ("gold brick country", "Jinzhan", "Briggs"...). Those errors are systematic,
+    so a substitution pass fixes them without re-transcribing anything.
+
+    Longest-first matters: "gold brick country" must be consumed before
+    "gold brick" so the shorter key can't leave "BRICS country" behind.
+    Matching is case-insensitive but only on whole words, so a key can't
+    corrupt the inside of a longer word.
+    """
+    if not glossary:
+        return text
+    for wrong in sorted(glossary, key=len, reverse=True):
+        right = glossary[wrong]
+        text = re.sub(rf"\b{re.escape(wrong)}\b", right, text, flags=re.IGNORECASE)
+    return text
+
+
+def render_markdown(
+    meta: dict,
+    transcript_json: str,
+    model: str = "turbo",
+    glossary: dict[str, str] | None = None,
+) -> str:
+    """Render one transcript (whisper JSON output) to Markdown with timestamps.
+
+    ``meta["title"]`` may be a translated title; ``meta["title_original"]`` (when
+    different) is kept in the header alongside the URL so the source is always
+    identifiable.
+    """
     try:
         data = json.loads(transcript_json)
     except (json.JSONDecodeError, TypeError):
@@ -57,21 +96,31 @@ def render_markdown(meta: dict, transcript_json: str, model: str = "turbo") -> s
     duration = duration or meta.get("duration")
     today = datetime.date.today().isoformat()
 
-    out = [f"# {meta.get('title', '?')}", ""]
+    title = meta.get("title", "?")
+    original = meta.get("title_original") or ""
+
+    out = [f"# {title}", ""]
+    if original and original != title:
+        out.append(f"- **Titre original** : {original}")
     out.append(f"- **URL** : {meta.get('url', '?')}")
     if meta.get("playlists"):
         out.append(f"- **Playlists** : {', '.join(meta['playlists'])}")
-    out.append(
+    line = (
         f"- **Durée** : {_fmt_duration(duration)}"
-        f" · **Langue** : {data.get('language', '?') if isinstance(data, dict) else '?'}"
+        f" · **Langue source** : {data.get('language', '?') if isinstance(data, dict) else '?'}"
         f" · **Modèle** : {model}"
     )
+    if meta.get("task") and meta["task"] != "transcribe":
+        line += f" · **Tâche** : {meta['task']}"
+    out.append(line)
     out.append(f"- **Transcrit le** : {today}")
+    if glossary:
+        out.append(f"- **Glossaire appliqué** : {len(glossary)} terme(s) corrigé(s)")
     out += ["", "---", ""]
 
     if segments:
         for seg in segments:
-            text = str(seg.get("text", "")).strip()
+            text = apply_glossary(str(seg.get("text", "")).strip(), glossary)
             if text:
                 out.append(f"**[{_fmt_ts(seg.get('start', 0))}]** {text}")
                 out.append("")
@@ -106,18 +155,19 @@ class DriveClient:
             f"and '{parent_id}' in parents and trashed = false"
         )
         found = (
-            self._svc.files()
-            .list(q=q, fields="files(id)", pageSize=1)
-            .execute()
-            .get("files", [])
+            self._svc.files().list(q=q, fields="files(id)", pageSize=1).execute().get("files", [])
         )
         if found:
             fid = found[0]["id"]
         else:
-            fid = self._svc.files().create(
-                body={"name": name, "mimeType": _FOLDER_MIME, "parents": [parent_id]},
-                fields="id",
-            ).execute()["id"]
+            fid = (
+                self._svc.files()
+                .create(
+                    body={"name": name, "mimeType": _FOLDER_MIME, "parents": [parent_id]},
+                    fields="id",
+                )
+                .execute()["id"]
+            )
         self._folder_cache[key] = fid
         return fid
 
@@ -129,10 +179,7 @@ class DriveClient:
         safe = filename.replace("'", "\\'")
         q = f"name = '{safe}' and '{folder_id}' in parents and trashed = false"
         found = (
-            self._svc.files()
-            .list(q=q, fields="files(id)", pageSize=1)
-            .execute()
-            .get("files", [])
+            self._svc.files().list(q=q, fields="files(id)", pageSize=1).execute().get("files", [])
         )
         if found:
             self._svc.files().update(fileId=found[0]["id"], media_body=media).execute()
@@ -184,8 +231,8 @@ async def deliver_completed(db, blob_dir: str, config) -> int:
     from ..blob_store import get_blob
 
     cur = await db.execute(
-        """SELECT cv.job_id, cv.video_id, cv.url, cv.title, cv.duration,
-                  cv.playlists_json, t.output_hash, j.model, j.config_json
+        """SELECT cv.job_id, cv.video_id, cv.url, cv.title, cv.title_original,
+                  cv.duration, cv.playlists_json, t.output_hash, j.model, j.config_json
            FROM channel_videos cv
            JOIN tasks t ON cv.task_id = t.id
            JOIN channel_jobs j ON cv.job_id = j.id
@@ -205,17 +252,21 @@ async def deliver_completed(db, blob_dir: str, config) -> int:
                 continue
             raw_json = data.decode("utf-8", errors="replace")
             try:
-                formats = json.loads(row["config_json"]).get("formats", ["md", "json"])
+                cfg = json.loads(row["config_json"])
             except (json.JSONDecodeError, TypeError):
-                formats = ["md", "json"]
+                cfg = {}
+            formats = cfg.get("formats", ["md", "json"])
+            glossary = cfg.get("glossary") or None
             meta = {
                 "video_id": row["video_id"],
                 "url": row["url"],
                 "title": row["title"] or row["video_id"],
+                "title_original": _col(row, "title_original"),
                 "duration": row["duration"],
+                "task": cfg.get("task"),
                 "playlists": json.loads(row["playlists_json"] or "[]"),
             }
-            md = render_markdown(meta, raw_json, model=row["model"])
+            md = render_markdown(meta, raw_json, model=row["model"], glossary=glossary)
             await loop.run_in_executor(
                 None, _write_targets, config, drive, meta, md, raw_json, formats
             )

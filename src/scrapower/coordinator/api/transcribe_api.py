@@ -68,6 +68,9 @@ async def _register_delivery(
     folder: str,
     model: str,
     formats: list[str],
+    title_override: str = "",
+    glossary: dict[str, str] | None = None,
+    whisper_task: str = "transcribe",
 ) -> None:
     """Make a single-video transcript eligible for the existing delivery sweep.
 
@@ -82,25 +85,33 @@ async def _register_delivery(
 
     meta = await fetch_video_meta(url)
     video_id = meta.get("id") or task_id[:12]
-    title = meta.get("title") or video_id
+    original = meta.get("title") or video_id
+    # A caller-supplied title (typically a translation) names the file; the
+    # provider's own title is kept so the header can point back to the source.
+    title = title_override or original
 
     now = str(_time.time())
     job_id = f"single-{task_id[:16]}"
+    config = {"formats": formats, "task": whisper_task}
+    if glossary:
+        config["glossary"] = glossary
     await db.execute(
         """INSERT OR IGNORE INTO channel_jobs
            (id, channel_url, model, config_json, state, created_at, updated_at)
            VALUES (?, ?, ?, ?, 'running', ?, ?)""",
-        (job_id, url, model, json.dumps({"formats": formats}), now, now),
+        (job_id, url, model, json.dumps(config, ensure_ascii=False), now, now),
     )
     await db.execute(
         """INSERT OR IGNORE INTO channel_videos
-           (job_id, video_id, url, title, duration, playlists_json, task_id, delivered)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 0)""",
+           (job_id, video_id, url, title, title_original, duration, playlists_json,
+            task_id, delivered)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)""",
         (
             job_id,
             video_id,
             url,
             title,
+            original,
             meta.get("duration"),
             json.dumps([folder], ensure_ascii=False),
             task_id,
@@ -114,9 +125,7 @@ def _validate_task(raw, model: str) -> str:
     """Normalise the requested Whisper task, rejecting combinations that can't work."""
     task = (raw or "transcribe").strip().lower()
     if task not in VALID_TASKS:
-        raise HTTPException(
-            400, {"error": f"task must be one of {VALID_TASKS}", "got": task}
-        )
+        raise HTTPException(400, {"error": f"task must be one of {VALID_TASKS}", "got": task})
     if task == "translate" and any(m in model for m in NO_TRANSLATE_MODELS):
         raise HTTPException(
             400,
@@ -153,6 +162,14 @@ async def transcribe(request: Request):
     whisper_task = _validate_task(body.get("task"), model)
     folder = (body.get("folder") or DEFAULT_SINGLE_FOLDER).strip() or DEFAULT_SINGLE_FOLDER
     deliver = bool(body.get("deliver", True))
+    title_override = (body.get("title") or "").strip()
+    glossary = body.get("glossary") or None
+    if glossary is not None and not isinstance(glossary, dict):
+        raise HTTPException(400, {"error": "glossary must be an object of wrong -> right"})
+    # Nudge Whisper towards the right spelling of recurring proper nouns.
+    # hotwords is the targeted mechanism; initial_prompt biases style/context.
+    initial_prompt = (body.get("initial_prompt") or "").strip()
+    hotwords = (body.get("hotwords") or "").strip()
     cookies_hash = body.get("cookies_hash") or os.environ.get("SCRAPOWER_YT_COOKIES_HASH", "")
 
     task_service = request.app.state.task_service
@@ -189,6 +206,8 @@ async def transcribe(request: Request):
             db,
             config.blob_dir,
             task=whisper_task,
+            initial_prompt=initial_prompt,
+            hotwords=hotwords,
         )
 
     _spawn(task_service.run_prepare(task_id, _prepare, log))
@@ -197,7 +216,19 @@ async def transcribe(request: Request):
         # Registered in the background: it costs a yt-dlp metadata lookup (a few
         # seconds through the residential proxy) and must not delay the response.
         formats = body.get("formats") or ["md", "json"]
-        _spawn(_register_delivery(db, task_id, url, folder, model, formats))
+        _spawn(
+            _register_delivery(
+                db,
+                task_id,
+                url,
+                folder,
+                model,
+                formats,
+                title_override=title_override,
+                glossary=glossary,
+                whisper_task=whisper_task,
+            )
+        )
 
     return JSONResponse(
         {
@@ -223,6 +254,8 @@ async def _prepare_whisper_input(
     db,
     blob_dir: str,
     task: str = "transcribe",
+    initial_prompt: str = "",
+    hotwords: str = "",
 ) -> str:
     """Build input config for worker. Worker downloads audio + runs whisper."""
     import json as _json
@@ -238,6 +271,8 @@ async def _prepare_whisper_input(
             "language": language,
             "format": fmt,
             "task": task,
+            "initial_prompt": initial_prompt,
+            "hotwords": hotwords,
         }
     ).encode()
 
@@ -305,6 +340,8 @@ async def batch_transcribe(request: Request):
     language = body.get("language") or None
     fmt = body.get("format", "json")
     whisper_task = _validate_task(body.get("task"), model)
+    initial_prompt = (body.get("initial_prompt") or "").strip()
+    hotwords = (body.get("hotwords") or "").strip()
     max_videos = min(body.get("max_videos", 10), 50)
     cookies_hash = body.get("cookies_hash") or os.environ.get("SCRAPOWER_YT_COOKIES_HASH", "")
 
@@ -349,6 +386,8 @@ async def batch_transcribe(request: Request):
                 db,
                 config.blob_dir,
                 task=whisper_task,
+                initial_prompt=initial_prompt,
+                hotwords=hotwords,
             )
 
         _spawn(task_service.run_prepare(task_id, _prepare, log))

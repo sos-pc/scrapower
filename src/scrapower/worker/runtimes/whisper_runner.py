@@ -128,7 +128,9 @@ def _format_segments(seg_list, language, duration, fmt):
 # -- Backend: faster-whisper (ctranslate2) --------------------------
 
 
-def _transcribe_faster_whisper(audio_path, model_name, language, task="transcribe"):
+def _transcribe_faster_whisper(
+    audio_path, model_name, language, task="transcribe", initial_prompt="", hotwords=""
+):
     """Return (seg_list, language_str, duration_sec, device_used) or None.
 
     ``language`` is the language *spoken in the audio* (a decoding hint), not an
@@ -162,7 +164,19 @@ def _transcribe_faster_whisper(audio_path, model_name, language, task="transcrib
         return None
 
     batched = BatchedInferencePipeline(model=model)
-    print(f"[whisper_runner] task={task} language={language or 'auto'}", file=sys.stderr)
+    print(
+        f"[whisper_runner] task={task} language={language or 'auto'}"
+        f" hotwords={'yes' if hotwords else 'no'}"
+        f" initial_prompt={'yes' if initial_prompt else 'no'}",
+        file=sys.stderr,
+    )
+    kwargs = {}
+    if initial_prompt:
+        kwargs["initial_prompt"] = initial_prompt
+    if hotwords:
+        # Targeted at recurring proper nouns, which is where translation drifts
+        # most (BRICS came back as "gold brick country", SCO as "Shanghe").
+        kwargs["hotwords"] = hotwords
     segments, info = batched.transcribe(
         str(audio_path),
         language=language,
@@ -170,6 +184,7 @@ def _transcribe_faster_whisper(audio_path, model_name, language, task="transcrib
         batch_size=8,
         beam_size=5,
         vad_filter=True,
+        **kwargs,
     )
     seg_list = []
     last_log = time.time()
@@ -187,9 +202,18 @@ def _transcribe_faster_whisper(audio_path, model_name, language, task="transcrib
 # -- Orchestrator -------------------------------------------------------
 
 
-def _transcribe(audio_path, model_name, language, fmt, task="transcribe"):
+def _transcribe(
+    audio_path, model_name, language, fmt, task="transcribe", initial_prompt="", hotwords=""
+):
     """Transcribe (or translate to English) audio. Tries CUDA first, then CPU."""
-    result = _transcribe_faster_whisper(audio_path, model_name, language, task=task)
+    result = _transcribe_faster_whisper(
+        audio_path,
+        model_name,
+        language,
+        task=task,
+        initial_prompt=initial_prompt,
+        hotwords=hotwords,
+    )
     if result is None:
         raise RuntimeError("No viable device for WhisperModel")
     seg_list, lang, dur, _ = result
@@ -215,6 +239,8 @@ def main():
         language = config.get("language") or None
         fmt = config.get("format", "json")
         task = config.get("task") or "transcribe"
+        initial_prompt = config.get("initial_prompt") or ""
+        hotwords = config.get("hotwords") or ""
         cookies_hash = config.get("cookies_hash", "")
         with tempfile.TemporaryDirectory() as tmp:
             workdir = Path(tmp)
@@ -233,7 +259,15 @@ def main():
                 raise ValueError("Neither audio_hash nor url provided")
             print(f"Transcribing: {model_name} (task={task})", file=sys.stderr)
             start = time.time()
-            transcript = _transcribe(audio_path, model_name, language, fmt, task=task)
+            transcript = _transcribe(
+                audio_path,
+                model_name,
+                language,
+                fmt,
+                task=task,
+                initial_prompt=initial_prompt,
+                hotwords=hotwords,
+            )
             print(f"Done in {time.time() - start:.1f}s", file=sys.stderr)
         output = transcript.encode("utf-8")
         output_hash = hashlib.sha256(output).hexdigest()

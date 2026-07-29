@@ -56,6 +56,9 @@ CREATE TABLE IF NOT EXISTS channel_videos (
     video_id       TEXT NOT NULL,
     url            TEXT NOT NULL,
     title          TEXT,
+    -- The provider's own title, kept even when `title` is overridden with a
+    -- translation, so the rendered header can always point back to the source.
+    title_original TEXT,
     duration       INTEGER,
     playlists_json TEXT NOT NULL DEFAULT '[]',
     task_id        TEXT,
@@ -117,6 +120,8 @@ async def _migrate(db: aiosqlite.Connection) -> None:
         # Add task_type and requirements_json for matching
         "ALTER TABLE tasks ADD COLUMN task_type TEXT DEFAULT 'wasm'",
         "ALTER TABLE tasks ADD COLUMN requirements_json TEXT DEFAULT '{}'",
+        # Keep the provider's own title when `title` carries a translation
+        "ALTER TABLE channel_videos ADD COLUMN title_original TEXT",
     ]
     for sql in migrations:
         try:

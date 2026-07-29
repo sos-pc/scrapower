@@ -90,7 +90,9 @@ def test_markdown_header_carries_provenance():
     assert "https://youtu.be/vid123" in md
     assert "Saison A, Conferences" in md
     assert "**Modèle** : large-v3" in md
-    assert "**Langue** : fr" in md
+    # "source" is load-bearing: with task=translate the output language is English
+    # while this field still reports what was spoken.
+    assert "**Langue source** : fr" in md
 
 
 @pytest.mark.parametrize(
