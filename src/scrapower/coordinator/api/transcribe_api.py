@@ -17,6 +17,9 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+# Single authority for which files a delivery writes.
+from ..channel.delivery import DEFAULT_FORMATS
+
 router = APIRouter(prefix="/transcribe", tags=["transcribe"])
 
 # Whisper runner hash — computed at startup from the deployed file
@@ -215,7 +218,7 @@ async def transcribe(request: Request):
     if deliver:
         # Registered in the background: it costs a yt-dlp metadata lookup (a few
         # seconds through the residential proxy) and must not delay the response.
-        formats = body.get("formats") or ["md", "json"]
+        formats = body.get("formats") or DEFAULT_FORMATS
         _spawn(
             _register_delivery(
                 db,

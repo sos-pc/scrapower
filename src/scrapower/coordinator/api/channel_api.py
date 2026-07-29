@@ -14,6 +14,7 @@ import logging
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from ..channel.delivery import DEFAULT_FORMATS
 from ..channel.job import cancel_job, create_job, job_status, run_job
 
 router = APIRouter(prefix="/transcribe/channel", tags=["channel"])
@@ -33,8 +34,11 @@ async def submit_channel(request: Request):
     """Kick off a channel transcription job.
 
     Body: { "channel_url": "...", "model": "turbo", "include_shorts": false,
-            "formats": ["md","json"], "drive_folder_id": null,
+            "formats": ["md"], "drive_folder_id": null,
             "dry_run": false, "max_videos": null }
+
+    ``formats`` defaults to Markdown only; add "json" to also get the raw
+    whisper output with segment timings.
     """
     body = await request.json()
     channel_url = body.get("channel_url", "")
@@ -43,7 +47,7 @@ async def submit_channel(request: Request):
 
     model = body.get("model", "turbo")
     include_shorts = bool(body.get("include_shorts", False))
-    formats = body.get("formats") or ["md", "json"]
+    formats = body.get("formats") or DEFAULT_FORMATS
     drive_folder_id = body.get("drive_folder_id")
     dry_run = bool(body.get("dry_run", False))
     max_videos = body.get("max_videos")
@@ -87,6 +91,4 @@ async def cancel_channel_job(job_id: str, request: Request):
     if status is None:
         raise HTTPException(404, {"error": "NOT_FOUND"})
     cancelled = await cancel_job(db, job_id)
-    return JSONResponse(
-        {"job_id": job_id, "state": "cancelled", "tasks_cancelled": cancelled}
-    )
+    return JSONResponse({"job_id": job_id, "state": "cancelled", "tasks_cancelled": cancelled})

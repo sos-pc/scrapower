@@ -26,15 +26,17 @@ def no_metadata_lookup(monkeypatch):
     async def fake_meta(url, proxy=None):
         return {"id": "BV1xK4y1J77Q_p1", "title": "Lecture 01 - Methods", "duration": 7965}
 
-    monkeypatch.setattr(
-        "scrapower.coordinator.channel.discovery.fetch_video_meta", fake_meta
-    )
+    monkeypatch.setattr("scrapower.coordinator.channel.discovery.fetch_video_meta", fake_meta)
     return fake_meta
 
 
 async def test_registration_makes_the_task_deliverable(db, no_metadata_lookup):
     await transcribe_api._register_delivery(
-        db, "t" * 32, "https://www.bilibili.com/video/BV1xK4y1J77Q/?p=1", "Cours", "large-v3",
+        db,
+        "t" * 32,
+        "https://www.bilibili.com/video/BV1xK4y1J77Q/?p=1",
+        "Cours",
+        "large-v3",
         ["md", "json"],
     )
 
@@ -74,9 +76,7 @@ async def test_registration_is_idempotent(db, no_metadata_lookup):
             db, task_id, "https://example.com/v", "_videos", "large-v3", ["md"]
         )
 
-    cur = await db.execute(
-        "SELECT COUNT(*) AS n FROM channel_videos WHERE task_id = ?", (task_id,)
-    )
+    cur = await db.execute("SELECT COUNT(*) AS n FROM channel_videos WHERE task_id = ?", (task_id,))
     assert (await cur.fetchone())["n"] == 1
 
 
@@ -99,7 +99,11 @@ async def test_the_existing_sweep_delivers_a_single_video(db, blob_dir, config, 
     )
     await db.commit()
     await transcribe_api._register_delivery(
-        db, task_id, "https://www.bilibili.com/video/BV1xK4y1J77Q/?p=1", "Cours", "large-v3",
+        db,
+        task_id,
+        "https://www.bilibili.com/video/BV1xK4y1J77Q/?p=1",
+        "Cours",
+        "large-v3",
         ["md", "json"],
     )
 
@@ -115,9 +119,7 @@ async def test_the_existing_sweep_delivers_a_single_video(db, blob_dir, config, 
     assert "**[00:00:00]**" in md, "rendered with timestamps like channel transcripts"
 
 
-async def test_delivery_of_a_single_video_is_idempotent(
-    db, blob_dir, config, no_metadata_lookup
-):
+async def test_delivery_of_a_single_video_is_idempotent(db, blob_dir, config, no_metadata_lookup):
     h = await bs.store_blob(db, blob_dir, json.dumps({"segments": []}).encode())
     task_id = "x" * 32
     await db.execute(
@@ -177,3 +179,59 @@ def test_folder_defaulting(body_folder, expected):
     folder = (body_folder or transcribe_api.DEFAULT_SINGLE_FOLDER).strip()
     folder = folder or transcribe_api.DEFAULT_SINGLE_FOLDER
     assert folder == expected
+
+
+# ── Delivered formats ──────────────────────────────────────────────────────
+
+
+def test_markdown_only_by_default():
+    """The raw JSON doubles the file count for something nobody opens."""
+    assert delivery.DEFAULT_FORMATS == ["md"]
+    assert transcribe_api.DEFAULT_FORMATS is delivery.DEFAULT_FORMATS, "one authority, not two"
+
+
+async def test_a_job_without_formats_gets_markdown_only(db, blob_dir, config, no_metadata_lookup):
+    """The fallback path: rows written before formats was recorded."""
+    h = await bs.store_blob(db, blob_dir, json.dumps({"segments": []}).encode())
+    task_id = "z" * 32
+    await db.execute(
+        "INSERT INTO tasks (id, client_id, state, output_hash, created_at, updated_at)"
+        " VALUES (?, 'anonymous', 'completed', ?, '1', '1')",
+        (task_id, h),
+    )
+    await db.commit()
+    await transcribe_api._register_delivery(
+        db, task_id, "https://example.com/v", "Cours", "large-v3", ["md"]
+    )
+    # Simulate a job row that never recorded a formats key at all.
+    await db.execute(
+        "UPDATE channel_jobs SET config_json = '{}' WHERE id = ?", (f"single-{task_id[:16]}",)
+    )
+    await db.commit()
+
+    assert await delivery.deliver_completed(db, blob_dir, config) == 1
+
+    out_dir = Path(config.transcripts_dir) / "Cours"
+    assert list(out_dir.glob("*.md")), "markdown is always written"
+    assert not list(out_dir.glob("*.json")), "json must not appear unless asked for"
+
+
+async def test_json_is_still_delivered_when_asked_for(db, blob_dir, config, no_metadata_lookup):
+    """Opting in must keep working -- the default changed, not the capability."""
+    h = await bs.store_blob(db, blob_dir, json.dumps({"segments": []}).encode())
+    task_id = "0" * 32
+    await db.execute(
+        "INSERT INTO tasks (id, client_id, state, output_hash, created_at, updated_at)"
+        " VALUES (?, 'anonymous', 'completed', ?, '1', '1')",
+        (task_id, h),
+    )
+    await db.commit()
+    await transcribe_api._register_delivery(
+        db, task_id, "https://example.com/v", "AvecJson", "large-v3", ["md", "json"]
+    )
+
+    assert await delivery.deliver_completed(db, blob_dir, config) == 1
+
+    out_dir = Path(config.transcripts_dir) / "AvecJson"
+    assert list(out_dir.glob("*.md"))
+    assert list(out_dir.glob("*.json"))

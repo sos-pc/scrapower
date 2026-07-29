@@ -21,6 +21,11 @@ log = logging.getLogger(__name__)
 DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive"]
 _FOLDER_MIME = "application/vnd.google-apps.folder"
 
+# Markdown is what gets read; the raw whisper JSON doubles the file count for
+# something nobody opens. Ask for it explicitly (`"formats": ["md", "json"]`)
+# when the segment timings are actually needed.
+DEFAULT_FORMATS = ["md"]
+
 
 # ── Pure rendering helpers (unit-tested) ───────────────────────────────────
 
@@ -255,7 +260,7 @@ async def deliver_completed(db, blob_dir: str, config) -> int:
                 cfg = json.loads(row["config_json"])
             except (json.JSONDecodeError, TypeError):
                 cfg = {}
-            formats = cfg.get("formats", ["md", "json"])
+            formats = cfg.get("formats") or DEFAULT_FORMATS
             glossary = cfg.get("glossary") or None
             meta = {
                 "video_id": row["video_id"],
