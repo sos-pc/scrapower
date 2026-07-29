@@ -59,6 +59,36 @@ def _ensure_deps():
         print(f"[whisper_runner] {pkg} {version}", file=sys.stderr)
 
 
+# yt-dlp's wording when a stream dies mid-transfer, e.g.
+# "Got error: 161 bytes read, 115871193 more expected. Giving up after 10 retries"
+TRUNCATED_MARKERS = ("more expected", "Giving up after")
+
+# Whisper resamples to 16 kHz mono, so the lowest audio-only rendition loses
+# nothing that matters -- it is only a fallback because `bestaudio` is otherwise
+# the safer pick on sites where "worst" can mean genuinely bad.
+FALLBACK_FORMAT = "worstaudio/bestaudio/best"
+
+
+def _run_ytdlp(args, timeout=1800):
+    """Run yt-dlp. Returns (ok, returncode, stderr_tail)."""
+    try:
+        subprocess.run(args, check=True, capture_output=True, timeout=timeout)
+        return True, 0, ""
+    except subprocess.CalledProcessError as e:
+        return False, e.returncode, e.stderr.decode()[-500:] if e.stderr else ""
+    except subprocess.TimeoutExpired:
+        # Semantically a download failure, so it must reach the coordinator as
+        # one (exit 2) rather than as an unhandled error.
+        return False, -1, f"timed out after {timeout}s"
+
+
+def _with_format(args, fmt):
+    """Copy of args with the -f value replaced."""
+    out = list(args)
+    out[out.index("-f") + 1] = fmt
+    return out
+
+
 def _download_audio(url, workdir, cookies_path=None):
     is_direct = any(url.lower().endswith(e) for e in DIRECT_EXTS) or "/blobs/" in url
     if is_direct:
@@ -90,21 +120,27 @@ def _download_audio(url, workdir, cookies_path=None):
     if cookies_path:
         args += ["--cookies", cookies_path]
     args.append(url)
-    try:
-        subprocess.run(args, check=True, capture_output=True, timeout=1800)
-    except subprocess.CalledProcessError as e:
-        stderr = e.stderr.decode()[-500:] if e.stderr else ""
-        if "Requested format is not available" in stderr and cookies_path:
-            args_no_cookies = [a for a in args if a != "--cookies" and a != cookies_path]
-            try:
-                subprocess.run(args_no_cookies, check=True, capture_output=True, timeout=1800)
-            except subprocess.CalledProcessError as e2:
-                raise DownloadError(
-                    f"yt-dlp failed (rc={e2.returncode}): "
-                    f"{e2.stderr.decode()[-500:] if e2.stderr else 'no stderr'}"
-                )
-        else:
-            raise DownloadError(f"yt-dlp failed (rc={e.returncode}): {stderr}")
+    ok, rc, stderr = _run_ytdlp(args)
+
+    if not ok and "Requested format is not available" in stderr and cookies_path:
+        # Cookies can narrow the advertised format list; retry anonymously.
+        args = [a for a in args if a != "--cookies" and a != cookies_path]
+        ok, rc, stderr = _run_ytdlp(args)
+
+    if not ok and any(m in stderr for m in TRUNCATED_MARKERS):
+        # The CDN served a broken stream for the format `bestaudio` chose:
+        # Bilibili returned 161 bytes of a 115MB file on all ten of yt-dlp's
+        # retries, twice, hours apart and from different workers, while another
+        # rendition of the same video downloaded fine. Retrying the same format
+        # is what wasted two full task attempts.
+        print(
+            "[whisper_runner] stream truncated, retrying a different audio format", file=sys.stderr
+        )
+        ok, rc, stderr = _run_ytdlp(_with_format(args, FALLBACK_FORMAT))
+
+    if not ok:
+        raise DownloadError(f"yt-dlp failed (rc={rc}): {stderr or 'no stderr'}")
+
     for f in workdir.iterdir():
         if f.suffix in (".m4a", ".opus", ".webm", ".mp3"):
             return f
