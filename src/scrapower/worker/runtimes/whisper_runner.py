@@ -25,12 +25,38 @@ class DownloadError(Exception):
     """Audio download failed — signals coordinator to prepare fallback."""
 
 
+# yt-dlp chases sites that actively change to break it, so a version that
+# worked last month is not merely old, it is broken: workers running 2026.02.21
+# got "HTTP 412 Precondition Failed" on every Bilibili download while the
+# coordinator's 2026.07.04 succeeded through the same proxy in the same second.
+# Ephemeral images cache their pip layer and `import yt_dlp` still succeeds, so
+# install-if-missing pins the worker to whatever the image froze. Upgrade it
+# every run; the heavy, stable deps stay install-if-missing.
+ALWAYS_UPGRADE = ("yt-dlp",)
+INSTALL_IF_MISSING = ("faster-whisper",)
+
+
 def _ensure_deps():
-    for pkg in ["faster-whisper", "yt-dlp"]:
+    for pkg in INSTALL_IF_MISSING:
         try:
             __import__(pkg.replace("-", "_"))
         except ImportError:
             subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", pkg])
+    for pkg in ALWAYS_UPGRADE:
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "-U", pkg])
+        except subprocess.CalledProcessError as e:
+            # A transient index failure must not sink the task: whatever version
+            # is already installed may still work. The import below is the real
+            # gate, and it fails loudly if it does not.
+            print(f"[whisper_runner] {pkg} upgrade failed (rc={e.returncode})", file=sys.stderr)
+        mod = __import__(pkg.replace("-", "_"))
+        # Log the version: when downloads start failing, this line is the
+        # difference between minutes and hours of diagnosis.
+        version = getattr(getattr(mod, "version", None), "__version__", None) or getattr(
+            mod, "__version__", "?"
+        )
+        print(f"[whisper_runner] {pkg} {version}", file=sys.stderr)
 
 
 def _download_audio(url, workdir, cookies_path=None):

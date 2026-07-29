@@ -40,8 +40,10 @@ if __name__ == "__main__":
     import sys as _sys
     import time as _time
 
-    # Ensure runtime dependencies (whisper + yt-dlp are pulled in by whisper_runner on demand)
-    _WORKER_PKGS = ["aiohttp", "faster-whisper", "yt-dlp"]
+    # Ensure runtime dependencies. yt-dlp is deliberately absent: whisper_runner
+    # force-upgrades it on every run, because the cached image layer freezes a
+    # version that the target sites have since learned to reject.
+    _WORKER_PKGS = ["aiohttp", "faster-whisper"]
     for _pkg in _WORKER_PKGS:
         try:
             __import__(_pkg.replace("-", "_"))

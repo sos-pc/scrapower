@@ -240,6 +240,11 @@ class ModalHarvester(WorkerProvider):
         client = self._get_client(tid, tsec)
         app = await modal.App.lookup.aio("scrapower", create_if_missing=True, client=client)
         worker_code = open("deploy/modal/worker.py").read()
+        # yt-dlp here only warms the layer -- Modal caches this image, so the
+        # version it resolves is frozen at first build and goes stale against
+        # sites that change to break it. whisper_runner._ensure_deps() is the
+        # authority: it force-upgrades yt-dlp on every run. Do not "optimise"
+        # that away on the grounds that the image already provides it.
         image = (
             modal.Image.from_registry("nvidia/cuda:12.4.0-runtime-ubuntu22.04", add_python="3.12")
             .apt_install("ffmpeg")
