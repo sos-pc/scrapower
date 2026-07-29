@@ -9,6 +9,7 @@ different audio format, and only then gives up.
 
 from __future__ import annotations
 
+import json
 import subprocess
 
 import pytest
@@ -136,6 +137,96 @@ def test_a_timeout_becomes_a_download_error(monkeypatch, tmp_path):
     monkeypatch.setattr(wr, "_run_ytdlp", lambda args, timeout=1800: (False, -1, "timed out"))
     with pytest.raises(wr.DownloadError, match="timed out"):
         wr._download_audio("https://youtu.be/x", tmp_path)
+
+
+# ── Truncation guard ───────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def probe(monkeypatch):
+    """Control the measured audio duration."""
+
+    def set_to(seconds):
+        monkeypatch.setattr(wr, "_audio_duration", lambda p: seconds)
+
+    return set_to
+
+
+def _advertise(tmp_path, seconds):
+    (tmp_path / "vid.info.json").write_text(json.dumps({"duration": seconds}), encoding="utf-8")
+    (tmp_path / "vid.m4a").write_bytes(b"audio")
+
+
+def test_a_truncated_file_is_rejected(tmp_path, probe):
+    """The bug this exists for: 54s of audio delivered for a 7320s lecture."""
+    _advertise(tmp_path, 7320)
+    probe(54.4)
+
+    with pytest.raises(wr.DownloadError, match="truncated download"):
+        wr._verify_complete(tmp_path / "vid.m4a", tmp_path)
+
+
+def test_a_complete_file_passes(tmp_path, probe):
+    _advertise(tmp_path, 7320)
+    probe(7318.0)
+    wr._verify_complete(tmp_path / "vid.m4a", tmp_path)
+
+
+def test_small_shortfalls_are_tolerated(tmp_path, probe):
+    """Container duration and stream duration rarely agree to the second."""
+    _advertise(tmp_path, 1000)
+    probe(1000 * wr.MIN_DURATION_RATIO + 1)
+    wr._verify_complete(tmp_path / "vid.m4a", tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("info", "reason"),
+    [
+        (None, "no info.json written"),
+        ("{bad json", "unparseable info.json"),
+        ('{"duration": null}', "site advertised no duration"),
+        ('{"duration": "unknown"}', "non-numeric duration"),
+        ('["not", "an", "object"]', "info.json root is not a mapping"),
+        ('{"duration": {"nested": 1}}', "duration is not a scalar"),
+    ],
+)
+def test_the_guard_stays_out_of_the_way_without_a_reference(tmp_path, probe, info, reason):
+    """No expected duration means no opinion -- never fail a task over that."""
+    (tmp_path / "vid.m4a").write_bytes(b"audio")
+    if info is not None:
+        (tmp_path / "vid.info.json").write_text(info, encoding="utf-8")
+    probe(12.0)
+    wr._verify_complete(tmp_path / "vid.m4a", tmp_path)
+
+
+def test_a_missing_ffprobe_does_not_fail_the_task(tmp_path, monkeypatch):
+    _advertise(tmp_path, 7320)
+    monkeypatch.setattr(wr, "_audio_duration", lambda p: None)
+    wr._verify_complete(tmp_path / "vid.m4a", tmp_path)
+
+
+def test_audio_duration_returns_none_when_ffprobe_is_absent(monkeypatch, tmp_path):
+    def no_binary(*a, **kw):
+        raise FileNotFoundError("ffprobe")
+
+    monkeypatch.setattr(wr.subprocess, "run", no_binary)
+    assert wr._audio_duration(tmp_path / "x.m4a") is None
+
+
+def test_the_download_path_applies_the_guard(runs, tmp_path, probe):
+    """Wiring: a truncated file must not reach the transcriber."""
+    _advertise(tmp_path, 7320)
+    probe(54.4)
+
+    with pytest.raises(wr.DownloadError, match="truncated download"):
+        wr._download_audio("https://www.bilibili.com/video/BV1x/?p=9", tmp_path)
+
+
+def test_the_info_json_is_requested(runs, tmp_path):
+    calls, _ = runs
+    (tmp_path / "vid.m4a").write_bytes(b"audio")
+    wr._download_audio("https://youtu.be/x", tmp_path)
+    assert "--write-info-json" in calls[0], "without it there is nothing to compare against"
 
 
 def test_with_format_replaces_only_the_format(runs):

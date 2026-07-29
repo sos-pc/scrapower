@@ -109,6 +109,9 @@ def _download_audio(url, workdir, cookies_path=None):
         tmpl,
         "--no-playlist",
         "--no-warnings",
+        # Records the advertised duration next to the audio, which is the only
+        # way to notice that a "successful" download was actually truncated.
+        "--write-info-json",
     ]
     wg_proxy = os.environ.get("WG_PROXY", "")
     if wg_proxy:
@@ -143,8 +146,63 @@ def _download_audio(url, workdir, cookies_path=None):
 
     for f in workdir.iterdir():
         if f.suffix in (".m4a", ".opus", ".webm", ".mp3"):
+            _verify_complete(f, workdir)
             return f
     raise FileNotFoundError(f"No audio in {workdir}")
+
+
+# A truncated download is worse than a failed one: yt-dlp can exit 0 on a partial
+# file, Whisper transcribes the fragment without complaining, and a 54-second
+# transcript of a two-hour lecture gets delivered as if it were valid. That
+# happened. So compare what landed against what the site advertised.
+MIN_DURATION_RATIO = 0.9
+
+
+def _audio_duration(path):
+    """Seconds of decodable audio, or None if ffprobe is unavailable."""
+    try:
+        out = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=120,
+        )
+        return float(out.stdout.decode().strip())
+    except (OSError, subprocess.SubprocessError, ValueError) as e:
+        print(f"[whisper_runner] duration probe unavailable: {e}", file=sys.stderr)
+        return None
+
+
+def _verify_complete(audio_path, workdir):
+    """Raise DownloadError if the audio is materially shorter than advertised."""
+    info = next(workdir.glob("*.info.json"), None)
+    if info is None:
+        return  # nothing to compare against; not worth failing the task over
+    try:
+        expected = float(json.loads(info.read_text(encoding="utf-8")).get("duration") or 0)
+    except (json.JSONDecodeError, OSError, TypeError, ValueError, AttributeError):
+        # Anything unreadable, non-numeric, or not even an object: no reference,
+        # so no opinion. This guard exists to catch bad downloads, not to invent
+        # new ways for a good one to fail.
+        return
+    actual = _audio_duration(audio_path)
+    if not expected or actual is None:
+        return
+    print(f"[whisper_runner] audio {actual:.0f}s of {expected:.0f}s advertised", file=sys.stderr)
+    if actual < expected * MIN_DURATION_RATIO:
+        raise DownloadError(
+            f"truncated download: {actual:.0f}s of audio, expected {expected:.0f}s "
+            f"({actual / expected:.0%})"
+        )
 
 
 # ---------------------------------------------------------------------------
