@@ -237,37 +237,37 @@ async def test_json_is_still_delivered_when_asked_for(db, blob_dir, config, no_m
     assert list(out_dir.glob("*.json"))
 
 
-# ── Gemini structure + synthesis ────────────────────────────────────────────
+# ── Gemini structure + written course rendering ─────────────────────────────
 
 
-def test_synthesize_requires_task_transcribe():
+def test_write_course_requires_task_transcribe():
     """The pipeline reads the source-language transcript directly; feeding it
     an already-translated (English) one would add a second, avoidable hop."""
     from fastapi import HTTPException
 
     with pytest.raises(HTTPException) as exc:
-        transcribe_api._validate_synthesize(True, "translate")
+        transcribe_api._validate_write_course(True, "translate")
     assert exc.value.status_code == 400
 
 
-def test_synthesize_allowed_with_transcribe():
-    transcribe_api._validate_synthesize(True, "transcribe")  # must not raise
+def test_write_course_allowed_with_transcribe():
+    transcribe_api._validate_write_course(True, "transcribe")  # must not raise
 
 
-def test_synthesize_false_is_never_checked():
-    transcribe_api._validate_synthesize(False, "translate")  # must not raise
+def test_write_course_false_is_never_checked():
+    transcribe_api._validate_write_course(False, "translate")  # must not raise
 
 
-async def test_registration_stores_the_synthesize_flag(db, no_metadata_lookup):
+async def test_registration_stores_the_write_course_flag(db, no_metadata_lookup):
     task_id = "1" * 32
     await transcribe_api._register_delivery(
-        db, task_id, "https://example.com/v", "Cours", "large-v3", ["md"], synthesize=True
+        db, task_id, "https://example.com/v", "Cours", "large-v3", ["md"], write_course=True
     )
     cur = await db.execute(
         "SELECT config_json FROM channel_jobs WHERE id = ?", (f"single-{task_id[:16]}",)
     )
     cfg = json.loads((await cur.fetchone())["config_json"])
-    assert cfg["synthesize"] is True
+    assert cfg["write_course"] is True
 
 
 async def test_registration_omits_the_flag_when_not_requested(db, no_metadata_lookup):
@@ -279,27 +279,38 @@ async def test_registration_omits_the_flag_when_not_requested(db, no_metadata_lo
         "SELECT config_json FROM channel_jobs WHERE id = ?", (f"single-{task_id[:16]}",)
     )
     cfg = json.loads((await cur.fetchone())["config_json"])
-    assert "synthesize" not in cfg
+    assert "write_course" not in cfg
 
 
-def _fake_synthesis_pipeline(monkeypatch, *, structure_calls=None, synthesis_calls=None):
-    """Stub out the two Gemini calls so these tests never touch the network."""
+def _fake_course_pipeline(monkeypatch, *, structure_calls=None, rewrite_calls=None):
+    """Stub out the two Gemini call sites so these tests never touch the network."""
 
     async def fake_structure(api_key, segments):
         if structure_calls is not None:
             structure_calls.append((api_key, segments))
         return [{"start_index": 0, "end_index": len(segments) - 1, "title_fr": "Section unique"}]
 
-    async def fake_synthesis(api_key, segments, structure):
-        if synthesis_calls is not None:
-            synthesis_calls.append((api_key, segments, structure))
-        return {"resume": "Résumé.", "section_points": [["point"]], "citations": []}
+    async def fake_full_rewrite(api_key, segments, structure, language="?"):
+        if rewrite_calls is not None:
+            rewrite_calls.append((api_key, segments, structure))
+        return [
+            [
+                {
+                    "start_index": s["start_index"],
+                    "title_fr": "",
+                    "text_fr": "Texte réécrit intégral.",
+                }
+            ]
+            for s in structure
+        ]
 
     monkeypatch.setattr("scrapower.coordinator.channel.synthesis.build_structure", fake_structure)
-    monkeypatch.setattr("scrapower.coordinator.channel.synthesis.build_synthesis", fake_synthesis)
+    monkeypatch.setattr(
+        "scrapower.coordinator.channel.synthesis.build_full_rewrite", fake_full_rewrite
+    )
 
 
-async def _seed_synthesize_job(db, blob_dir, task_id, folder="Cours"):
+async def _seed_write_course_job(db, blob_dir, task_id, folder="Cours"):
     transcript = json.dumps(
         {
             "language": "zh",
@@ -315,19 +326,19 @@ async def _seed_synthesize_job(db, blob_dir, task_id, folder="Cours"):
     )
     await db.commit()
     await transcribe_api._register_delivery(
-        db, task_id, "https://example.com/v", folder, "large-v3", ["md"], synthesize=True
+        db, task_id, "https://example.com/v", folder, "large-v3", ["md"], write_course=True
     )
 
 
-async def test_sweep_produces_a_second_file_when_synthesize_is_set(
+async def test_sweep_produces_a_second_file_when_write_course_is_set(
     db, blob_dir, config, no_metadata_lookup, monkeypatch
 ):
     config.gemini_api_key = "test-gemini-key"
     calls = []
-    _fake_synthesis_pipeline(monkeypatch, structure_calls=calls)
+    _fake_course_pipeline(monkeypatch, structure_calls=calls)
 
     task_id = "3" * 32
-    await _seed_synthesize_job(db, blob_dir, task_id)
+    await _seed_write_course_job(db, blob_dir, task_id)
 
     assert await delivery.deliver_completed(db, blob_dir, config) == 1
     assert calls[0][0] == "test-gemini-key", "the configured key must reach the Gemini call"
@@ -335,16 +346,16 @@ async def test_sweep_produces_a_second_file_when_synthesize_is_set(
     out_dir = Path(config.transcripts_dir) / "Cours"
     base = f"{delivery.sanitize_name('Lecture 01 - Methods')} [BV1xK4y1J77Q_p1]"
     assert (out_dir / f"{base}.md").exists(), "the transcript is still delivered unconditionally"
-    synth_file = out_dir / f"{base} - Synthese.md"
-    assert synth_file.exists()
-    assert "Résumé." in synth_file.read_text(encoding="utf-8")
+    course_file = out_dir / f"{base} - Cours.md"
+    assert course_file.exists()
+    assert "Texte réécrit intégral." in course_file.read_text(encoding="utf-8")
 
 
-async def test_no_second_file_when_synthesize_is_not_set(
+async def test_no_second_file_when_write_course_is_not_set(
     db, blob_dir, config, no_metadata_lookup, monkeypatch
 ):
     """Regression: an ordinary job must not grow an extra file."""
-    _fake_synthesis_pipeline(monkeypatch)
+    _fake_course_pipeline(monkeypatch)
     h = await bs.store_blob(db, blob_dir, json.dumps({"segments": []}).encode())
     task_id = "4" * 32
     await db.execute(
@@ -358,7 +369,7 @@ async def test_no_second_file_when_synthesize_is_not_set(
     )
 
     assert await delivery.deliver_completed(db, blob_dir, config) == 1
-    assert not list((Path(config.transcripts_dir) / "Cours").glob("* - Synthese.md"))
+    assert not list((Path(config.transcripts_dir) / "Cours").glob("* - Cours.md"))
 
 
 async def test_missing_gemini_key_leaves_the_video_undelivered(
@@ -366,11 +377,11 @@ async def test_missing_gemini_key_leaves_the_video_undelivered(
 ):
     """Config with no key configured: retry automatically once one is added,
     rather than silently giving up or crashing the sweep."""
-    _fake_synthesis_pipeline(monkeypatch)  # must not even be reached
+    _fake_course_pipeline(monkeypatch)  # must not even be reached
     assert getattr(config, "gemini_api_key", "") == ""
 
     task_id = "5" * 32
-    await _seed_synthesize_job(db, blob_dir, task_id)
+    await _seed_write_course_job(db, blob_dir, task_id)
 
     assert await delivery.deliver_completed(db, blob_dir, config) == 0
 
@@ -379,14 +390,14 @@ async def test_missing_gemini_key_leaves_the_video_undelivered(
     assert not list(Path(config.transcripts_dir).rglob("*.md")), "nothing partial gets written"
 
 
-async def test_no_segments_to_synthesize_leaves_the_video_undelivered(
+async def test_no_segments_to_write_a_course_from_leaves_the_video_undelivered(
     db, blob_dir, config, no_metadata_lookup, monkeypatch
 ):
     """An empty transcript must not reach the Gemini pipeline at all -- there is
-    nothing meaningful to structure or summarize."""
+    nothing meaningful to structure or rewrite."""
     config.gemini_api_key = "test-gemini-key"
     calls = []
-    _fake_synthesis_pipeline(monkeypatch, structure_calls=calls)
+    _fake_course_pipeline(monkeypatch, structure_calls=calls)
 
     h = await bs.store_blob(db, blob_dir, json.dumps({"segments": []}).encode())
     task_id = "7" * 32
@@ -397,7 +408,7 @@ async def test_no_segments_to_synthesize_leaves_the_video_undelivered(
     )
     await db.commit()
     await transcribe_api._register_delivery(
-        db, task_id, "https://example.com/v", "Cours", "large-v3", ["md"], synthesize=True
+        db, task_id, "https://example.com/v", "Cours", "large-v3", ["md"], write_course=True
     )
 
     assert await delivery.deliver_completed(db, blob_dir, config) == 0
@@ -417,20 +428,20 @@ async def test_a_failing_gemini_call_leaves_the_video_undelivered(
     config.gemini_api_key = "test-gemini-key"
 
     # Structure has its own fallback and never raises (see synthesis.py), so
-    # the failure is made to happen in synthesis, the stage allowed to fail.
+    # the failure is made to happen in the rewrite, the stage allowed to fail.
     async def fake_structure(api_key, segments):
         return [{"start_index": 0, "end_index": len(segments) - 1, "title_fr": "S"}]
 
-    async def failing_synthesis(api_key, segments, structure):
+    async def failing_rewrite(api_key, segments, structure, language="?"):
         raise synth_mod.GeminiError("boom")
 
     monkeypatch.setattr("scrapower.coordinator.channel.synthesis.build_structure", fake_structure)
     monkeypatch.setattr(
-        "scrapower.coordinator.channel.synthesis.build_synthesis", failing_synthesis
+        "scrapower.coordinator.channel.synthesis.build_full_rewrite", failing_rewrite
     )
 
     task_id = "6" * 32
-    await _seed_synthesize_job(db, blob_dir, task_id)
+    await _seed_write_course_job(db, blob_dir, task_id)
 
     assert await delivery.deliver_completed(db, blob_dir, config) == 0
     cur = await db.execute("SELECT delivered FROM channel_videos WHERE task_id = ?", (task_id,))

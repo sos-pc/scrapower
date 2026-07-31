@@ -74,7 +74,7 @@ async def _register_delivery(
     title_override: str = "",
     glossary: dict[str, str] | None = None,
     whisper_task: str = "transcribe",
-    synthesize: bool = False,
+    write_course: bool = False,
 ) -> None:
     """Make a single-video transcript eligible for the existing delivery sweep.
 
@@ -99,8 +99,8 @@ async def _register_delivery(
     config = {"formats": formats, "task": whisper_task}
     if glossary:
         config["glossary"] = glossary
-    if synthesize:
-        config["synthesize"] = True
+    if write_course:
+        config["write_course"] = True
     await db.execute(
         """INSERT OR IGNORE INTO channel_jobs
            (id, channel_url, model, config_json, state, created_at, updated_at)
@@ -144,15 +144,16 @@ def _validate_task(raw, model: str) -> str:
     return task
 
 
-def _validate_synthesize(synthesize: bool, whisper_task: str) -> None:
-    """The synthesis pipeline reads the source-language transcript directly and
-    produces a French summary in one hop; feeding it an already translate-task
-    (English) transcript would add a second, avoidable hop through English."""
-    if synthesize and whisper_task != "transcribe":
+def _validate_write_course(write_course: bool, whisper_task: str) -> None:
+    """The course-writing pipeline reads the source-language transcript
+    directly and rewrites it in French in one hop; feeding it an already
+    translate-task (English) transcript would add a second, avoidable hop
+    through English."""
+    if write_course and whisper_task != "transcribe":
         raise HTTPException(
             400,
             {
-                "error": "synthesize requires task=transcribe",
+                "error": "write_course requires task=transcribe",
                 "hint": "it reads the source-language transcript directly, not a translation",
             },
         )
@@ -191,8 +192,8 @@ async def transcribe(request: Request):
     initial_prompt = (body.get("initial_prompt") or "").strip()
     hotwords = (body.get("hotwords") or "").strip()
     cookies_hash = body.get("cookies_hash") or os.environ.get("SCRAPOWER_YT_COOKIES_HASH", "")
-    synthesize = bool(body.get("synthesize", False))
-    _validate_synthesize(synthesize, whisper_task)
+    write_course = bool(body.get("write_course", False))
+    _validate_write_course(write_course, whisper_task)
 
     task_service = request.app.state.task_service
     task_id = uuid.uuid4().hex
@@ -249,7 +250,7 @@ async def transcribe(request: Request):
                 title_override=title_override,
                 glossary=glossary,
                 whisper_task=whisper_task,
-                synthesize=synthesize,
+                write_course=write_course,
             )
         )
 
@@ -262,7 +263,7 @@ async def transcribe(request: Request):
             "task": whisper_task,
             "format": fmt,
             "delivery": (
-                {"enabled": deliver, "folder": folder, "synthesize": synthesize}
+                {"enabled": deliver, "folder": folder, "write_course": write_course}
                 if deliver
                 else {"enabled": False}
             ),

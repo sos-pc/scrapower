@@ -200,16 +200,16 @@ class DriveClient:
         md: str,
         raw_json: str,
         formats: list[str],
-        synthesis_md: str | None = None,
+        course_md: str | None = None,
     ) -> None:
         folder = self._folder(sanitize_name(playlist), self._root)
         if "md" in formats:
             self.upload_text(folder, base + ".md", md.encode("utf-8"), "text/markdown")
         if "json" in formats:
             self.upload_text(folder, base + ".json", raw_json.encode("utf-8"), "application/json")
-        if synthesis_md is not None:
+        if course_md is not None:
             self.upload_text(
-                folder, base + " - Synthese.md", synthesis_md.encode("utf-8"), "text/markdown"
+                folder, base + " - Cours.md", course_md.encode("utf-8"), "text/markdown"
             )
 
 
@@ -235,7 +235,7 @@ def _write_targets(
     md: str,
     raw_json: str,
     formats: list[str],
-    synthesis_md: str | None = None,
+    course_md: str | None = None,
 ) -> None:
     """Blocking: write local staging copies + optional Drive copies (per playlist)."""
     base = f"{sanitize_name(meta['title'])} [{meta['video_id']}]"
@@ -247,27 +247,27 @@ def _write_targets(
             (pdir / (base + ".md")).write_text(md, encoding="utf-8")
         if "json" in formats:
             (pdir / (base + ".json")).write_text(raw_json, encoding="utf-8")
-        if synthesis_md is not None:
-            (pdir / (base + " - Synthese.md")).write_text(synthesis_md, encoding="utf-8")
+        if course_md is not None:
+            (pdir / (base + " - Cours.md")).write_text(course_md, encoding="utf-8")
         if drive is not None:
-            drive.deliver(playlist, base, md, raw_json, formats, synthesis_md=synthesis_md)
+            drive.deliver(playlist, base, md, raw_json, formats, course_md=course_md)
 
 
-async def _maybe_synthesize(config, meta: dict, raw_json: str, cfg: dict) -> str | None:
-    """Build the French synthesis document, or None if not requested.
+async def _maybe_write_course(config, meta: dict, raw_json: str, cfg: dict) -> str | None:
+    """Build the full written-French course document, or None if not requested.
 
     Raises on failure (missing key, bad Gemini response) rather than
     swallowing it: the caller's per-row try/except already leaves the video
     undelivered on any exception, which is exactly "retry next sweep" --
     no separate retry bookkeeping needed for this stage.
     """
-    if not cfg.get("synthesize"):
+    if not cfg.get("write_course"):
         return None
     from . import synthesis as synth_mod
 
     key = getattr(config, "gemini_api_key", "")
     if not key:
-        raise RuntimeError("synthesize requested but GEMINI_API_KEY is not configured")
+        raise RuntimeError("write_course requested but GEMINI_API_KEY is not configured")
 
     try:
         parsed = json.loads(raw_json)
@@ -275,12 +275,12 @@ async def _maybe_synthesize(config, meta: dict, raw_json: str, cfg: dict) -> str
         parsed = {}
     segments = parsed.get("segments") or [] if isinstance(parsed, dict) else []
     if not segments:
-        raise RuntimeError("no segments to synthesize")
+        raise RuntimeError("no segments to write a course from")
 
     structure = await synth_mod.build_structure(key, segments)
-    synth = await synth_mod.build_synthesis(key, segments, structure)
     language = parsed.get("language", "?") if isinstance(parsed, dict) else "?"
-    return synth_mod.render_synthesis_markdown(meta, segments, structure, synth, language=language)
+    rewrites = await synth_mod.build_full_rewrite(key, segments, structure, language=language)
+    return synth_mod.render_course_markdown(meta, segments, structure, rewrites, language=language)
 
 
 async def deliver_completed(db, blob_dir: str, config) -> int:
@@ -324,9 +324,9 @@ async def deliver_completed(db, blob_dir: str, config) -> int:
                 "playlists": json.loads(row["playlists_json"] or "[]"),
             }
             md = render_markdown(meta, raw_json, model=row["model"], glossary=glossary)
-            synthesis_md = await _maybe_synthesize(config, meta, raw_json, cfg)
+            course_md = await _maybe_write_course(config, meta, raw_json, cfg)
             await loop.run_in_executor(
-                None, _write_targets, config, drive, meta, md, raw_json, formats, synthesis_md
+                None, _write_targets, config, drive, meta, md, raw_json, formats, course_md
             )
             await db.execute(
                 "UPDATE channel_videos SET delivered = 1, delivered_at = ? "
