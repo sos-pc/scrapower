@@ -193,12 +193,24 @@ class DriveClient:
                 body={"name": filename, "parents": [folder_id]}, media_body=media, fields="id"
             ).execute()
 
-    def deliver(self, playlist: str, base: str, md: str, raw_json: str, formats: list[str]) -> None:
+    def deliver(
+        self,
+        playlist: str,
+        base: str,
+        md: str,
+        raw_json: str,
+        formats: list[str],
+        synthesis_md: str | None = None,
+    ) -> None:
         folder = self._folder(sanitize_name(playlist), self._root)
         if "md" in formats:
             self.upload_text(folder, base + ".md", md.encode("utf-8"), "text/markdown")
         if "json" in formats:
             self.upload_text(folder, base + ".json", raw_json.encode("utf-8"), "application/json")
+        if synthesis_md is not None:
+            self.upload_text(
+                folder, base + " - Synthese.md", synthesis_md.encode("utf-8"), "text/markdown"
+            )
 
 
 def _try_drive(config) -> DriveClient | None:
@@ -216,7 +228,15 @@ def _try_drive(config) -> DriveClient | None:
 # ── Sweep (async) ──────────────────────────────────────────────────────────
 
 
-def _write_targets(config, drive, meta, md: str, raw_json: str, formats: list[str]) -> None:
+def _write_targets(
+    config,
+    drive,
+    meta,
+    md: str,
+    raw_json: str,
+    formats: list[str],
+    synthesis_md: str | None = None,
+) -> None:
     """Blocking: write local staging copies + optional Drive copies (per playlist)."""
     base = f"{sanitize_name(meta['title'])} [{meta['video_id']}]"
     staging = Path(getattr(config, "transcripts_dir", "data/transcripts"))
@@ -227,8 +247,40 @@ def _write_targets(config, drive, meta, md: str, raw_json: str, formats: list[st
             (pdir / (base + ".md")).write_text(md, encoding="utf-8")
         if "json" in formats:
             (pdir / (base + ".json")).write_text(raw_json, encoding="utf-8")
+        if synthesis_md is not None:
+            (pdir / (base + " - Synthese.md")).write_text(synthesis_md, encoding="utf-8")
         if drive is not None:
-            drive.deliver(playlist, base, md, raw_json, formats)
+            drive.deliver(playlist, base, md, raw_json, formats, synthesis_md=synthesis_md)
+
+
+async def _maybe_synthesize(config, meta: dict, raw_json: str, cfg: dict) -> str | None:
+    """Build the French synthesis document, or None if not requested.
+
+    Raises on failure (missing key, bad Gemini response) rather than
+    swallowing it: the caller's per-row try/except already leaves the video
+    undelivered on any exception, which is exactly "retry next sweep" --
+    no separate retry bookkeeping needed for this stage.
+    """
+    if not cfg.get("synthesize"):
+        return None
+    from . import synthesis as synth_mod
+
+    key = getattr(config, "gemini_api_key", "")
+    if not key:
+        raise RuntimeError("synthesize requested but GEMINI_API_KEY is not configured")
+
+    try:
+        parsed = json.loads(raw_json)
+    except (json.JSONDecodeError, TypeError):
+        parsed = {}
+    segments = parsed.get("segments") or [] if isinstance(parsed, dict) else []
+    if not segments:
+        raise RuntimeError("no segments to synthesize")
+
+    structure = await synth_mod.build_structure(key, segments)
+    synth = await synth_mod.build_synthesis(key, segments, structure)
+    language = parsed.get("language", "?") if isinstance(parsed, dict) else "?"
+    return synth_mod.render_synthesis_markdown(meta, segments, structure, synth, language=language)
 
 
 async def deliver_completed(db, blob_dir: str, config) -> int:
@@ -272,8 +324,9 @@ async def deliver_completed(db, blob_dir: str, config) -> int:
                 "playlists": json.loads(row["playlists_json"] or "[]"),
             }
             md = render_markdown(meta, raw_json, model=row["model"], glossary=glossary)
+            synthesis_md = await _maybe_synthesize(config, meta, raw_json, cfg)
             await loop.run_in_executor(
-                None, _write_targets, config, drive, meta, md, raw_json, formats
+                None, _write_targets, config, drive, meta, md, raw_json, formats, synthesis_md
             )
             await db.execute(
                 "UPDATE channel_videos SET delivered = 1, delivered_at = ? "

@@ -79,6 +79,7 @@ def test_staleness_is_configurable_via_env(monkeypatch, interval, threshold, exp
         ("SCRAPOWER_DELIVERY_INTERVAL_SEC", "delivery_interval_sec", "60", 60),
         ("SCRAPOWER_TRANSCRIPTS_DIR", "transcripts_dir", "/tmp/t", "/tmp/t"),
         ("SCRAPOWER_LOG_LEVEL", "log_level", "DEBUG", "DEBUG"),
+        ("GEMINI_API_KEY", "gemini_api_key", "test-key-123", "test-key-123"),
     ],
 )
 def test_env_override_reaches_the_field(monkeypatch, env_var, attr, value, expected):
@@ -93,8 +94,11 @@ def _env_mapped_fields() -> set[str]:
     import inspect
     import re
 
+    # Not all entries are SCRAPOWER_-prefixed: provider credentials (e.g.
+    # GEMINI_API_KEY) keep their natural name, like HF_TOKEN/KAGGLE_ACCOUNTS
+    # elsewhere in the project.
     src = inspect.getsource(Config._apply_env_overrides)
-    return set(re.findall(r'"SCRAPOWER_[A-Z_]+":\s*\("(\w+)"', src))
+    return set(re.findall(r'"[A-Z][A-Z0-9_]*":\s*\("(\w+)"', src))
 
 
 def test_every_live_field_is_reachable_from_the_environment():

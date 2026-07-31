@@ -49,6 +49,7 @@ class Config:
     drive_token_path: str = ""  # path to OAuth token.json; empty => Drive disabled
     drive_root_folder_id: str = ""
     delivery_interval_sec: int = 30
+    gemini_api_key: str = ""  # empty => LLM structure/synthesis stage disabled
 
     @property
     def stale_after_sec(self) -> int:
@@ -81,6 +82,9 @@ class Config:
             "SCRAPOWER_DRIVE_TOKEN": ("drive_token_path", str),
             "SCRAPOWER_DRIVE_ROOT_FOLDER_ID": ("drive_root_folder_id", str),
             "SCRAPOWER_DELIVERY_INTERVAL_SEC": ("delivery_interval_sec", int),
+            # Not SCRAPOWER_-prefixed: a provider credential, like HF_TOKEN /
+            # KAGGLE_ACCOUNTS elsewhere in the project, not a coordinator setting.
+            "GEMINI_API_KEY": ("gemini_api_key", str),
         }
         for env_var, (attr, typ) in env_map.items():
             val = os.environ.get(env_var)
@@ -166,6 +170,7 @@ def _apply_toml(config: Config, data: dict[str, Any]) -> None:
         config.drive_token_path = d.get("drive_token_path", config.drive_token_path)
         config.drive_root_folder_id = d.get("drive_root_folder_id", config.drive_root_folder_id)
         config.delivery_interval_sec = d.get("delivery_interval_sec", config.delivery_interval_sec)
+        config.gemini_api_key = d.get("gemini_api_key", config.gemini_api_key)
 
     if "logging" in data:
         config.log_level = data["logging"].get("level", config.log_level)

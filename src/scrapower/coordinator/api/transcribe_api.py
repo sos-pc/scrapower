@@ -74,6 +74,7 @@ async def _register_delivery(
     title_override: str = "",
     glossary: dict[str, str] | None = None,
     whisper_task: str = "transcribe",
+    synthesize: bool = False,
 ) -> None:
     """Make a single-video transcript eligible for the existing delivery sweep.
 
@@ -98,6 +99,8 @@ async def _register_delivery(
     config = {"formats": formats, "task": whisper_task}
     if glossary:
         config["glossary"] = glossary
+    if synthesize:
+        config["synthesize"] = True
     await db.execute(
         """INSERT OR IGNORE INTO channel_jobs
            (id, channel_url, model, config_json, state, created_at, updated_at)
@@ -141,6 +144,20 @@ def _validate_task(raw, model: str) -> str:
     return task
 
 
+def _validate_synthesize(synthesize: bool, whisper_task: str) -> None:
+    """The synthesis pipeline reads the source-language transcript directly and
+    produces a French summary in one hop; feeding it an already translate-task
+    (English) transcript would add a second, avoidable hop through English."""
+    if synthesize and whisper_task != "transcribe":
+        raise HTTPException(
+            400,
+            {
+                "error": "synthesize requires task=transcribe",
+                "hint": "it reads the source-language transcript directly, not a translation",
+            },
+        )
+
+
 @router.post("")
 async def transcribe(request: Request):
     """Submit a video for transcription. Returns immediately.
@@ -174,6 +191,8 @@ async def transcribe(request: Request):
     initial_prompt = (body.get("initial_prompt") or "").strip()
     hotwords = (body.get("hotwords") or "").strip()
     cookies_hash = body.get("cookies_hash") or os.environ.get("SCRAPOWER_YT_COOKIES_HASH", "")
+    synthesize = bool(body.get("synthesize", False))
+    _validate_synthesize(synthesize, whisper_task)
 
     task_service = request.app.state.task_service
     task_id = uuid.uuid4().hex
@@ -230,6 +249,7 @@ async def transcribe(request: Request):
                 title_override=title_override,
                 glossary=glossary,
                 whisper_task=whisper_task,
+                synthesize=synthesize,
             )
         )
 
@@ -241,7 +261,11 @@ async def transcribe(request: Request):
             "language": language or "auto",
             "task": whisper_task,
             "format": fmt,
-            "delivery": {"enabled": deliver, "folder": folder} if deliver else {"enabled": False},
+            "delivery": (
+                {"enabled": deliver, "folder": folder, "synthesize": synthesize}
+                if deliver
+                else {"enabled": False}
+            ),
             "hint": f"GET /results/{task_id} for transcript",
         }
     )
