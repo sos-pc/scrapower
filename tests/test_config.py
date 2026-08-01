@@ -33,6 +33,33 @@ def test_dead_config_fields_are_gone(field):
     assert not hasattr(Config(), field), f"{field} is read by nothing and should not exist"
 
 
+# ── Multiple Gemini keys, comma-separated ──────────────────────────────────
+
+
+def test_no_key_configured_is_an_empty_list():
+    assert Config().gemini_api_keys == []
+
+
+def test_a_single_key_is_a_one_element_list(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "solo-key")
+    assert Config().gemini_api_keys == ["solo-key"]
+
+
+def test_comma_separated_keys_split_into_a_list(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "key1,key2")
+    assert Config().gemini_api_keys == ["key1", "key2"]
+
+
+def test_whitespace_around_keys_is_stripped(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", " key1 , key2 ")
+    assert Config().gemini_api_keys == ["key1", "key2"]
+
+
+def test_trailing_comma_does_not_produce_an_empty_key(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "key1,")
+    assert Config().gemini_api_keys == ["key1"]
+
+
 # ── The derived staleness deadline ─────────────────────────────────────────
 
 

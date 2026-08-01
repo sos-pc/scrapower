@@ -248,9 +248,30 @@ def _write_targets(
         if "json" in formats:
             (pdir / (base + ".json")).write_text(raw_json, encoding="utf-8")
         if course_md is not None:
-            (pdir / (base + " - Cours.md")).write_text(course_md, encoding="utf-8")
+            (pdir / _course_filename(meta)).write_text(course_md, encoding="utf-8")
         if drive is not None:
             drive.deliver(playlist, base, md, raw_json, formats, course_md=course_md)
+
+
+def _course_filename(meta: dict) -> str:
+    return f"{sanitize_name(meta['title'])} [{meta['video_id']}] - Cours.md"
+
+
+def _existing_course_md(config, meta: dict) -> str | None:
+    """A prior sweep may already have generated this: Gemini can succeed and a
+    later, unrelated step (e.g. an expired Drive token) can still fail the
+    delivery, which leaves the video undelivered and due for a retry. Without
+    this check, that retry redoes every Gemini call from scratch -- structure
+    plus one call per section -- to reproduce a result already sitting on
+    disk. That's exactly what burned a day's quota once already.
+    """
+    staging = Path(getattr(config, "transcripts_dir", "data/transcripts"))
+    filename = _course_filename(meta)
+    for playlist in meta.get("playlists") or ["_sans-playlist"]:
+        p = staging / sanitize_name(playlist) / filename
+        if p.exists():
+            return p.read_text(encoding="utf-8")
+    return None
 
 
 async def _maybe_write_course(config, meta: dict, raw_json: str, cfg: dict) -> str | None:
@@ -263,10 +284,16 @@ async def _maybe_write_course(config, meta: dict, raw_json: str, cfg: dict) -> s
     """
     if not cfg.get("write_course"):
         return None
+
+    existing = _existing_course_md(config, meta)
+    if existing is not None:
+        log.info("reusing already-written course for %s", meta.get("video_id"))
+        return existing
+
     from . import synthesis as synth_mod
 
-    key = getattr(config, "gemini_api_key", "")
-    if not key:
+    keys = getattr(config, "gemini_api_keys", [])
+    if not keys:
         raise RuntimeError("write_course requested but GEMINI_API_KEY is not configured")
 
     try:
@@ -277,9 +304,9 @@ async def _maybe_write_course(config, meta: dict, raw_json: str, cfg: dict) -> s
     if not segments:
         raise RuntimeError("no segments to write a course from")
 
-    structure = await synth_mod.build_structure(key, segments)
+    structure = await synth_mod.build_structure(keys, segments)
     language = parsed.get("language", "?") if isinstance(parsed, dict) else "?"
-    rewrites = await synth_mod.build_full_rewrite(key, segments, structure, language=language)
+    rewrites = await synth_mod.build_full_rewrite(keys, segments, structure, language=language)
     return synth_mod.render_course_markdown(meta, segments, structure, rewrites, language=language)
 
 

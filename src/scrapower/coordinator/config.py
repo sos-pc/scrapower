@@ -52,6 +52,12 @@ class Config:
     gemini_api_key: str = ""  # empty => LLM structure/synthesis stage disabled
 
     @property
+    def gemini_api_keys(self) -> list[str]:
+        """One free-tier quota per key: a second (comma-separated) key lets the
+        rewrite pipeline keep going once the first is exhausted for the day."""
+        return [k.strip() for k in self.gemini_api_key.split(",") if k.strip()]
+
+    @property
     def stale_after_sec(self) -> int:
         """Silence after which a worker is presumed dead.
 

@@ -387,6 +387,90 @@ async def test_generate_finds_the_text_part_even_if_not_first(monkeypatch):
     assert out == {"resume": "ok"}
 
 
+# ── _generate_rotating: fall back to the next key on quota, not on other errors ──
+
+
+async def test_falls_back_to_the_next_key_on_quota_error(monkeypatch):
+    calls = []
+
+    async def fake_generate(api_key, model, prompt, schema):
+        calls.append(api_key)
+        if api_key == "key1":
+            raise syn.GeminiError("HTTP 429: quota exceeded")
+        return {"ok": True}
+
+    monkeypatch.setattr(syn, "_generate", fake_generate)
+    out = await syn._generate_rotating(["key1", "key2"], "m", "p", {})
+    assert out == {"ok": True}
+    assert calls == ["key1", "key2"]
+
+
+async def test_a_single_string_key_still_works_unwrapped(monkeypatch):
+    """Every existing caller passes one bare string, not a list."""
+
+    async def fake_generate(api_key, model, prompt, schema):
+        assert api_key == "solo-key"
+        return {"ok": True}
+
+    monkeypatch.setattr(syn, "_generate", fake_generate)
+    out = await syn._generate_rotating("solo-key", "m", "p", {})
+    assert out == {"ok": True}
+
+
+async def test_non_quota_errors_are_not_retried_with_another_key(monkeypatch):
+    """A different key wouldn't fix a malformed prompt or a real outage -- only
+    a quota/rate error justifies trying again."""
+    calls = []
+
+    async def fake_generate(api_key, model, prompt, schema):
+        calls.append(api_key)
+        raise syn.GeminiError("HTTP 500: internal error")
+
+    monkeypatch.setattr(syn, "_generate", fake_generate)
+    with pytest.raises(syn.GeminiError, match="500"):
+        await syn._generate_rotating(["key1", "key2"], "m", "p", {})
+    assert calls == ["key1"], "must not burn the second key on a non-quota failure"
+
+
+async def test_raises_the_last_error_when_every_key_is_exhausted(monkeypatch):
+    async def fake_generate(api_key, model, prompt, schema):
+        raise syn.GeminiError(f"HTTP 429: quota exceeded for {api_key}")
+
+    monkeypatch.setattr(syn, "_generate", fake_generate)
+    with pytest.raises(syn.GeminiError, match="key2"):
+        await syn._generate_rotating(["key1", "key2"], "m", "p", {})
+
+
+async def test_no_keys_at_all_raises_immediately(monkeypatch):
+    async def fake_generate(api_key, model, prompt, schema):
+        raise AssertionError("must not be called with an empty key list")
+
+    monkeypatch.setattr(syn, "_generate", fake_generate)
+    with pytest.raises(syn.GeminiError, match="no Gemini API key"):
+        await syn._generate_rotating([], "m", "p", {})
+
+
+def test_key_list_wraps_a_bare_string():
+    assert syn._key_list("solo") == ["solo"]
+
+
+def test_key_list_passes_a_list_through():
+    assert syn._key_list(["a", "b"]) == ["a", "b"]
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("HTTP 429: quota exceeded", True),
+        ("HTTP 500: internal error", False),
+        ("request failed: timeout", False),
+        ("unparseable response: ...", False),
+    ],
+)
+def test_is_quota_error_only_matches_429(message, expected):
+    assert syn._is_quota_error(syn.GeminiError(message)) is expected
+
+
 # ── build_structure: falls back rather than raising ─────────────────────────
 
 
@@ -418,6 +502,20 @@ async def test_build_structure_uses_the_models_own_boundaries_when_valid(monkeyp
     assert out == [{"start_index": 0, "end_index": 4, "title_fr": "Tout"}]
 
 
+async def test_build_structure_forwards_a_key_list_to_rotation(monkeypatch):
+    """build_structure must not hardcode a single key -- a pool from config
+    has to reach the rotating call unchanged."""
+    captured = {}
+
+    async def fake_rotating(api_key, model, prompt, schema):
+        captured["api_key"] = api_key
+        return {"sections": [{"start_index": 0, "end_index": 0, "title_fr": "T"}]}
+
+    monkeypatch.setattr(syn, "_generate_rotating", fake_rotating)
+    await syn.build_structure(["key1", "key2"], _segments("x"))
+    assert captured["api_key"] == ["key1", "key2"]
+
+
 # ── build_rewrite / build_full_rewrite: raises rather than falling back ─────
 
 
@@ -429,6 +527,19 @@ async def test_build_rewrite_raises_on_invalid_output(monkeypatch):
     section = {"start_index": 0, "end_index": 0, "title_fr": "S"}
     with pytest.raises(syn.GeminiError):
         await syn.build_rewrite("key", _segments("a"), section)
+
+
+async def test_build_rewrite_forwards_a_key_list_to_rotation(monkeypatch):
+    captured = {}
+
+    async def fake_rotating(api_key, model, prompt, schema):
+        captured["api_key"] = api_key
+        return {"subsections": [{"start_index": 0, "title_fr": "", "text_fr": "T"}]}
+
+    monkeypatch.setattr(syn, "_generate_rotating", fake_rotating)
+    section = {"start_index": 0, "end_index": 0, "title_fr": "S"}
+    await syn.build_rewrite(["key1", "key2"], _segments("a"), section)
+    assert captured["api_key"] == ["key1", "key2"]
 
 
 async def test_build_rewrite_returns_validated_output(monkeypatch):

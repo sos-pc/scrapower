@@ -333,7 +333,7 @@ async def _seed_write_course_job(db, blob_dir, task_id, folder="Cours"):
 async def test_sweep_produces_a_second_file_when_write_course_is_set(
     db, blob_dir, config, no_metadata_lookup, monkeypatch
 ):
-    config.gemini_api_key = "test-gemini-key"
+    config.gemini_api_keys = ["test-gemini-key"]
     calls = []
     _fake_course_pipeline(monkeypatch, structure_calls=calls)
 
@@ -341,7 +341,7 @@ async def test_sweep_produces_a_second_file_when_write_course_is_set(
     await _seed_write_course_job(db, blob_dir, task_id)
 
     assert await delivery.deliver_completed(db, blob_dir, config) == 1
-    assert calls[0][0] == "test-gemini-key", "the configured key must reach the Gemini call"
+    assert calls[0][0] == ["test-gemini-key"], "the configured key pool must reach the Gemini call"
 
     out_dir = Path(config.transcripts_dir) / "Cours"
     base = f"{delivery.sanitize_name('Lecture 01 - Methods')} [BV1xK4y1J77Q_p1]"
@@ -378,7 +378,7 @@ async def test_missing_gemini_key_leaves_the_video_undelivered(
     """Config with no key configured: retry automatically once one is added,
     rather than silently giving up or crashing the sweep."""
     _fake_course_pipeline(monkeypatch)  # must not even be reached
-    assert getattr(config, "gemini_api_key", "") == ""
+    assert getattr(config, "gemini_api_keys", []) == []
 
     task_id = "5" * 32
     await _seed_write_course_job(db, blob_dir, task_id)
@@ -395,7 +395,7 @@ async def test_no_segments_to_write_a_course_from_leaves_the_video_undelivered(
 ):
     """An empty transcript must not reach the Gemini pipeline at all -- there is
     nothing meaningful to structure or rewrite."""
-    config.gemini_api_key = "test-gemini-key"
+    config.gemini_api_keys = ["test-gemini-key"]
     calls = []
     _fake_course_pipeline(monkeypatch, structure_calls=calls)
 
@@ -425,7 +425,7 @@ async def test_a_failing_gemini_call_leaves_the_video_undelivered(
     gives us this for free."""
     from scrapower.coordinator.channel import synthesis as synth_mod
 
-    config.gemini_api_key = "test-gemini-key"
+    config.gemini_api_keys = ["test-gemini-key"]
 
     # Structure has its own fallback and never raises (see synthesis.py), so
     # the failure is made to happen in the rewrite, the stage allowed to fail.
@@ -450,3 +450,86 @@ async def test_a_failing_gemini_call_leaves_the_video_undelivered(
         "the transcript itself must not be written mid-retry either, so a later "
         "successful pass doesn't have to reconcile a half-delivered state"
     )
+
+
+# ── Reusing an already-written course instead of re-paying for it ──────────
+#
+# The bug this covers, live: Gemini generation succeeded, an expired Drive
+# OAuth token failed the delivery afterwards, and every 30s retry redid the
+# entire generation (1 structure call + one per section) to reproduce a
+# result that was already sitting on disk, burning a day's quota for nothing.
+
+
+def test_existing_course_md_is_read_when_present(tmp_path):
+    import types
+
+    config = types.SimpleNamespace(transcripts_dir=str(tmp_path))
+    meta = {"title": "T", "video_id": "V1", "playlists": ["Cours"]}
+    pdir = tmp_path / "Cours"
+    pdir.mkdir()
+    (pdir / delivery._course_filename(meta)).write_text("Déjà écrit.", encoding="utf-8")
+
+    assert delivery._existing_course_md(config, meta) == "Déjà écrit."
+
+
+def test_existing_course_md_is_none_when_absent(tmp_path):
+    import types
+
+    config = types.SimpleNamespace(transcripts_dir=str(tmp_path))
+    meta = {"title": "T", "video_id": "V1", "playlists": ["Cours"]}
+    assert delivery._existing_course_md(config, meta) is None
+
+
+async def test_maybe_write_course_reuses_an_existing_file_without_calling_gemini(
+    config, monkeypatch
+):
+    async def must_not_be_called(*a, **kw):
+        raise AssertionError("Gemini must not be called when a course already exists on disk")
+
+    monkeypatch.setattr(
+        "scrapower.coordinator.channel.synthesis.build_structure", must_not_be_called
+    )
+    monkeypatch.setattr(
+        "scrapower.coordinator.channel.synthesis.build_full_rewrite", must_not_be_called
+    )
+
+    meta = {"title": "T", "video_id": "V1", "playlists": ["Cours"]}
+    pdir = Path(config.transcripts_dir) / "Cours"
+    pdir.mkdir(parents=True)
+    (pdir / delivery._course_filename(meta)).write_text("Déjà écrit.", encoding="utf-8")
+
+    out = await delivery._maybe_write_course(config, meta, "{}", {"write_course": True})
+    assert out == "Déjà écrit."
+
+
+async def test_a_retry_after_a_downstream_failure_reuses_the_file_and_succeeds(
+    db, blob_dir, config, no_metadata_lookup, monkeypatch
+):
+    """The exact scenario that burned quota: Gemini already succeeded once (the
+    file is on disk), something unrelated failed delivery, and the next sweep
+    must finish the job from the existing file rather than regenerating it."""
+    config.gemini_api_keys = ["test-gemini-key"]
+
+    async def must_not_be_called(*a, **kw):
+        raise AssertionError("must reuse the existing file, not call Gemini again")
+
+    monkeypatch.setattr(
+        "scrapower.coordinator.channel.synthesis.build_structure", must_not_be_called
+    )
+    monkeypatch.setattr(
+        "scrapower.coordinator.channel.synthesis.build_full_rewrite", must_not_be_called
+    )
+
+    task_id = "8" * 32
+    await _seed_write_course_job(db, blob_dir, task_id)
+
+    # Simulate the prior (successful-at-Gemini) attempt having already written
+    # the course file before failing at some later, unrelated step.
+    meta = {"title": "Lecture 01 - Methods", "video_id": "BV1xK4y1J77Q_p1", "playlists": ["Cours"]}
+    pdir = Path(config.transcripts_dir) / "Cours"
+    pdir.mkdir(parents=True)
+    (pdir / delivery._course_filename(meta)).write_text("Cours déjà généré.", encoding="utf-8")
+
+    assert await delivery.deliver_completed(db, blob_dir, config) == 1
+    course_file = pdir / delivery._course_filename(meta)
+    assert course_file.read_text(encoding="utf-8") == "Cours déjà généré."

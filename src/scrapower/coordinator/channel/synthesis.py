@@ -56,6 +56,10 @@ class GeminiError(Exception):
     """The Gemini call failed, or returned something we can't use."""
 
 
+def _is_quota_error(e: Exception) -> bool:
+    return "HTTP 429" in str(e)
+
+
 # ── Tiny local duplicates of delivery.py's formatters ──────────────────────
 # Not imported from there: delivery.py calls into this module, so importing
 # the other way would create a cycle. Two lines each; not worth the coupling.
@@ -103,6 +107,37 @@ async def _generate(api_key: str, model: str, prompt: str, schema: dict) -> dict
         return json.loads(text)
     except (KeyError, IndexError, TypeError, StopIteration, json.JSONDecodeError) as e:
         raise GeminiError(f"unparseable response: {e}") from e
+
+
+def _key_list(api_key: str | list[str]) -> list[str]:
+    return [api_key] if isinstance(api_key, str) else list(api_key)
+
+
+async def _generate_rotating(
+    api_key: str | list[str], model: str, prompt: str, schema: dict
+) -> dict:
+    """Like _generate, but tries each key in turn -- advancing to the next one
+    only on a quota/rate error. Any other failure (a malformed prompt, a real
+    outage) isn't something a different key would fix, so it's raised
+    immediately rather than masked by a pointless second attempt.
+
+    A single string is still accepted (and wrapped) so every existing caller
+    with one key keeps working unchanged.
+    """
+    keys = _key_list(api_key)
+    if not keys:
+        raise GeminiError("no Gemini API key configured")
+    last_error: GeminiError | None = None
+    for i, key in enumerate(keys):
+        try:
+            return await _generate(key, model, prompt, schema)
+        except GeminiError as e:
+            if not _is_quota_error(e):
+                raise
+            log.warning("gemini key %d/%d exhausted (quota), trying the next", i + 1, len(keys))
+            last_error = e
+    assert last_error is not None  # keys is non-empty, so the loop ran at least once
+    raise last_error
 
 
 # ── Segment formatting for prompts ─────────────────────────────────────────
@@ -200,10 +235,10 @@ def _fallback_structure(n_segments: int, group_size: int = _FALLBACK_GROUP_SIZE)
     return sections
 
 
-async def build_structure(api_key: str, segments: list[dict]) -> list[dict]:
+async def build_structure(api_key: str | list[str], segments: list[dict]) -> list[dict]:
     n = len(segments)
     try:
-        raw = await _generate(
+        raw = await _generate_rotating(
             api_key, STRUCTURE_MODEL, _structure_prompt(segments), _STRUCTURE_SCHEMA
         )
         validated = _validate_structure(raw, n)
@@ -315,12 +350,12 @@ def _warn_if_short(
 
 
 async def build_rewrite(
-    api_key: str, segments: list[dict], section: dict, language: str = "?"
+    api_key: str | list[str], segments: list[dict], section: dict, language: str = "?"
 ) -> list[dict]:
     start, end = section["start_index"], section["end_index"]
     slice_segments = segments[start : end + 1]
     prompt = _rewrite_prompt(slice_segments, range(start, end + 1), section["title_fr"], language)
-    raw = await _generate(api_key, REWRITE_MODEL, prompt, _REWRITE_SCHEMA)
+    raw = await _generate_rotating(api_key, REWRITE_MODEL, prompt, _REWRITE_SCHEMA)
     validated = _validate_rewrite(raw, section, len(segments))
     if validated is None:
         raise GeminiError(f"rewrite output failed validation for section {section['title_fr']!r}")
@@ -329,7 +364,7 @@ async def build_rewrite(
 
 
 async def build_full_rewrite(
-    api_key: str, segments: list[dict], structure: list[dict], language: str = "?"
+    api_key: str | list[str], segments: list[dict], structure: list[dict], language: str = "?"
 ) -> list[list[dict]]:
     """One written rendering per section, in order. Raises on the first section
     that fails -- there's no sensible deterministic fallback for "write the
